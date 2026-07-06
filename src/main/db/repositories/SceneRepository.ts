@@ -1,0 +1,354 @@
+// src/main/db/repositories/SceneRepository.ts
+// Scene（L2）数据访问
+//
+// 表结构：scenes
+// 索引：idx_scenes_start_at
+//
+// JSON 字段：fact_ids_json, observation_ids_json, entity_names_json
+// soft delete：deleted_at 字段
+
+import type { DB } from "../Database";
+import type { Scene, CreateSceneInput } from "../../models/types";
+import { getLocalTodayStartIso } from "./_helpers";
+
+interface SceneRow {
+  id: string;
+  title: string;
+  summary: string;
+  start_at: string;
+  end_at: string;
+  project_id: string | null;
+  confidence: number;
+  fact_ids_json: string;
+  observation_ids_json: string;
+  entity_names_json: string;
+  task_ids_json: string;
+  decision_ids_json: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export class SceneRepository {
+  constructor(private db: DB) {}
+
+  /**
+   * 创建 scene
+   */
+  create(input: CreateSceneInput): Scene {
+    const id = input.id ?? generateId("scene");
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO scenes (
+          id, title, summary, start_at, end_at, project_id,
+          confidence, fact_ids_json, observation_ids_json, entity_names_json,
+          task_ids_json, decision_ids_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.title,
+        input.summary,
+        input.startAt,
+        input.endAt,
+        input.projectId,
+        input.confidence,
+        JSON.stringify(input.factIds),
+        JSON.stringify(input.observationIds),
+        JSON.stringify(input.entityNames),
+        JSON.stringify(input.taskIds ?? []),
+        JSON.stringify(input.decisionIds ?? []),
+        now,
+        now
+      );
+
+    return this.getById(id)!;
+  }
+
+  /**
+   * 按 id 查询（含已删除）
+   */
+  getById(id: string): Scene | null {
+    const row = this.db.prepare("SELECT * FROM scenes WHERE id = ?").get(id) as
+      | SceneRow
+      | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  /**
+   * 按 id 查询（仅未删除）
+   */
+  getByIdActive(id: string): Scene | null {
+    const row = this.db
+      .prepare("SELECT * FROM scenes WHERE id = ? AND deleted_at IS NULL")
+      .get(id) as SceneRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  /**
+   * 按时间范围查询（含未删除过滤）
+   */
+  listByStartAt(opts: {
+    from?: string;
+    to?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+    offset?: number;
+  } = {}): Scene[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.from) {
+      conditions.push("start_at >= ?");
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      conditions.push("start_at <= ?");
+      params.push(opts.to);
+    }
+    if (!opts.includeDeleted) {
+      conditions.push("deleted_at IS NULL");
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = opts.limit ?? 100;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(`SELECT * FROM scenes ${where} ORDER BY start_at DESC LIMIT ? OFFSET ?`)
+      .all(...params, limit, offset) as SceneRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 按 project_id 查询
+   */
+  listByProjectId(
+    projectId: string,
+    opts: { includeDeleted?: boolean; limit?: number; offset?: number } = {}
+  ): Scene[] {
+    const conditions = ["project_id = ?"];
+    const params: unknown[] = [projectId];
+    if (!opts.includeDeleted) {
+      conditions.push("deleted_at IS NULL");
+    }
+    const limit = opts.limit ?? 100;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM scenes WHERE ${conditions.join(" AND ")} ORDER BY start_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset) as SceneRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 查询今日 scene
+   *
+   * 注意：使用本地日期与时区偏移构造起始时间，避免 UTC 与本地时区差异
+   * 导致跨日边界时（如 UTC+8 凌晨 0:00-8:00）误把今天当成昨天。
+   */
+  listToday(): Scene[] {
+    const from = getLocalTodayStartIso();
+    return this.listByStartAt({ from });
+  }
+
+  /**
+   * 关键词搜索（SQL LIKE）
+   * - 搜索 title 和 summary 字段（OR 语义）
+   * - 仅未删除
+   * - SQLite LIKE 对 ASCII 默认大小写不敏感
+   * - 用于 memory:search IPC（避免全量加载后在 JS 端过滤）
+   */
+  searchByKeyword(keyword: string, limit: number = 100): Scene[] {
+    const likePattern = `%${keyword}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM scenes WHERE (title LIKE ? OR summary LIKE ?) AND deleted_at IS NULL ORDER BY start_at DESC LIMIT ?`
+      )
+      .all(likePattern, likePattern, limit) as SceneRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 更新 scene
+   */
+  update(
+    id: string,
+    patch: Partial<Omit<Scene, "id" | "createdAt" | "updatedAt" | "deletedAt">>
+  ): Scene | null {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (patch.title !== undefined) {
+      sets.push("title = ?");
+      params.push(patch.title);
+    }
+    if (patch.summary !== undefined) {
+      sets.push("summary = ?");
+      params.push(patch.summary);
+    }
+    if (patch.startAt !== undefined) {
+      sets.push("start_at = ?");
+      params.push(patch.startAt);
+    }
+    if (patch.endAt !== undefined) {
+      sets.push("end_at = ?");
+      params.push(patch.endAt);
+    }
+    if (patch.projectId !== undefined) {
+      sets.push("project_id = ?");
+      params.push(patch.projectId);
+    }
+    if (patch.confidence !== undefined) {
+      sets.push("confidence = ?");
+      params.push(patch.confidence);
+    }
+    if (patch.factIds !== undefined) {
+      sets.push("fact_ids_json = ?");
+      params.push(JSON.stringify(patch.factIds));
+    }
+    if (patch.observationIds !== undefined) {
+      sets.push("observation_ids_json = ?");
+      params.push(JSON.stringify(patch.observationIds));
+    }
+    if (patch.entityNames !== undefined) {
+      sets.push("entity_names_json = ?");
+      params.push(JSON.stringify(patch.entityNames));
+    }
+    if (patch.taskIds !== undefined) {
+      sets.push("task_ids_json = ?");
+      params.push(JSON.stringify(patch.taskIds));
+    }
+    if (patch.decisionIds !== undefined) {
+      sets.push("decision_ids_json = ?");
+      params.push(JSON.stringify(patch.decisionIds));
+    }
+
+    if (sets.length === 0) {
+      return this.getById(id);
+    }
+
+    sets.push("updated_at = ?");
+    params.push(new Date().toISOString());
+    params.push(id);
+
+    this.db
+      .prepare(`UPDATE scenes SET ${sets.join(", ")} WHERE id = ?`)
+      .run(...params);
+
+    return this.getById(id);
+  }
+
+  /**
+   * soft delete
+   */
+  softDelete(id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE scenes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
+      .run(new Date().toISOString(), new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 003 新增：按 observation_ids 批量 soft delete
+   * UPDATE scenes SET deleted_at=now WHERE observation_ids_json 包含任一 observationId
+   * 仅 soft delete 未删除的 scenes
+   *
+   * @param observationIds 关联的 observation id 列表
+   * @returns 被 soft delete 的 scenes 列表（用于后续标记 reports stale）
+   */
+  softDeleteByObservationIds(observationIds: string[]): Scene[] {
+    if (observationIds.length === 0) return [];
+    const now = new Date().toISOString();
+    const selectStmt = this.db.prepare(
+      `SELECT * FROM scenes WHERE deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM json_each(scenes.observation_ids_json)
+        WHERE json_each.value IN (${observationIds.map(() => "?").join(", ")})
+      )`
+    );
+    const rows = selectStmt.all(...observationIds) as SceneRow[];
+    const toDelete = rows.map(mapRow);
+    if (toDelete.length === 0) return [];
+
+    const updateStmt = this.db.prepare(
+      `UPDATE scenes SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`
+    );
+    const txn = this.db.transaction(() => {
+      for (const scene of toDelete) {
+        updateStmt.run(now, now, scene.id);
+      }
+    });
+    txn();
+    return toDelete;
+  }
+
+  /**
+   * 恢复 soft delete
+   */
+  restore(id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE scenes SET deleted_at = NULL, updated_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 物理删除
+   */
+  deleteById(id: string): boolean {
+    const result = this.db.prepare("DELETE FROM scenes WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * 统计未删除总数
+   */
+  count(): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) as cnt FROM scenes WHERE deleted_at IS NULL")
+      .get() as { cnt: number };
+    return row.cnt;
+  }
+}
+
+export function createSceneRepository(db: DB): SceneRepository {
+  return new SceneRepository(db);
+}
+
+// ============================================================================
+// 内部辅助函数
+// ============================================================================
+
+function mapRow(row: SceneRow): Scene {
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    startAt: row.start_at,
+    endAt: row.end_at,
+    projectId: row.project_id,
+    confidence: row.confidence,
+    factIds: safeParseArray(row.fact_ids_json),
+    observationIds: safeParseArray(row.observation_ids_json),
+    entityNames: safeParseArray(row.entity_names_json),
+    taskIds: safeParseArray(row.task_ids_json),
+    decisionIds: safeParseArray(row.decision_ids_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function safeParseArray<T = unknown>(json: string): T[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function generateId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}

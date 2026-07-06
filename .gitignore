@@ -1,0 +1,60 @@
+# 依赖
+node_modules/
+.pnp/
+.pnp.js
+
+# 构建产物
+dist/
+release/
+build/
+out/
+
+# Vite 临时
+*.local
+
+# 日志
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# TypeScript
+*.tsbuildinfo
+.eslintcache
+
+# Electron
+main.js
+preload.js
+
+# 临时诊断输出（修复/验证过程中 subagent 留下的输出文件）
+*.output.txt
+npm-install.log
+
+# 临时诊断脚本（手动调试用，不入版本控制）
+scripts/check-runtime.js
+scripts/find-sqlite.js
+scripts/inspect-db.js
+scripts/verify-*.js
+scripts/explore-dbs.js
+
+# 数据库本地文件（开发时本地产生的临时数据库）
+*.db
+*.db-shm
+*.db-wal
+*.db.bak.*
+

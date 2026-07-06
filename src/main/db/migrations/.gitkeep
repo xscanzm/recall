@@ -1,0 +1,2 @@
+// src/main/db/migrations/.gitkeep
+// 占位文件，保持目录结构。M1 之后会创建 001_initial_schema.sql 等 migration 文件。

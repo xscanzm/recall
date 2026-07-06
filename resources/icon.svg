@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Recall 应用图标（来自 08 文档"Logo 建议"）
+
+  概念：回环线 + 3 节点
+  - 3 个节点被一条柔和线连接，形成回声/回路感
+  - 不使用眼睛、摄像头、大脑
+  - 配色：accent green (#2F8F83) + accent amber (#D9912B)
+
+  使用方式：
+  - 该 SVG 作为图标源文件
+  - 打包时通过 electron-builder 转换为 icon.ico (Windows) / icon.icns (macOS)
+  - 应用内 BrandMark 组件使用相同的几何造型
+-->
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- 圆角矩形背景（应用图标标准容器） -->
+  <rect width="256" height="256" rx="48" fill="#F7F6F2"/>
+
+  <!-- 柔和回环线：从左下节点出发，经过中间节点，再回到底部右侧节点
+       形成回声/回路感 -->
+  <path
+    d="M 56 168
+         Q 80 80, 128 128
+         Q 176 176, 200 88"
+    stroke="#2F8F83"
+    stroke-width="14"
+    stroke-linecap="round"
+    fill="none"
+    opacity="0.85"
+  />
+
+  <!-- 3 个节点 -->
+  <!-- 左下节点：accent green -->
+  <circle cx="56" cy="168" r="20" fill="#2F8F83"/>
+
+  <!-- 中间节点：accent amber（视觉中心，强调回声的"反射"节点） -->
+  <circle cx="128" cy="128" r="22" fill="#D9912B"/>
+
+  <!-- 右上节点：accent green -->
+  <circle cx="200" cy="88" r="20" fill="#2F8F83"/>
+
+  <!-- 节点内部高光（提升质感） -->
+  <circle cx="50" cy="162" r="6" fill="#FFFFFF" opacity="0.4"/>
+  <circle cx="122" cy="120" r="7" fill="#FFFFFF" opacity="0.4"/>
+  <circle cx="194" cy="82" r="6" fill="#FFFFFF" opacity="0.4"/>
+</svg>
