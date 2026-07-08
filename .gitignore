@@ -45,6 +45,12 @@ preload.js
 *.output.txt
 npm-install.log
 
+# 构建过程日志
+package*.log
+package.log
+package2.log
+package3.log
+
 # 临时诊断脚本（手动调试用，不入版本控制）
 scripts/check-runtime.js
 scripts/find-sqlite.js
