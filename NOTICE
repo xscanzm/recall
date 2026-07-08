@@ -1,0 +1,15 @@
+回声 Recall
+Copyright (c) 2026 Recall Contributors
+
+本项目以 Business Source License 1.1 (BUSL-1.1) 授权发布。
+完整许可证文本见本仓库根目录的 LICENSE 文件。
+
+变更日期: 2030-07-08
+变更后许可证: Apache License, Version 2.0
+
+源代码完全可见，供安全审计。
+本项目不包含任何后门、远程上传、隐蔽的网络行为。
+所有用户数据（截图、记忆、报告）仅保存在用户本地。
+
+如需将本项目用于生产环境、SaaS 服务或商业再分发，
+请联系 Licensor 获取商业授权。
