@@ -47,6 +47,8 @@ interface ProactiveItemRow {
   status: string;
   source_fact_ids_json: string;
   source_scene_ids_json: string;
+  // 013 字段
+  payload_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -94,8 +96,9 @@ export class ProactiveItemRepository {
           id, type, title, body, reason, priority,
           surface, requires_user_confirmation, status,
           source_fact_ids_json, source_scene_ids_json,
+          payload_json,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -109,6 +112,7 @@ export class ProactiveItemRepository {
         input.status,
         JSON.stringify(input.sourceFactIds),
         JSON.stringify(input.sourceSceneIds),
+        input.payloadJson ?? null,
         now,
         now
       );
@@ -183,6 +187,57 @@ export class ProactiveItemRepository {
       )
       .all(from) as ProactiveItemRow[];
     return rows.map(mapRow);
+  }
+
+  // ============================================================================
+  // 012/013 新增：合并建议（merge_suggestion）相关方法
+  // Linker 输出 mergeSuggestions → 写入 proactive_items（type='merge_suggestion'）
+  // 用户在提醒页确认 / 拒绝 → 走 memory:mergeObjects / ignoreProactiveItem
+  // ============================================================================
+
+  /**
+   * 查询所有 merge_suggestion 类型的 proactive_item
+   * - 默认按 created_at DESC
+   * - 用于前端"合并建议"列表
+   */
+  listMergeSuggestions(opts: { status?: string; limit?: number } = {}): ProactiveItem[] {
+    const conditions: string[] = ["type = 'merge_suggestion'"];
+    const params: unknown[] = [];
+    if (opts.status) {
+      conditions.push("status = ?");
+      params.push(opts.status);
+    }
+    const limit = opts.limit ?? 200;
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM proactive_items ${where} ORDER BY priority DESC, created_at DESC LIMIT ?`
+      )
+      .all(...params, limit) as ProactiveItemRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 检查 fromId/toId 的 merge_suggestion 是否已存在（避免重复）
+   * - 用于 LinkerWorker 写入前的去重判断
+   * - 仅查 status='new' 的（已确认/拒绝的不算）
+   */
+  hasExistingMergeSuggestion(
+    objectType: string,
+    fromId: string,
+    toId: string
+  ): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM proactive_items
+         WHERE type = 'merge_suggestion' AND status = 'new'
+         AND json_extract(payload_json, '$.objectType') = ?
+         AND json_extract(payload_json, '$.fromId') = ?
+         AND json_extract(payload_json, '$.toId') = ?
+         LIMIT 1`
+      )
+      .get(objectType, fromId, toId) as { 1?: number } | undefined;
+    return !!row;
   }
 
   /**
@@ -275,6 +330,8 @@ function mapRow(row: ProactiveItemRow): ProactiveItem {
     status: row.status,
     sourceFactIds: safeParseArray(row.source_fact_ids_json),
     sourceSceneIds: safeParseArray(row.source_scene_ids_json),
+    // 013 字段
+    payloadJson: row.payload_json,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

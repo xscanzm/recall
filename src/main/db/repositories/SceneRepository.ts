@@ -143,6 +143,64 @@ export class SceneRepository {
   }
 
   /**
+   * 012 新增：按 entity_name 精确查询（存在于 entity_names_json 数组中）
+   * - 用于 mergeObjects 改写：找出 entityNames 包含 from.name 的 scenes
+   * - 仅未删除
+   */
+  listByEntityNameExact(
+    entityName: string,
+    opts: { includeDeleted?: boolean; limit?: number } = {}
+  ): Scene[] {
+    const conditions: string[] = [
+      `EXISTS (SELECT 1 FROM json_each(scenes.entity_names_json) WHERE json_each.value = ?)`,
+    ];
+    const params: unknown[] = [entityName];
+    if (!opts.includeDeleted) {
+      conditions.push("deleted_at IS NULL");
+    }
+    const limit = opts.limit ?? 1000;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM scenes WHERE ${conditions.join(" AND ")} ORDER BY start_at DESC LIMIT ?`
+      )
+      .all(...params, limit) as SceneRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 012 新增：批量改写 scene.entityNames 中的某个名字
+   * - 遍历 entity_names_json 数组，把 fromName 替换为 toName（去重 + 不重复 toName）
+   * - 仅当 fromName 真正存在数组中时才更新
+   * @returns 实际改写的 scene 数量
+   */
+  rewriteEntityNameBatch(fromName: string, toName: string): number {
+    if (fromName === toName) return 0;
+    // 找出包含 fromName 的所有 scene，逐个读 entityNames 数组，替换后写回
+    const candidates = this.listByEntityNameExact(fromName, { limit: 1000 });
+    if (candidates.length === 0) return 0;
+    const updateStmt = this.db.prepare(
+      `UPDATE scenes SET entity_names_json = ?, updated_at = ? WHERE id = ?`
+    );
+    const txn = this.db.transaction(() => {
+      for (const scene of candidates) {
+        const newNames: string[] = [];
+        const seen = new Set<string>();
+        for (const name of scene.entityNames) {
+          let newName = name;
+          if (name === fromName) newName = toName;
+          if (!seen.has(newName)) {
+            seen.add(newName);
+            newNames.push(newName);
+          }
+        }
+        updateStmt.run(JSON.stringify(newNames), new Date().toISOString(), scene.id);
+      }
+    });
+    txn();
+    return candidates.length;
+  }
+
+  /**
    * 查询今日 scene
    *
    * 注意：使用本地日期与时区偏移构造起始时间，避免 UTC 与本地时区差异

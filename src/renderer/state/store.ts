@@ -7,8 +7,14 @@
 // M8：扩展 modelConfigs/privacyRules/settings 状态与 CRUD 动作、数据导出/清空
 
 import { create } from "zustand";
-import type { AppStatus } from "../../shared/types";
-import { getIpc } from "./ipc";
+import type {
+  AppStatus,
+  TodayPageData,
+  PersonalReview,
+  WorkReport,
+  UnfinishedThread,
+} from "../../shared/types";
+import { getIpc, fetchTodayPageData } from "./ipc";
 
 export type PageKey =
   | "today"
@@ -17,6 +23,7 @@ export type PageKey =
   | "projects"
   | "reports"
   | "memory"
+  | "people"
   | "settings"
   | "trust";
 
@@ -120,6 +127,8 @@ export interface ProjectItem {
   archivedAt: string | null;
   /** 003 字段：标记仅由被删 facts 支撑的对象 */
   orphanStatus?: string | null;
+  /** 012 字段：别名列表（合并过的旧名字） */
+  aliases?: string[];
 }
 
 export interface PersonItem {
@@ -133,6 +142,8 @@ export interface PersonItem {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** 012 字段：别名列表（合并过的旧名字） */
+  aliases?: string[];
 }
 
 export interface ReminderItem {
@@ -277,7 +288,7 @@ export type FeedbackTargetType =
  */
 export interface ModelConfigItem {
   id: string;
-  kind: "vision" | "language";
+  kind: "vision" | "language" | "multimodal";
   providerName: string;
   endpoint: string;
   model: string;
@@ -357,6 +368,38 @@ export interface DataExportResult {
   reports: unknown[];
 }
 
+/**
+ * 报告条目（reports 表的 renderer 端镜像，与 main/models/types.ts Report 结构一致）
+ * 涵盖 daily / weekly / monthly / retrospective 等所有 type。
+ */
+export interface ReportItem {
+  id: string;
+  type: string;
+  dateKey: string;
+  title: string;
+  contentJson: string;
+  sourceFactIds: string[];
+  sourceSceneIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  /** 12.5/22.11：报告来源被 soft delete 后标记为 stale（1=失效） */
+  isStale?: number;
+  staleReason?: string | null;
+  staleAt?: string | null;
+  /** 010 字段：关联项目 ID（用于历史报告按项目过滤） */
+  projectId?: string | null;
+}
+
+/**
+ * 报告页 Tab key（Phase 4，doc 23）
+ */
+export type ReportsTabKey =
+  | "personal"
+  | "work"
+  | "weekly"
+  | "monthly"
+  | "history";
+
 interface AppState {
   // 状态
   appStatus: AppStatus;
@@ -413,6 +456,84 @@ interface AppState {
   settingsLoading: boolean;
   settingsError: string | null;
 
+  // Phase 3 新增：今日页（doc 21）完整数据与工作日报选择模式
+  todayPageData: TodayPageData | null;
+  todayPageLoading: boolean;
+  todayPageError: string | null;
+  timelineBuildingDateKey: string | null;
+  lastTimelineBuildAt: number;
+  todayPageDateKey: string;
+  workReportSelectionMode: boolean;
+  selectedBlockIds: string[];
+  ignoredBlockIds: string[];
+  workReportGenerating: boolean;
+  workReportError: string | null;
+  workReportStyle: "brief" | "standard" | "formal";
+  previewModalOpen: boolean;
+  personalReviewGenerating: boolean;
+  personalReviewError: string | null;
+  sidePanelDrawerOpen: boolean;
+
+  // Phase 7 新增：设置页 / 信任中心 UI 状态
+  /** 设置页当前激活的分区 tab（all | model | observation | screenshot | blacklist | notification | data） */
+  settingsTab: string;
+  /** 数据管理操作执行中（用于禁用按钮 + loading） */
+  clearingData: boolean;
+  /** 危险操作二次确认对话框是否显示 */
+  showConfirmDialog: boolean;
+  /** 确认对话框标题 */
+  confirmDialogTitle: string;
+  /** 确认对话框正文 */
+  confirmDialogMessage: string;
+  /** 确认对话框按钮文案（默认"确认"） */
+  confirmDialogConfirmText: string;
+  /** 用户确认后执行的回调 */
+  confirmAction: (() => void) | null;
+
+  // Phase 5 新增：待收尾页状态（doc 24）
+  unfinishedThreads: UnfinishedThread[];
+  unfinishedLoading: boolean;
+  unfinishedError: string | null;
+
+  // Phase 4 新增：报告页状态（doc 23）
+  /** 报告页当前 Tab：我的复盘 / 工作日报 / 周报 / 月报 / 历史 */
+  reportsTab: ReportsTabKey;
+  /** 报告页当前选中的日期 key（YYYY-MM-DD） */
+  reportsDateKey: string;
+  /**
+   * 报告页 dateKey 是否被用户主动设置（prev/next/date-input）
+   * - true：跨日回滚不会覆盖（保留用户选择的历史日期）
+   * - false：跨日回滚可以触发（自动滚动到今天）
+   * - load 成功且 current === today 时 reset 为 false（让"打开应用后跨日回滚能工作"）
+   */
+  reportsDateKeySetByUser: boolean;
+  /** 报告页周报 Tab 选中的周起始 dateKey（YYYY-MM-DD，周一） */
+  reportsWeekStart: string;
+  /** 报告页月报 Tab 选中的月份 key（YYYY-MM） */
+  reportsMonthKey: string;
+  /** 当前查看的个人复盘（与 todayPageData.personalReview 区分，专供报告页使用） */
+  personalReview: PersonalReview | null;
+  /** 当前查看的工作日报（与 todayPageData.workReport 区分，专供报告页使用） */
+  workReport: WorkReport | null;
+  /** 历史 Tab 的报告列表 */
+  reportsList: ReportItem[];
+  /** 报告页加载状态 */
+  reportsLoading: boolean;
+  /** 报告页错误信息 */
+  reportsError: string | null;
+  /** 报告编辑器是否处于编辑模式 */
+  reportEditing: boolean;
+  /** 报告编辑器草稿内容（plain text） */
+  reportDraft: string;
+  /** 历史报告列表过滤：类型（"all" | "daily" | "weekly" | "monthly" | "retrospective"） */
+  reportsHistoryTypeFilter: string;
+  /** 历史报告列表过滤：起始 dateKey */
+  reportsHistoryDateFrom: string;
+  /** 历史报告列表过滤：结束 dateKey */
+  reportsHistoryDateTo: string;
+  /** 历史报告列表过滤：项目 ID（"all" 或具体 projectId） */
+  reportsHistoryProjectFilter: string;
+
   // 动作
   setAppStatus: (status: AppStatus) => void;
   setPage: (page: PageKey) => void;
@@ -446,7 +567,23 @@ interface AppState {
     fromId: string;
     toId: string;
     reason?: string;
-  }) => Promise<void>;
+  }) => Promise<{
+    rewrittenFactsCount: number;
+    rewrittenScenesCount: number;
+    mergedAliases: string[];
+  }>;
+
+  // 012/013 新增：合并建议（来自 Linker）
+  mergeSuggestions: unknown[];
+  mergeSuggestionsLoading: boolean;
+  loadMergeSuggestions: () => Promise<void>;
+  rejectMergeSuggestion: (id: string) => Promise<void>;
+  // 012/013 新增：别名映射
+  loadAllAliases: () => Promise<void>;
+  allAliases: {
+    projects: Array<{ id: string; name: string; aliases: string[] }>;
+    people: Array<{ id: string; name: string; aliases: string[] }>;
+  } | null;
   forgetRecent: (duration: "15m" | "30m" | "1h" | "today") => Promise<{
     deletedObservations: number;
     deletedScreenshots: number;
@@ -456,16 +593,19 @@ interface AppState {
   loadModelConfigs: () => Promise<void>;
   saveModelConfig: (input: {
     id?: string;
-    kind: "vision" | "language";
+    kind: "vision" | "language" | "multimodal";
     providerName: string;
     endpoint: string;
     model: string;
     apiKey?: string;
     enabled?: boolean;
+    // Phase 7：可选字段，留空时使用模型默认值（后端写入 options_json）
+    temperature?: number;
+    maxTokens?: number;
   }) => Promise<{ ok: boolean; warning?: string; error?: string }>;
   deleteModelConfig: (id: string) => Promise<{ ok: boolean; error?: string }>;
   testModelConnection: (input: {
-    kind: "vision" | "language";
+    kind: "vision" | "language" | "multimodal";
     endpoint: string;
     model: string;
     apiKey: string;
@@ -496,7 +636,129 @@ interface AppState {
     error?: string;
   }>;
   clearAllData: () => Promise<{ ok: boolean; deletedScreenshots?: number; error?: string }>;
+  /** 仅清空截图文件，不删除结构化记忆（调用 screenshot:clear IPC） */
+  clearScreenshotsOnly: () => Promise<{ ok: boolean; deletedScreenshots?: number; error?: string }>;
   getCacheSize: () => Promise<{ ok: boolean; bytes: number; fileCount: number }>;
+
+  // Phase 3 新增：今日页 actions
+  loadTodayPageData: (dateKey: string) => Promise<void>;
+  refreshTodayPageData: () => Promise<void>;
+  setTodayPageDateKey: (dateKey: string) => void;
+  /**
+   * 跨日检测：dateKey 不是今天时自动滚动到今天 + 重新加载
+   * 返回 true 表示发生了滚动
+   */
+  rollOverTodayDateKeyIfNeeded: () => boolean;
+  buildTimeline: (dateKey: string) => Promise<void>;
+  generatePersonalReview: (dateKey: string) => Promise<void>;
+  generateWorkReport: (params: {
+    dateKey: string;
+    selectedBlockIds: string[];
+    style: "brief" | "standard" | "formal";
+    recipientHint?: "manager" | "team" | "client" | "self";
+  }) => Promise<void>;
+  saveReportSelection: (params: {
+    dateKey: string;
+    selectedBlockIds: string[];
+    excludedBlockIds: string[];
+  }) => Promise<void>;
+  setWorkReportSelectionMode: (enabled: boolean) => void;
+  enterSelectionWithBlock: (blockId: string) => void;
+  toggleBlockSelection: (blockId: string) => void;
+  selectAllWorkBlocks: () => void;
+  clearSelection: () => void;
+  setWorkReportStyle: (style: "brief" | "standard" | "formal") => void;
+  setPreviewModalOpen: (open: boolean) => void;
+  setSidePanelDrawerOpen: (open: boolean) => void;
+  ignoreTimelineBlock: (id: string) => void;
+  updateUnfinishedThreadStatus: (
+    id: string,
+    status: "open" | "done" | "snoozed" | "ignored"
+  ) => Promise<void>;
+
+  // Phase 5 新增：待收尾页 actions
+  loadUnfinishedThreads: () => Promise<void>;
+  updateUnfinishedStatus: (
+    id: string,
+    status: "open" | "done" | "snoozed" | "ignored"
+  ) => Promise<void>;
+
+  // Phase 4 新增：报告页 actions（doc 23）
+  /** 切换报告页 Tab */
+  setReportsTab: (tab: ReportsTabKey) => void;
+  /** 设置报告页当前日期 */
+  setReportsDateKey: (dateKey: string) => void;
+  /**
+   * 跨日检测：reportsDateKey 跨过零点时自动滚动到今天并重新加载当前 Tab 数据
+   * - 仅当 reportsDateKeySetByUser = false 时才回滚（避免覆盖用户主动选择的历史日期）
+   */
+  rollOverReportsDateKeyIfNeeded: () => boolean;
+  /**
+   * 标记 dateKey 已被用户主动设置（prev/next/date-input）
+   */
+  markReportsDateKeySetByUser: () => void;
+  /**
+   * 清除 user-changed 标记
+   * - load 成功后 + current === today 时调用（让跨日回滚能正常工作）
+   */
+  resetReportsDateKeyUserFlag: () => void;
+  /**
+   * "默认显示最近一份有的复盘"：
+   * - 如果当前 dateKey 没有复盘/日报，自动切到 ≤ today 的最近一份
+   * - 如果用户主动改过 dateKey，不强制回退
+   */
+  fallbackToLatestReportIfMissing: () => Promise<void>;
+  /** 设置报告页周起始 */
+  setReportsWeekStart: (dateKey: string) => void;
+  /** 设置报告页月份 key */
+  setReportsMonthKey: (monthKey: string) => void;
+  /** 加载指定日期的个人复盘（专供报告页使用，写入 state.personalReview） */
+  loadPersonalReview: (dateKey: string) => Promise<void>;
+  /** 加载指定日期的工作日报（专供报告页使用，写入 state.workReport） */
+  loadWorkReport: (dateKey: string) => Promise<void>;
+  /** 加载历史报告列表（支持类型/日期范围过滤） */
+  loadReportsList: (filters?: {
+    type?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    limit?: number;
+  }) => Promise<void>;
+  /** 更新报告内容（编辑后保存，content 为 plain text，内部包装为 contentJson） */
+  updateReport: (id: string, content: string) => Promise<void>;
+  /** 物理删除报告（调用 reports:delete IPC） */
+  deleteReport: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  /** 进入/退出报告编辑模式 */
+  setReportEditing: (editing: boolean) => void;
+  /** 设置报告编辑草稿 */
+  setReportDraft: (draft: string) => void;
+  /** 设置历史报告过滤：类型 */
+  setReportsHistoryTypeFilter: (type: string) => void;
+  /** 设置历史报告过滤：起始日期 */
+  setReportsHistoryDateFrom: (dateKey: string) => void;
+  /** 设置历史报告过滤：结束日期 */
+  setReportsHistoryDateTo: (dateKey: string) => void;
+  /** 设置历史报告过滤：项目 */
+  setReportsHistoryProjectFilter: (projectId: string) => void;
+
+  // Phase 7 新增：设置页 / 信任中心 UI actions
+  /** 切换设置页激活分区 */
+  setSettingsTab: (tab: string) => void;
+  /** 标记数据管理操作执行中 / 完成 */
+  setClearingData: (clearing: boolean) => void;
+  /**
+   * 发起危险操作二次确认。
+   * 调用后弹出确认对话框，用户点击确认时执行 onConfirm，取消则关闭对话框。
+   */
+  requestConfirm: (input: {
+    title: string;
+    message: string;
+    confirmText?: string;
+    onConfirm: () => void;
+  }) => void;
+  /** 关闭确认对话框（取消） */
+  closeConfirmDialog: () => void;
+  /** 执行确认对话框的确认动作 */
+  executeConfirm: () => void;
 }
 
 /**
@@ -507,6 +769,50 @@ const DEFAULT_APP_STATUS: AppStatus = {
   paused: false,
   pipelineState: "idle",
 };
+
+/**
+ * 生成当今日 dateKey（YYYY-MM-DD，本地时区）
+ */
+function todayDateKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 将 Date 格式化为 dateKey（YYYY-MM-DD，本地时区）
+ */
+function formatDateKey(d: Date): string {
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 获取本周一 dateKey（YYYY-MM-DD，本地时区）
+ */
+function currentWeekStart(): string {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - daysFromMonday);
+  monday.setHours(0, 0, 0, 0);
+  return formatDateKey(monday);
+}
+
+/**
+ * 获取本月 monthKey（YYYY-MM，本地时区）
+ */
+function currentMonthKey(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = (now.getMonth() + 1).toString().padStart(2, "0");
+  return `${y}-${m}`;
+}
 
 export const useAppStore = create<AppState>((set, get) => ({
   appStatus: DEFAULT_APP_STATUS,
@@ -560,6 +866,61 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   settingsLoading: false,
   settingsError: null,
+
+  // Phase 3 新增：今日页初始状态
+  todayPageData: null,
+  todayPageLoading: false,
+  todayPageError: null,
+  timelineBuildingDateKey: null,
+  lastTimelineBuildAt: 0,
+  todayPageDateKey: todayDateKey(),
+  workReportSelectionMode: false,
+  selectedBlockIds: [],
+  ignoredBlockIds: [],
+  workReportGenerating: false,
+  workReportError: null,
+  workReportStyle: "standard",
+  previewModalOpen: false,
+  personalReviewGenerating: false,
+  personalReviewError: null,
+  sidePanelDrawerOpen: false,
+
+  // Phase 7 新增：设置页 / 信任中心 UI 初始状态
+  settingsTab: "all",
+  clearingData: false,
+  showConfirmDialog: false,
+  confirmDialogTitle: "",
+  confirmDialogMessage: "",
+  confirmDialogConfirmText: "确认",
+  confirmAction: null,
+
+  // Phase 5 新增：待收尾页初始状态
+  unfinishedThreads: [],
+  unfinishedLoading: false,
+  unfinishedError: null,
+
+  // Phase 4 新增：报告页初始状态（doc 23）
+  reportsTab: "personal",
+  reportsDateKey: todayDateKey(),
+  reportsDateKeySetByUser: false,
+  reportsWeekStart: currentWeekStart(),
+  reportsMonthKey: currentMonthKey(),
+  personalReview: null,
+  workReport: null,
+  reportsList: [],
+  reportsLoading: false,
+  reportsError: null,
+  reportEditing: false,
+  reportDraft: "",
+  reportsHistoryTypeFilter: "all",
+  reportsHistoryDateFrom: "",
+  reportsHistoryDateTo: "",
+  reportsHistoryProjectFilter: "all",
+
+  // 012/013 新增：合并建议 + 别名映射
+  mergeSuggestions: [],
+  mergeSuggestionsLoading: false,
+  allAliases: null,
 
   setAppStatus: (status) => set({ appStatus: status }),
   setPage: (page) => set({ currentPage: page }),
@@ -820,16 +1181,73 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 合并对象（调用 memory:mergeObjects IPC）
    * - 把 fromId 对象的 sourceFactIds 合并到 toId
    * - soft delete fromId
+   * - 012 增强：返回改写统计（rewrittenFactsCount / rewrittenScenesCount / mergedAliases）
+   * - 合并完成后立即刷新今日数据 + 合并建议列表
    */
   mergeObjects: async (input) => {
     try {
-      await getIpc().memory.mergeObjects(input);
+      const result = await getIpc().memory.mergeObjects(input);
       // 合并后重新加载今日数据
       await get().loadToday();
+      // 重新加载合并建议（如该建议被确认）
+      if (get().mergeSuggestions.length > 0) {
+        void get().loadMergeSuggestions();
+      }
+      const merged = (result as { merged: {
+        rewrittenFactsCount: number;
+        rewrittenScenesCount: number;
+        mergedAliases: string[];
+      } }).merged;
+      return {
+        rewrittenFactsCount: merged.rewrittenFactsCount,
+        rewrittenScenesCount: merged.rewrittenScenesCount,
+        mergedAliases: merged.mergedAliases,
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });
       throw err;
+    }
+  },
+
+  // 012/013 新增：加载合并建议（Linker 输出的 mergeSuggestions）
+  loadMergeSuggestions: async () => {
+    set({ mergeSuggestionsLoading: true });
+    try {
+      const result = await getIpc().memory.listMergeSuggestions({ status: "new", limit: 200 });
+      set({ mergeSuggestions: result.items, mergeSuggestionsLoading: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message, mergeSuggestionsLoading: false });
+    }
+  },
+
+  // 012/013 新增：拒绝某个合并建议
+  rejectMergeSuggestion: async (id) => {
+    try {
+      await getIpc().memory.rejectMergeSuggestion({ id });
+      // 重新加载列表
+      await get().loadMergeSuggestions();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message });
+      throw err;
+    }
+  },
+
+  // 012/013 新增：加载所有已知别名映射（供 UI 提示 + LLM prompt 注入）
+  loadAllAliases: async () => {
+    try {
+      const result = await getIpc().memory.listAllAliases();
+      set({
+        allAliases: {
+          projects: result.projects,
+          people: result.people,
+        },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message });
     }
   },
 
@@ -1093,6 +1511,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   /**
+   * 仅清空截图文件（调用 screenshot:clear IPC）
+   * 不删除结构化记忆（观察/线索/工作片段等保留）。
+   */
+  clearScreenshotsOnly: async () => {
+    try {
+      const result = await getIpc().screenshot.clear();
+      return { ok: true, deletedScreenshots: result.deletedScreenshots };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: message };
+    }
+  },
+
+  /**
    * 查询截图缓存当前大小（字节数和文件数）
    */
   getCacheSize: async () => {
@@ -1100,6 +1532,649 @@ export const useAppStore = create<AppState>((set, get) => ({
       return await getIpc().data.getCacheSize();
     } catch {
       return { ok: true, bytes: 0, fileCount: 0 };
+    }
+  },
+
+  // ============================================================================
+  // Phase 3 新增 actions（doc 21 今日页）
+  // ============================================================================
+
+  /**
+   * 加载今日页完整数据（并行 4 个 IPC + 派生 dayMainThread/highlights/decisions/tomorrowStartHere）
+   */
+  loadTodayPageData: async (dateKey: string) => {
+    if (get().todayPageLoading) return;
+    set({ todayPageLoading: true, todayPageError: null, todayPageDateKey: dateKey });
+    try {
+      const appStatus = get().appStatus;
+      const data = await fetchTodayPageData(dateKey, appStatus);
+      // 进入时清理上一次的选择模式与忽略列表
+      set({
+        todayPageData: data,
+        todayPageLoading: false,
+        ignoredBlockIds: [],
+        workReportSelectionMode: false,
+        selectedBlockIds: [],
+        previewModalOpen: false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ todayPageLoading: false, todayPageError: message });
+    }
+  },
+
+  /**
+   * 用当前 dateKey 重新加载今日页数据
+   */
+  refreshTodayPageData: async () => {
+    const dateKey = get().todayPageDateKey;
+    // 临时清除 loading 守卫，强制刷新
+    set({ todayPageLoading: false });
+    await get().loadTodayPageData(dateKey);
+    const state = get();
+    const data = state.todayPageData;
+    // 触发增量 build 的条件：
+    // 1. 完全无 blocks（首次生成）
+    // 2. 距上次 build 超过 10 分钟且正在观察（增量补充新片段）
+    const hasNoBlocks = data && data.timelineBlocks.length === 0;
+    const staleBuild =
+      Date.now() - state.lastTimelineBuildAt > 10 * 60 * 1000;
+    const shouldTriggerBuild =
+      data &&
+      data.dateKey === dateKey &&
+      dateKey === todayDateKey() &&
+      (hasNoBlocks || staleBuild) &&
+      state.appStatus.observing &&
+      !state.appStatus.paused &&
+      state.timelineBuildingDateKey !== dateKey;
+    if (shouldTriggerBuild) {
+      set({
+        timelineBuildingDateKey: dateKey,
+        todayPageLoading: true,
+        todayPageError: null,
+        lastTimelineBuildAt: Date.now(),
+      });
+      try {
+        const res = await getIpc().timeline.build(dateKey);
+        if (!res.ok && res.code !== "insufficient_data") {
+          throw new Error(res.error ?? "时间轴生成失败");
+        }
+        set({ todayPageLoading: false });
+        await get().loadTodayPageData(dateKey);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        set({ todayPageLoading: false, todayPageError: message });
+      } finally {
+        if (get().timelineBuildingDateKey === dateKey) {
+          set({ timelineBuildingDateKey: null });
+        }
+      }
+    }
+  },
+
+  setTodayPageDateKey: (dateKey: string) => set({ todayPageDateKey: dateKey }),
+
+  /**
+   * 跨日检测：如果当前 todayPageDateKey 已经不再是"今天"（本地时区），
+   * 自动滚动到今天并重新加载数据。
+   * 修复：renderer 长期开着跨过零点，dateKey 不会自动刷新，导致右侧一直显示昨天。
+   * 调用方：TodayPage 挂载时、window focus 时、定时（每 30 分钟）调用。
+   */
+  rollOverTodayDateKeyIfNeeded: () => {
+    const current = get().todayPageDateKey;
+    const today = todayDateKey();
+    if (current !== today) {
+      set({ todayPageDateKey: today });
+      // 异步触发数据重载（不 await，避免阻塞调用方）
+      void get().loadTodayPageData(today);
+      return true;
+    }
+    return false;
+  },
+
+  /**
+   * 触发 TimelineBuilder 生成当天时间轴（调用 LLM），完成后重新加载
+   */
+  buildTimeline: async (dateKey: string) => {
+    if (get().timelineBuildingDateKey === dateKey) return;
+    set({ todayPageLoading: true, todayPageError: null, timelineBuildingDateKey: dateKey });
+    try {
+      const res = await getIpc().timeline.build(dateKey);
+      if (!res.ok) throw new Error(res.error ?? "时间轴生成失败");
+      set({ todayPageLoading: false });
+      await get().loadTodayPageData(dateKey);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ todayPageLoading: false, todayPageError: message });
+    } finally {
+      if (get().timelineBuildingDateKey === dateKey) {
+        set({ timelineBuildingDateKey: null });
+      }
+    }
+  },
+
+  /**
+   * 生成个人复盘（调用 LLM），完成后重新加载
+   */
+  generatePersonalReview: async (dateKey: string) => {
+    set({ personalReviewGenerating: true, personalReviewError: null });
+    try {
+      const res = await getIpc().personalReview.generate(dateKey);
+      if (!res.ok) throw new Error(res.error ?? "复盘生成失败");
+      await get().loadTodayPageData(dateKey);
+      set({ personalReviewGenerating: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ personalReviewGenerating: false, personalReviewError: message });
+    }
+  },
+
+  /**
+   * 生成工作日报（基于用户选中的 TimelineBlock），完成后退出选择模式并重新加载
+   */
+  generateWorkReport: async (params) => {
+    set({ workReportGenerating: true, workReportError: null });
+    try {
+      const res = await getIpc().workReport.generate(params);
+      if (!res.ok) throw new Error(res.error ?? "日报生成失败");
+      await get().loadTodayPageData(params.dateKey);
+      set({
+        workReportGenerating: false,
+        workReportSelectionMode: false,
+        previewModalOpen: false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ workReportGenerating: false, workReportError: message });
+    }
+  },
+
+  /**
+   * 保存用户选区（不生成日报），best effort
+   */
+  saveReportSelection: async (params) => {
+    try {
+      await getIpc().workReport.saveSelection(params);
+    } catch (err) {
+      console.error("保存日报选区失败:", err);
+    }
+  },
+
+  /**
+   * 进入/退出工作日报选择模式
+   * 进入时默认选中 reportable=true && privateRisk=low 的片段
+   */
+  setWorkReportSelectionMode: (enabled) => {
+    if (enabled) {
+      const data = get().todayPageData;
+      const defaultSelected = data
+        ? data.timelineBlocks
+            .filter((b) => b.reportable && b.privateRisk === "low")
+            .map((b) => b.id)
+        : [];
+      set({
+        workReportSelectionMode: true,
+        selectedBlockIds: defaultSelected,
+        workReportError: null,
+        previewModalOpen: false,
+      });
+    } else {
+      set({
+        workReportSelectionMode: false,
+        selectedBlockIds: [],
+        previewModalOpen: false,
+        workReportError: null,
+      });
+    }
+  },
+
+  /**
+   * 从某张卡片"加入日报"按钮进入选择模式，确保该 block 被选中
+   */
+  enterSelectionWithBlock: (blockId) => {
+    const data = get().todayPageData;
+    const defaultSelected = data
+      ? data.timelineBlocks
+          .filter((b) => b.reportable && b.privateRisk === "low")
+          .map((b) => b.id)
+      : [];
+    const selected = defaultSelected.includes(blockId)
+      ? defaultSelected
+      : [...defaultSelected, blockId];
+    set({
+      workReportSelectionMode: true,
+      selectedBlockIds: selected,
+      workReportError: null,
+      previewModalOpen: false,
+    });
+  },
+
+  toggleBlockSelection: (blockId) => {
+    const current = get().selectedBlockIds;
+    if (current.includes(blockId)) {
+      set({ selectedBlockIds: current.filter((id) => id !== blockId) });
+    } else {
+      set({ selectedBlockIds: [...current, blockId] });
+    }
+  },
+
+  /**
+   * 选中所有 reportable 且 privateRisk !== "high" 的工作片段
+   */
+  selectAllWorkBlocks: () => {
+    const data = get().todayPageData;
+    if (!data) return;
+    const workBlockIds = data.timelineBlocks
+      .filter((b) => b.reportable && b.privateRisk !== "high")
+      .map((b) => b.id);
+    set({ selectedBlockIds: workBlockIds });
+  },
+
+  clearSelection: () => set({ selectedBlockIds: [] }),
+
+  setWorkReportStyle: (style) => set({ workReportStyle: style }),
+
+  setPreviewModalOpen: (open) => set({ previewModalOpen: open }),
+
+  setSidePanelDrawerOpen: (open) => set({ sidePanelDrawerOpen: open }),
+
+  /**
+   * 忽略时间轴片段（仅本地过滤，不持久化；重新加载时恢复）
+   */
+  ignoreTimelineBlock: (id) =>
+    set((state) => ({
+      ignoredBlockIds: state.ignoredBlockIds.includes(id)
+        ? state.ignoredBlockIds
+        : [...state.ignoredBlockIds, id],
+    })),
+
+  /**
+   * 更新待收尾事项状态（乐观更新本地 todayPageData）
+   */
+  updateUnfinishedThreadStatus: async (id, status) => {
+    const prev = get().todayPageData;
+    // 乐观更新
+    if (prev) {
+      set({
+        todayPageData: {
+          ...prev,
+          unfinishedThreads: prev.unfinishedThreads.map((t) =>
+            t.id === id ? { ...t, status } : t
+          ),
+        },
+      });
+    }
+    try {
+      await getIpc().unfinishedThreads.updateStatus({ id, status });
+    } catch (err) {
+      // 回滚
+      set({ todayPageData: prev });
+      const message = err instanceof Error ? err.message : String(err);
+      set({ todayPageError: message });
+    }
+  },
+
+  // ============================================================================
+  // Phase 5 新增：待收尾页 actions（doc 24）
+  // ============================================================================
+
+  /**
+   * 加载待收尾列表（拉取全部状态：open / done / snoozed / ignored）
+   *
+   * IPC 单次仅支持按 status 或 dateKey 过滤，这里并行拉取 4 个状态后合并，
+   * 供待收尾页按 5 分组（今天 / 近期 / 待确认 / 已完成 / 已忽略）渲染。
+   */
+  loadUnfinishedThreads: async () => {
+    if (get().unfinishedLoading) return;
+    set({ unfinishedLoading: true, unfinishedError: null });
+    try {
+      const statuses: Array<"open" | "done" | "snoozed" | "ignored"> = [
+        "open",
+        "done",
+        "snoozed",
+        "ignored",
+      ];
+      const results = await Promise.all(
+        statuses.map((s) => getIpc().unfinishedThreads.list({ status: s }))
+      );
+      const all: UnfinishedThread[] = [];
+      for (const res of results) {
+        if (!res.ok) continue;
+        if (Array.isArray(res.data)) {
+          for (const item of res.data) {
+            all.push(item as UnfinishedThread);
+          }
+        }
+      }
+      set({ unfinishedThreads: all, unfinishedLoading: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ unfinishedError: message, unfinishedLoading: false });
+    }
+  },
+
+  /**
+   * 更新待收尾状态（乐观更新本地 unfinishedThreads）
+   */
+  updateUnfinishedStatus: async (id, status) => {
+    const prev = get().unfinishedThreads;
+    set({
+      unfinishedThreads: prev.map((t) =>
+        t.id === id ? { ...t, status } : t
+      ),
+    });
+    try {
+      await getIpc().unfinishedThreads.updateStatus({ id, status });
+    } catch (err) {
+      // 回滚
+      set({ unfinishedThreads: prev });
+      const message = err instanceof Error ? err.message : String(err);
+      set({ unfinishedError: message });
+    }
+  },
+
+  // ============================================================================
+  // Phase 4 新增 actions（报告页，doc 23）
+  // ============================================================================
+
+  setReportsTab: (tab) => set({ reportsTab: tab }),
+
+  setReportsDateKey: (dateKey) => set({ reportsDateKey: dateKey, reportsDateKeySetByUser: true }),
+
+  /**
+   * 跨日检测：reportsDateKey 跨过零点时自动滚动到今天 + 重新加载当前 Tab
+   * **重要**：仅当用户没有主动改过日期时才回滚（防止"点前一天看历史"被错误回滚）
+   * - user-changed flag 在 setReportsDateKey 时被设为 true
+   * - 任何 reloadPersonalReview/loadWorkReport 成功后会 reset flag
+   *   （这样明天重新打开时跨日回滚能正常工作）
+   *
+   * 调用方：ReportsPage 挂载时 / window focus / 30 分钟定时
+   * 调用方**不**应在 dateKey 变化的 effect 里调用本方法（会形成循环）
+   */
+  rollOverReportsDateKeyIfNeeded: () => {
+    // 用户主动改过日期 → 不回滚（保留用户的选择）
+    if (get().reportsDateKeySetByUser) return false;
+    const current = get().reportsDateKey;
+    const today = todayDateKey();
+    // 只有当 current 严格小于 today 时（说明跨过了一天）才滚动
+    if (current && current < today) {
+      set({ reportsDateKey: today, reportsDateKeySetByUser: false });
+      // 重新加载当前 Tab（与 ReportsPage useEffect 触发逻辑一致）
+      const tab = get().reportsTab;
+      if (tab === "personal") {
+        void get().loadPersonalReview(today);
+      } else if (tab === "work") {
+        void get().loadWorkReport(today);
+      }
+      return true;
+    }
+    return false;
+  },
+
+  /**
+   * 标记 dateKey 已被用户主动设置（用于 rollOver 跳过逻辑）
+   * - ReportsPage 在 prev/next/date-input onChange 时显式调用
+   * - 加载成功后 resetReportsDateKeyUserFlag() 会清除标记
+   */
+  markReportsDateKeySetByUser: () => set({ reportsDateKeySetByUser: true }),
+
+  /**
+   * 清除 user-changed 标记
+   * - load 成功且 current === today 时调用（让"用户刚切回今天"也允许后续跨日回滚）
+   * - 切换 tab 时不调用（保留用户对该 tab 的日期选择）
+   */
+  resetReportsDateKeyUserFlag: () => set({ reportsDateKeySetByUser: false }),
+
+  /**
+   * "默认显示最近一份有的复盘"：
+   * - 如果当前 dateKey 没有复盘，自动切到 ≤ today 的最近一份
+   * - 工作日报 Tab 同理
+   * - 调用方：ReportsPage 加载完成后
+   * - 如果是用户主动切的 dateKey（user-changed=true），不强制回退
+   */
+  fallbackToLatestReportIfMissing: async () => {
+    const state = get();
+    const today = todayDateKey();
+    const currentDateKey = state.reportsDateKey;
+    const tab = state.reportsTab;
+    // 仅当 currentDateKey ≥ today 时才回退（用户主动看过去的不动）
+    if (currentDateKey < today) return;
+    // 仅当 user 没改过时自动回退
+    if (state.reportsDateKeySetByUser) return;
+
+    if (tab === "personal") {
+      if (state.personalReview) return; // 当前已有，不动
+      const list = await getIpc().reports.list<{ dateKey: string }>({
+        type: "personal_daily_review",
+        dateTo: today,
+        limit: 1,
+      });
+      if (list.length > 0 && list[0]?.dateKey && list[0].dateKey !== currentDateKey) {
+        set({ reportsDateKey: list[0].dateKey });
+        await get().loadPersonalReview(list[0].dateKey);
+      }
+    } else if (tab === "work") {
+      if (state.workReport) return;
+      const list = await getIpc().reports.list<{ dateKey: string }>({
+        type: "work_daily_report",
+        dateTo: today,
+        limit: 1,
+      });
+      if (list.length > 0 && list[0]?.dateKey && list[0].dateKey !== currentDateKey) {
+        set({ reportsDateKey: list[0].dateKey });
+        await get().loadWorkReport(list[0].dateKey);
+      }
+    }
+  },
+
+  setReportsWeekStart: (dateKey) => set({ reportsWeekStart: dateKey }),
+
+  setReportsMonthKey: (monthKey) => set({ reportsMonthKey: monthKey }),
+
+  /**
+   * 加载指定日期的个人复盘（调用 personalReview:get IPC，写入 state.personalReview）
+   * 与 todayPageData.personalReview 区分：本字段专供报告页"我的复盘"Tab 使用。
+   */
+  loadPersonalReview: async (dateKey) => {
+    set({ reportsLoading: true, reportsError: null });
+    try {
+      const res = await getIpc().personalReview.get(dateKey);
+      if (res.ok) {
+        const data = res.data as PersonalReview | null | undefined;
+        // 加载成功 + 当前是今天 → 清除 user-changed 标记（让跨日回滚能工作）
+        // 注：切到历史日期时不重置（保留"用户在看历史"意图）
+        if (dateKey >= todayDateKey()) {
+          set({ reportsDateKeySetByUser: false });
+        }
+        set({
+          personalReview: data ?? null,
+          reportsLoading: false,
+        });
+      } else {
+        set({
+          personalReview: null,
+          reportsLoading: false,
+          reportsError: res.error,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ reportsLoading: false, reportsError: message });
+    }
+  },
+
+  /**
+   * 加载指定日期的工作日报（调用 workReport:get IPC，写入 state.workReport）
+   * 与 todayPageData.workReport 区分：本字段专供报告页"工作日报"Tab 使用。
+   */
+  loadWorkReport: async (dateKey) => {
+    set({ reportsLoading: true, reportsError: null });
+    try {
+      const res = await getIpc().workReport.get(dateKey);
+      if (res.ok) {
+        const data = res.data as WorkReport | null | undefined;
+        if (dateKey >= todayDateKey()) {
+          set({ reportsDateKeySetByUser: false });
+        }
+        set({
+          workReport: data ?? null,
+          reportsLoading: false,
+        });
+      } else {
+        set({
+          workReport: null,
+          reportsLoading: false,
+          reportsError: res.error,
+        });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ reportsLoading: false, reportsError: message });
+    }
+  },
+
+  /**
+   * 加载历史报告列表（调用 reports:list IPC）
+   * 支持 type/dateFrom/dateTo/limit 过滤。
+   */
+  loadReportsList: async (filters) => {
+    set({ reportsLoading: true, reportsError: null });
+    try {
+      const input: Record<string, unknown> = {};
+      if (filters?.type && filters.type !== "all") input.type = filters.type;
+      if (filters?.dateFrom) input.dateFrom = filters.dateFrom;
+      if (filters?.dateTo) input.dateTo = filters.dateTo;
+      if (filters?.limit) input.limit = filters.limit;
+      const list = await getIpc().reports.list<ReportItem>(input);
+      set({
+        reportsList: list ?? [],
+        reportsLoading: false,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ reportsLoading: false, reportsError: message });
+    }
+  },
+
+  /**
+   * 更新报告内容（编辑后保存）
+   * content 为 plain text，内部包装为 {plainText, edited:true} 的 contentJson 后调用 reports:update。
+   * 保存后同步更新本地 personalReview / workReport / reportsList。
+   */
+  updateReport: async (id, content) => {
+    set({ reportsLoading: true, reportsError: null });
+    try {
+      const contentJson = JSON.stringify({ plainText: content, edited: true });
+      await getIpc().reports.update({ id, contentJson });
+      const now = new Date().toISOString();
+      // 同步更新本地 personalReview
+      const pr = get().personalReview;
+      if (pr && pr.id === id) {
+        set({ personalReview: { ...pr, updatedAt: now } });
+      }
+      // 同步更新本地 workReport（plainText 字段直接替换）
+      const wr = get().workReport;
+      if (wr && wr.id === id) {
+        set({ workReport: { ...wr, plainText: content, updatedAt: now } });
+      }
+      // 同步更新 reportsList 中的对应项
+      const list = get().reportsList;
+      if (list.some((r) => r.id === id)) {
+        set({
+          reportsList: list.map((r) =>
+            r.id === id ? { ...r, contentJson, updatedAt: now } : r
+          ),
+        });
+      }
+      set({ reportsLoading: false, reportEditing: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ reportsLoading: false, reportsError: message });
+    }
+  },
+
+  /**
+   * 物理删除报告（调用 reports:delete IPC）
+   * 删除后同步从 reportsList 中移除该项。
+   */
+  deleteReport: async (id) => {
+    try {
+      const deleted = await getIpc().reports.delete({ id });
+      if (deleted) {
+        // 同步从本地列表中移除
+        const list = get().reportsList;
+        if (list.some((r) => r.id === id)) {
+          set({ reportsList: list.filter((r) => r.id !== id) });
+        }
+      }
+      return { ok: deleted };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ reportsError: message });
+      return { ok: false, error: message };
+    }
+  },
+
+  setReportEditing: (editing) => set({ reportEditing: editing }),
+
+  setReportDraft: (draft) => set({ reportDraft: draft }),
+
+  setReportsHistoryTypeFilter: (type) => set({ reportsHistoryTypeFilter: type }),
+
+  setReportsHistoryDateFrom: (dateKey) => set({ reportsHistoryDateFrom: dateKey }),
+
+  setReportsHistoryDateTo: (dateKey) => set({ reportsHistoryDateTo: dateKey }),
+
+  setReportsHistoryProjectFilter: (projectId) =>
+    set({ reportsHistoryProjectFilter: projectId }),
+
+  // ============================================================================
+  // Phase 7 新增 actions（设置页 / 信任中心 UI）
+  // ============================================================================
+
+  setSettingsTab: (tab) => set({ settingsTab: tab }),
+
+  setClearingData: (clearing) => set({ clearingData: clearing }),
+
+  /**
+   * 发起危险操作二次确认。
+   * 弹出确认对话框，用户确认时执行 onConfirm，取消则关闭。
+   * 调用方负责在 onConfirm 内部处理 loading / 错误提示。
+   */
+  requestConfirm: ({ title, message, confirmText, onConfirm }) =>
+    set({
+      showConfirmDialog: true,
+      confirmDialogTitle: title,
+      confirmDialogMessage: message,
+      confirmDialogConfirmText: confirmText ?? "确认",
+      confirmAction: onConfirm,
+    }),
+
+  /** 用户取消：关闭对话框并清空回调 */
+  closeConfirmDialog: () =>
+    set({
+      showConfirmDialog: false,
+      confirmDialogTitle: "",
+      confirmDialogMessage: "",
+      confirmDialogConfirmText: "确认",
+      confirmAction: null,
+    }),
+
+  /**
+   * 用户点击确认按钮：执行回调并关闭对话框。
+   * 在回调内部抛错时由调用方自行处理；这里只负责关闭对话框。
+   */
+  executeConfirm: () => {
+    const action = get().confirmAction;
+    set({
+      showConfirmDialog: false,
+      confirmDialogTitle: "",
+      confirmDialogMessage: "",
+      confirmDialogConfirmText: "确认",
+      confirmAction: null,
+    });
+    if (action) {
+      action();
     }
   },
 }));

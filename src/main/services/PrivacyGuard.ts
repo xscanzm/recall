@@ -37,6 +37,7 @@ export type PreCaptureReason =
   | "sensitive_keyword"
   | "paused"
   | "locked"
+  | "idle"
   | "unknown";
 
 /**
@@ -76,7 +77,7 @@ export interface PostVisionCheckResult {
  */
 export type PrivacyCheckResult =
   | { allowed: true }
-  | { allowed: false; reason: "blacklist" | "sensitive_keyword" | "paused" | "high_sensitive" | "locked"; ruleId?: string };
+  | { allowed: false; reason: "blacklist" | "sensitive_keyword" | "paused" | "high_sensitive" | "locked" | "idle"; ruleId?: string };
 
 /**
  * 捕获前检查输入
@@ -280,7 +281,7 @@ export class PrivacyGuard extends EventEmitter {
     if (result.allowed) {
       return { allowed: true };
     }
-    const mappedReason: "blacklist" | "sensitive_keyword" | "paused" | "high_sensitive" | "locked" =
+    const mappedReason: "blacklist" | "sensitive_keyword" | "paused" | "high_sensitive" | "locked" | "idle" =
       result.reason === "blacklist_app"
         ? "blacklist"
         : result.reason === "sensitive_keyword"
@@ -289,7 +290,9 @@ export class PrivacyGuard extends EventEmitter {
             ? "paused"
             : result.reason === "locked"
               ? "locked"
-              : "paused";
+              : result.reason === "idle"
+                ? "idle"
+                : "paused";
     return { allowed: false, reason: mappedReason, ruleId: result.ruleId };
   }
 

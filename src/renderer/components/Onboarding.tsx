@@ -44,6 +44,7 @@ export function Onboarding(props: OnboardingProps) {
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const [visionConfigured, setVisionConfigured] = useState(false);
   const [languageConfigured, setLanguageConfigured] = useState(false);
+  const [multimodalConfigured, setMultimodalConfigured] = useState(false);
 
   // store 状态和动作
   const modelConfigs = useAppStore((s) => s.modelConfigs);
@@ -73,6 +74,7 @@ export function Onboarding(props: OnboardingProps) {
   useEffect(() => {
     setVisionConfigured(modelConfigs.some((c) => c.kind === "vision"));
     setLanguageConfigured(modelConfigs.some((c) => c.kind === "language"));
+    setMultimodalConfigured(modelConfigs.some((c) => c.kind === "multimodal"));
   }, [modelConfigs]);
 
   // 按模型类型分组
@@ -220,6 +222,7 @@ export function Onboarding(props: OnboardingProps) {
             <CompleteStep
               visionConfigured={visionConfigured}
               languageConfigured={languageConfigured}
+              multimodalConfigured={multimodalConfigured}
               onComplete={handleComplete}
             />
           )}
@@ -235,16 +238,16 @@ export function Onboarding(props: OnboardingProps) {
       <style>{`
         .onboarding {
           min-height: 100vh;
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
           display: flex;
           align-items: center;
           justify-content: center;
           padding: 24px;
         }
         .onboarding__container {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           box-shadow: 0 4px 24px rgba(30, 36, 35, 0.06);
           width: 100%;
           max-width: 720px;
@@ -265,14 +268,14 @@ export function Onboarding(props: OnboardingProps) {
           padding: 4px 10px;
           border-radius: var(--radius-pill);
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .onboarding__progress-item.is-current {
-          background-color: var(--accent-green);
+          background-color: var(--recall-accent);
           color: white;
         }
         .onboarding__progress-item.is-done {
-          color: var(--accent-green);
+          color: var(--recall-accent);
         }
         .onboarding__progress-index {
           width: 18px;
@@ -286,7 +289,7 @@ export function Onboarding(props: OnboardingProps) {
         }
         .onboarding__progress-item.is-current .onboarding__progress-index {
           background-color: white;
-          color: var(--accent-green);
+          color: var(--recall-accent);
         }
         .onboarding__content {
           display: flex;
@@ -297,20 +300,20 @@ export function Onboarding(props: OnboardingProps) {
           display: flex;
           justify-content: flex-end;
           padding-top: 12px;
-          border-top: 1px solid var(--border);
+          border-top: 1px solid var(--recall-border);
         }
         .onboarding__skip-btn {
           padding: 6px 14px;
           font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .onboarding__skip-btn:hover {
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
         }
         .onboarding__title {
           font-size: 22px;
@@ -319,7 +322,7 @@ export function Onboarding(props: OnboardingProps) {
         }
         .onboarding__subtitle {
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
           margin: 0;
         }
@@ -329,7 +332,7 @@ export function Onboarding(props: OnboardingProps) {
           margin: 0;
         }
         .onboarding__intro strong {
-          color: var(--text-primary);
+          color: var(--recall-text);
         }
         .onboarding__list {
           list-style: none;
@@ -343,16 +346,16 @@ export function Onboarding(props: OnboardingProps) {
           display: flex;
           gap: 12px;
           padding: 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
+          background-color: var(--recall-bg);
+          border-radius: var(--radius-md);
+          border: 1px solid var(--recall-border);
         }
         .onboarding__list-icon {
           flex-shrink: 0;
           width: 24px;
           height: 24px;
           border-radius: 50%;
-          background-color: var(--accent-green);
+          background-color: var(--recall-accent);
           color: white;
           display: inline-flex;
           align-items: center;
@@ -377,47 +380,47 @@ export function Onboarding(props: OnboardingProps) {
         .onboarding__actions button {
           padding: 8px 18px;
           font-size: 13px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
         }
         .onboarding__actions button.primary {
-          background-color: var(--accent-green);
+          background-color: var(--recall-accent);
           color: white;
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .onboarding__actions button.secondary {
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .onboarding__hint {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.5;
           margin: 0;
           font-style: italic;
         }
         .onboarding__status-banner {
           padding: 10px 12px;
-          border-radius: var(--radius-button);
+          border-radius: var(--radius-md);
           font-size: 12px;
           line-height: 1.5;
         }
         .onboarding__status-banner.is-success {
           background-color: rgba(76, 175, 80, 0.08);
-          color: var(--accent-green);
-          border: 1px solid var(--accent-green);
+          color: var(--recall-accent);
+          border: 1px solid var(--recall-accent);
         }
         .onboarding__status-banner.is-info {
-          background-color: var(--bg);
-          color: var(--text-secondary);
-          border: 1px solid var(--border);
+          background-color: var(--recall-bg);
+          color: var(--recall-text-muted);
+          border: 1px solid var(--recall-border);
         }
         .onboarding__privacy-summary {
-          background-color: var(--bg);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          background-color: var(--recall-bg);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 12px;
           font-size: 12px;
           line-height: 1.7;
@@ -433,9 +436,9 @@ export function Onboarding(props: OnboardingProps) {
           padding-left: 18px;
         }
         .onboarding__complete-summary {
-          background-color: var(--bg);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          background-color: var(--recall-bg);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 12px;
           font-size: 12px;
           line-height: 1.7;
@@ -500,7 +503,7 @@ function WelcomeStep(props: WelcomeStepProps) {
       </div>
 
       <p className="onboarding__hint">
-        引导将依次配置视觉模型、语言模型，并确认隐私默认设置。每一步都可跳过，后续可在设置中调整。
+        引导将依次配置视觉模型、语言模型，并确认隐私默认设置。每一步都可跳过，后续可在设置中调整。如果你使用支持视觉+语言的多模态模型（如 gpt-4o），可在设置中只配置一个多模态模型即可。
       </p>
 
       <div className="onboarding__actions">
@@ -520,14 +523,14 @@ function WelcomeStep(props: WelcomeStepProps) {
 // ============================================================================
 
 interface ModelStepProps {
-  kind: "vision" | "language";
+  kind: "vision" | "language" | "multimodal";
   alreadyConfigured: boolean;
   configs: import("../state/store").ModelConfigItem[];
   loading: boolean;
   error: string | null;
   onSave: (input: {
     id?: string;
-    kind: "vision" | "language";
+    kind: "vision" | "language" | "multimodal";
     providerName: string;
     endpoint: string;
     model: string;
@@ -536,7 +539,7 @@ interface ModelStepProps {
   }) => Promise<{ ok: boolean; warning?: string; error?: string }>;
   onDelete: (id: string) => Promise<{ ok: boolean; error?: string }>;
   onTest: (input: {
-    kind: "vision" | "language";
+    kind: "vision" | "language" | "multimodal";
     endpoint: string;
     model: string;
     apiKey: string;
@@ -548,7 +551,8 @@ interface ModelStepProps {
 
 function ModelStep(props: ModelStepProps) {
   const { kind, alreadyConfigured, onSave, onDelete, onTest, onSaved, onNext, onSkip } = props;
-  const kindLabel = kind === "vision" ? "视觉模型" : "语言模型";
+  const kindLabel =
+    kind === "vision" ? "视觉模型" : kind === "language" ? "语言模型" : "多模态模型";
 
   return (
     <div className="onboarding__model-step">
@@ -556,7 +560,9 @@ function ModelStep(props: ModelStepProps) {
       <p className="onboarding__subtitle">
         {kind === "vision"
           ? "视觉模型用于分析屏幕截图，识别窗口内容、实体和可能意图。需要支持 vision 的模型（如 gpt-4o / qwen-vl-max）。"
-          : "语言模型用于提取线索、构建场景、生成报告和回答用户问题。任何 OpenAI-compatible 模型均可。"}
+          : kind === "language"
+          ? "语言模型用于提取线索、构建场景、生成报告和回答用户问题。任何 OpenAI-compatible 模型均可。"
+          : "多模态模型同时支持视觉和语言任务，可替代分开配置的视觉模型与语言模型。需要支持 vision 的多模态模型（如 gpt-4o）。"}
       </p>
 
       {alreadyConfigured && (
@@ -667,11 +673,15 @@ function PrivacyStep(props: PrivacyStepProps) {
 interface CompleteStepProps {
   visionConfigured: boolean;
   languageConfigured: boolean;
+  multimodalConfigured: boolean;
   onComplete: () => void;
 }
 
 function CompleteStep(props: CompleteStepProps) {
-  const { visionConfigured, languageConfigured } = props;
+  const { visionConfigured, languageConfigured, multimodalConfigured } = props;
+
+  // 校验逻辑：配置了至少一个 multimodal 模型，或者同时配置了 vision + language，即视为通过
+  const hasValidModelConfig = multimodalConfigured || (visionConfigured && languageConfigured);
 
   return (
     <div className="onboarding__complete-step">
@@ -683,14 +693,15 @@ function CompleteStep(props: CompleteStepProps) {
       <div className="onboarding__complete-summary">
         <p><strong>视觉模型</strong>：{visionConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
         <p><strong>语言模型</strong>：{languageConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
+        <p><strong>多模态模型</strong>：{multimodalConfigured ? "已配置（可替代视觉+语言）" : "未配置（可在设置中后续完成）"}</p>
         <p><strong>隐私规则</strong>：已加载默认黑名单</p>
         <p><strong>截图保留</strong>：当天（次日启动时自动清理）</p>
         <p><strong>桌面通知</strong>：默认关闭</p>
       </div>
 
-      {!visionConfigured || !languageConfigured ? (
+      {!hasValidModelConfig ? (
         <p className="onboarding__hint">
-          提示：未配置模型时无法开始观察采集。请前往「设置 - 模型配置」完成配置。
+          提示：未配置可用模型时无法开始观察采集。请在「设置 - 模型配置」中配置一个多模态模型，或同时配置视觉模型与语言模型。
         </p>
       ) : (
         <p className="onboarding__hint">

@@ -19,6 +19,9 @@ import { getLocalTodayStartIso } from "./_helpers";
 
 /**
  * DB 行类型（JSON 字段为 string）
+ *
+ * V2 字段（008 迁移新增，均可空）：
+ * - user_facing_summary / likely_work_purpose / privacy_risk / reportable_signal
  */
 interface ObservationRow {
   id: string;
@@ -40,6 +43,11 @@ interface ObservationRow {
   screenshot_retention: string;
   screenshot_paths_json: string;
   created_at: string;
+  // 008 V2 字段
+  user_facing_summary: string | null;
+  likely_work_purpose: string | null;
+  privacy_risk: string | null;
+  reportable_signal: string | null;
 }
 
 export class ObservationRepository {
@@ -47,6 +55,9 @@ export class ObservationRepository {
 
   /**
    * 创建 observation
+   *
+   * V2 字段（userFacingSummary / likelyWorkPurpose / privacyRisk / reportableSignal）
+   * 来自 008 迁移，均可空。V1 写入路径不传这些字段时落库为 NULL。
    */
   create(input: CreateObservationInput): Observation {
     const id = input.id ?? generateId("obs");
@@ -60,8 +71,9 @@ export class ObservationRepository {
           visible_content_json, detected_entities_json,
           possible_intent, possible_tasks_json, possible_decisions_json,
           sensitivity, confidence, uncertainties_json,
-          screenshot_retention, screenshot_paths_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          screenshot_retention, screenshot_paths_json, created_at,
+          user_facing_summary, likely_work_purpose, privacy_risk, reportable_signal
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -82,7 +94,11 @@ export class ObservationRepository {
         JSON.stringify(input.uncertainties),
         input.screenshotRetention,
         JSON.stringify(input.screenshotPaths),
-        createdAt
+        createdAt,
+        input.userFacingSummary ?? null,
+        input.likelyWorkPurpose ?? null,
+        input.privacyRisk ?? null,
+        input.reportableSignal ?? null
       );
 
     return this.getById(id)!;
@@ -288,6 +304,11 @@ function mapRow(row: ObservationRow): Observation {
     screenshotRetention: row.screenshot_retention as ScreenshotRetentionPolicy,
     screenshotPaths: safeParseArray(row.screenshot_paths_json),
     createdAt: row.created_at,
+    // 008 V2 字段（null-safe）
+    userFacingSummary: row.user_facing_summary ?? null,
+    likelyWorkPurpose: row.likely_work_purpose ?? null,
+    privacyRisk: (row.privacy_risk as Observation["privacyRisk"]) ?? null,
+    reportableSignal: (row.reportable_signal as Observation["reportableSignal"]) ?? null,
   };
 }
 

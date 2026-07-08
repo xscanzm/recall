@@ -1,80 +1,99 @@
 // src/renderer/pages/TodayPage.tsx
-// 今日页（来自 08 文档 "今日页" 章节）
+// 今日页（Phase 3，doc 21）
 //
-// 重要约束：今日页是主界面，**不要做成聊天页**。
+// 三栏布局（AppShell 已提供 76px Sidebar，本页实现中间时间轴 + 右侧结果面板）：
+//   .today-page  ->  grid: minmax(560px, 1fr) 360px
 //
-// 模块布局（按 08 文档）：
-// 1. 今日概览（顶部，统计今日数量）
-// 2. 当前工作主线（最近 scene 摘要）
-// 3. 应用内提醒（右侧栏 - 在今日页内嵌显示）
-// 4. 待确认（proactive_items status=new 且 requiresUserConfirmation 或 type=needs_confirmation）
-// 5. 今日任务（type=task 的 facts 或 status=open 的 tasks）
-// 6. 今日决策（type=decision 的 facts 或 decisions）
-// 7. 日报草稿入口（按钮，跳转到报告页）
+// 中间主区域：TimelineHeader / TimelineToolbar / TimelineList
+// 右侧面板：TodaySidePanel（7 模块）或 WorkReportSelectionPanel（选择模式）
 //
-// 今日概览文案示例（来自 08 文档）：
-// "今天 Recall 识别到 5 段工作场景、18 条事实、6 个待办和 3 个决策。
-//  主要集中在 Recall 产品定义和 AI pipeline 设计。"
+// 状态：
+// - 模型错误：全页 ErrorState
+// - 暂停中：全页 EmptyState（恢复观察）
+// - 首次未开始：全页 EmptyState（开始观察 / 配置模型）
+// - 观察中：完整三栏布局
 //
-// 空状态（来自 08 文档，1:1 实现）：
-// - 首次未开始观察："回声还没有开始观察。配置模型并开启后，它会把今天的工作上下文整理成任务、进展和日报。"
-// - 暂停状态："已暂停。暂停期间不会采集窗口，也不会调用模型。"
-// - 模型错误："模型连接失败。请检查 endpoint、model 和 API Key。"
+// 重要约束（spec 第 14 节）：前台禁止出现 L0/L1/L2/Fact/Scene/Model job 等技术词。
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { PanelRight, RefreshCw } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { getIpc } from "../state/ipc";
 import { EmptyState } from "../components/EmptyState";
-import { LoadingSpinner, SkeletonList } from "../components/LoadingSpinner";
-import { LoadMorePager } from "../components/LoadMorePager";
-import {
-  FACT_TYPE_LABELS,
-  TASK_STATUS_LABELS,
-  confidenceLabel,
-} from "../app/naming";
+import { ErrorState } from "../components/ErrorState";
+import { TimelineHeader } from "./today/TimelineHeader";
+import { TimelineToolbar, type TimelineViewMode } from "./today/TimelineToolbar";
+import { TimelineList } from "./today/TimelineList";
+import { TodaySidePanel } from "./today/TodaySidePanel";
+import { WorkReportSelectionPanel } from "./today/WorkReportSelectionPanel";
+import { WorkReportPreviewModal } from "./today/WorkReportPreviewModal";
+import { friendlyDateLabel, isWorkCategory, todayDateKey } from "./today/helpers";
 
 export function TodayPage() {
-  const appStatus = useAppStore((s) => s.appStatus);
   const isReady = useAppStore((s) => s.isReady);
-  const todayData = useAppStore((s) => s.todayData);
-  const todayLoading = useAppStore((s) => s.todayLoading);
-  const todayError = useAppStore((s) => s.todayError);
-  const loadToday = useAppStore((s) => s.loadToday);
-  const loadReminders = useAppStore((s) => s.loadReminders);
-  const reminders = useAppStore((s) => s.reminders);
+  const appStatus = useAppStore((s) => s.appStatus);
+  const todayPageData = useAppStore((s) => s.todayPageData);
+  const todayPageLoading = useAppStore((s) => s.todayPageLoading);
+  const todayPageError = useAppStore((s) => s.todayPageError);
+  const todayPageDateKey = useAppStore((s) => s.todayPageDateKey);
+  const refreshTodayPageData = useAppStore((s) => s.refreshTodayPageData);
+  const rollOverTodayDateKeyIfNeeded = useAppStore(
+    (s) => s.rollOverTodayDateKeyIfNeeded
+  );
+  const workReportSelectionMode = useAppStore((s) => s.workReportSelectionMode);
+  const previewModalOpen = useAppStore((s) => s.previewModalOpen);
+  const ignoredBlockIds = useAppStore((s) => s.ignoredBlockIds);
+  const sidePanelDrawerOpen = useAppStore((s) => s.sidePanelDrawerOpen);
+  const setSidePanelDrawerOpen = useAppStore((s) => s.setSidePanelDrawerOpen);
   const setPage = useAppStore((s) => s.setPage);
-  const pendingJumpId = useAppStore((s) => s.pendingJumpId);
-  const pendingJumpType = useAppStore((s) => s.pendingJumpType);
-  const clearPendingJump = useAppStore((s) => s.clearPendingJump);
 
-  // 已开始观察时加载今日数据和提醒
-  useEffect(() => {
-    if (isReady && appStatus.observing && !appStatus.paused) {
-      void loadToday();
-      void loadReminders();
-    }
-  }, [isReady, appStatus.observing, appStatus.paused, loadToday, loadReminders]);
+  const [viewMode, setViewMode] = useState<TimelineViewMode>("segments");
+  const [onlyWork, setOnlyWork] = useState(false);
+  const [searchKeyword, setSearchKeyword] = useState("");
 
-  // 跨页面跳转：当从搜索页跳转到今日页时，滚动到对应元素并高亮
+  // 首次进入或 dateKey 变化时加载（选择模式中不重载，避免清空选区）
   useEffect(() => {
-    if (
-      pendingJumpId &&
-      (pendingJumpType === "observation" || pendingJumpType === "scene")
-    ) {
-      const el = document.getElementById(`item-${pendingJumpId}`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.add("highlight-jump");
-        setTimeout(() => el.classList.remove("highlight-jump"), 2000);
+    if (!isReady) return;
+    if (workReportSelectionMode) return;
+    // 跨日检测：如果 dateKey 已经不是今天，自动滚动到今天（store 内部会触发 load）
+    const rolledOver = rollOverTodayDateKeyIfNeeded();
+    if (rolledOver) return; // 滚动已触发 load，避免重复
+    void refreshTodayPageData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isReady, todayPageDateKey]);
+
+  // 跨日兜底 + 当天数据刷新：window focus 时
+  // - 先检查跨日（rollOver 内部会触发 load）
+  // - 未跨日则主动刷新当前 dateKey 数据（main 端 10 分钟定时器可能已写入新 timeline_blocks）
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!isReady) return;
+      if (workReportSelectionMode) return;
+      const rolledOver = rollOverTodayDateKeyIfNeeded();
+      if (!rolledOver) {
+        void refreshTodayPageData();
       }
-      clearPendingJump();
-    }
-  }, [pendingJumpId, pendingJumpType, clearPendingJump]);
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [isReady, workReportSelectionMode, rollOverTodayDateKeyIfNeeded, refreshTodayPageData]);
 
-  // 是否首次未开始观察（observing=false 且 paused=false）
-  const isFreshStart = !appStatus.observing && !appStatus.paused;
+  // 定时刷新：每 10 分钟刷新当前 dateKey 数据
+  // - 与 main 端 TimelineBuilder 调度周期对齐，新落盘的 blocks 能及时显示
+  // - 同时做跨日兜底检查
+  useEffect(() => {
+    if (!isReady) return;
+    const timer = setInterval(() => {
+      if (workReportSelectionMode) return;
+      const rolledOver = rollOverTodayDateKeyIfNeeded();
+      if (!rolledOver) {
+        void refreshTodayPageData();
+      }
+    }, 10 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, [isReady, workReportSelectionMode, rollOverTodayDateKeyIfNeeded, refreshTodayPageData]);
 
-  const handleStart = async () => {
+  const handleStartObserving = async () => {
     try {
       await getIpc().app.startObserving();
     } catch (err) {
@@ -82,605 +101,270 @@ export function TodayPage() {
     }
   };
 
-  const handleGoToSettings = () => {
-    setPage("settings");
-  };
+  const handleGoSettings = () => setPage("settings");
+  const handleRetry = () => void refreshTodayPageData();
 
-  const handleGoToReminders = () => {
-    setPage("reminders");
-  };
-
-  const handleGoToReports = () => {
-    setPage("reports");
-  };
+  // ---- 全页空状态 / 错误状态 ----
 
   if (!isReady) {
     return (
-      <div className="today-page today-page--loading">
-        <LoadingSpinner size="lg" label="正在加载 Recall..." />
+      <div className="today-page today-page--centered">
+        <p className="today-page__booting">正在加载 Recall...</p>
       </div>
     );
   }
 
-  // 状态：模型错误
+  // 模型错误（spec 13.1）
   if (appStatus.lastError || appStatus.pipelineState === "error") {
     return (
-      <div className="today-page">
-        <header className="page-header">
-          <h2>今日</h2>
-          <p className="page-header__sub">Recall 遇到了模型连接问题。</p>
-        </header>
-        <EmptyState
-          variant="modelError"
-          actions={
-            <button onClick={handleGoToSettings}>前往设置检查模型配置</button>
-          }
+      <div className="today-page today-page--centered">
+        <ErrorState
+          title="模型连接失败"
+          description="请检查 endpoint、model 和 API Key。"
+          primaryAction={{ label: "重试", onClick: handleRetry }}
+          secondaryAction={{ label: "去设置", onClick: handleGoSettings }}
         />
       </div>
     );
   }
 
-  // 状态：首次未开始观察
-  if (isFreshStart) {
-    return (
-      <div className="today-page today-page--empty">
-        <div className="empty-hero">
-          <div className="empty-hero__logo">
-            <span className="empty-hero__logo-zh">回声</span>
-            <span className="empty-hero__logo-en">Recall</span>
-          </div>
-          <h1 className="empty-hero__title">
-            回声还没有开始观察。
-          </h1>
-          <p className="empty-hero__subtitle">
-            配置模型并开启后，它会把今天的工作上下文整理成任务、进展和日报。
-          </p>
-          <ul className="empty-hero__list">
-            <li>截图仅作为模型输入，本地短期保留，可配置。</li>
-            <li>视觉模型和语言模型分开配置，使用你自己的 API Key。</li>
-            <li>API Key 通过系统安全存储保存，不会进入数据库或日志。</li>
-            <li>桌面通知默认关闭，应用内提醒默认开启。</li>
-          </ul>
-          <div className="empty-hero__actions">
-            <button className="primary" onClick={handleStart}>
-              开始观察
-            </button>
-            <button onClick={handleGoToSettings}>先配置模型</button>
-          </div>
-          <p className="empty-hero__note">
-            开始观察后，Recall 将安静地在后台工作。你可以随时暂停或忘掉最近一段时间的记忆。
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // 状态：已暂停
+  // 暂停中（spec 11.3）
   if (appStatus.paused) {
     return (
-      <div className="today-page today-page--paused">
-        <header className="page-header">
-          <h2>今日</h2>
-          <p className="page-header__sub">Recall 当前已暂停。</p>
-        </header>
+      <div className="today-page today-page--centered">
         <EmptyState
-          variant="paused"
-          actions={
-            <button className="primary" onClick={handleStart}>
-              恢复观察
-            </button>
-          }
-          hint="恢复后不会补采暂停期间的内容。"
+          title="Recall 已暂停"
+          description="暂停期间不会采集窗口，也不会调用模型。"
+          primaryAction={{ label: "恢复观察", onClick: handleStartObserving }}
         />
       </div>
     );
   }
 
-  // 状态：观察中，显示今日页完整内容
+  // 首次未开始观察（spec 11.1）
+  if (!appStatus.observing) {
+    return (
+      <div className="today-page today-page--centered">
+        <EmptyState
+          title="今天还没有记录"
+          description="开启观察后，Recall 会把你的电脑工作整理成时间轴、待收尾和日报素材。"
+          primaryAction={{ label: "开始观察", onClick: handleStartObserving }}
+          secondaryAction={{ label: "配置模型", onClick: handleGoSettings }}
+        />
+      </div>
+    );
+  }
+
+  // ---- 完整三栏布局 ----
+
   return (
-    <div className="today-page">
-      <header className="today-page__hero">
-        <h2>今日</h2>
-        <p className="today-page__hero-sub">
-          {appStatus.observing
-            ? "Recall 正在观察你的工作上下文。"
-            : "等待开始观察。"}
-        </p>
-      </header>
+    <TodayPageLayout
+      todayPageData={todayPageData}
+      todayPageLoading={todayPageLoading}
+      todayPageError={todayPageError}
+      todayPageDateKey={todayPageDateKey}
+      viewMode={viewMode}
+      onViewModeChange={setViewMode}
+      onlyWork={onlyWork}
+      onOnlyWorkChange={setOnlyWork}
+      searchKeyword={searchKeyword}
+      onSearchKeywordChange={setSearchKeyword}
+      ignoredBlockIds={ignoredBlockIds}
+      workReportSelectionMode={workReportSelectionMode}
+      previewModalOpen={previewModalOpen}
+      sidePanelDrawerOpen={sidePanelDrawerOpen}
+      onToggleDrawer={() => setSidePanelDrawerOpen(!sidePanelDrawerOpen)}
+      onRetry={handleRetry}
+      onGoSettings={handleGoSettings}
+    />
+  );
+}
 
-      {todayError && (
-        <div className="today-page__error">
-          <p>加载今日数据失败：{todayError}</p>
-          <button onClick={() => void loadToday()}>重试</button>
-        </div>
-      )}
+// ============================================================================
+// 三栏布局
+// ============================================================================
 
-      {todayLoading && todayData.observations.length === 0 ? (
-        <div className="today-page__skeleton">
-          <SkeletonList rows={4} />
-          <SkeletonList rows={3} />
-          <SkeletonList rows={2} />
-        </div>
-      ) : (
-        <TodayContent
-          todayData={todayData}
-          reminders={reminders}
-          onGoToReminders={handleGoToReminders}
-          onGoToReports={handleGoToReports}
+interface TodayPageLayoutProps {
+  todayPageData: ReturnType<typeof useAppStore.getState>["todayPageData"];
+  todayPageLoading: boolean;
+  todayPageError: string | null;
+  todayPageDateKey: string;
+  viewMode: TimelineViewMode;
+  onViewModeChange: (m: TimelineViewMode) => void;
+  onlyWork: boolean;
+  onOnlyWorkChange: (v: boolean) => void;
+  searchKeyword: string;
+  onSearchKeywordChange: (v: string) => void;
+  ignoredBlockIds: string[];
+  workReportSelectionMode: boolean;
+  previewModalOpen: boolean;
+  sidePanelDrawerOpen: boolean;
+  onToggleDrawer: () => void;
+  onRetry: () => void;
+  onGoSettings: () => void;
+}
+
+function TodayPageLayout(props: TodayPageLayoutProps) {
+  const {
+    todayPageData,
+    todayPageLoading,
+    todayPageError,
+    todayPageDateKey,
+    viewMode,
+    onViewModeChange,
+    onlyWork,
+    onOnlyWorkChange,
+    searchKeyword,
+    onSearchKeywordChange,
+    ignoredBlockIds,
+    workReportSelectionMode,
+    previewModalOpen,
+    sidePanelDrawerOpen,
+    onToggleDrawer,
+    onRetry,
+    onGoSettings,
+  } = props;
+
+  // 过滤时间轴：忽略列表 + 仅看工作 + 搜索，并按开始时间倒序（最近发生的事先看到）
+  const filteredBlocks = useMemo(() => {
+    if (!todayPageData) return [];
+    const ignored = new Set(ignoredBlockIds);
+    const kw = searchKeyword.trim().toLowerCase();
+    return todayPageData.timelineBlocks
+      .filter((b) => {
+        if (ignored.has(b.id)) return false;
+        if (onlyWork && !isWorkCategory(b.category)) return false;
+        if (kw) {
+          const hay = `${b.title} ${b.summary} ${b.projectNames.join(" ")} ${b.highlights.join(" ")}`.toLowerCase();
+          if (!hay.includes(kw)) return false;
+        }
+        return true;
+      })
+      .sort((a, b) => b.startAt.localeCompare(a.startAt));
+  }, [todayPageData, ignoredBlockIds, onlyWork, searchKeyword]);
+
+  const dayMainThread = todayPageData?.dayMainThread ?? "今天还没有整理出主线。";
+  const dateLabel = friendlyDateLabel(todayPageDateKey);
+
+  const showSkeleton = todayPageLoading && !todayPageData;
+  const showError = !todayPageLoading && todayPageError && !todayPageData;
+
+  return (
+    <div
+      className={`today-page${sidePanelDrawerOpen ? " is-drawer-open" : ""}${
+        workReportSelectionMode ? " is-select-mode" : ""
+      }`}
+    >
+      <main className="timeline-main" aria-label="今日时间轴">
+        <TimelineHeader dayMainThread={dayMainThread} dateLabel={dateLabel} />
+
+        <TimelineToolbar
+          dateKey={todayPageDateKey}
+          viewMode={viewMode}
+          onViewModeChange={onViewModeChange}
+          onlyWork={onlyWork}
+          onOnlyWorkChange={onOnlyWorkChange}
+          searchKeyword={searchKeyword}
+          onSearchKeywordChange={onSearchKeywordChange}
+        />
+
+        {/* 日期不是今天时的轻提示 */}
+        {todayPageDateKey !== todayDateKey() && (
+          <div className="timeline-hint">
+            正在查看 {dateLabel} 的记录。
+          </div>
+        )}
+
+        {showError ? (
+          <ErrorState
+            title="加载今日数据失败"
+            description={todayPageError ?? ""}
+            primaryAction={{ label: "重试", onClick: onRetry }}
+            secondaryAction={{ label: "去设置", onClick: onGoSettings }}
+          />
+        ) : (
+          <TimelineList
+            blocks={filteredBlocks}
+            loading={showSkeleton}
+            organizing={todayPageLoading && !!todayPageData && filteredBlocks.length === 0}
+            viewMode={viewMode}
+          />
+        )}
+
+        {/* 选择模式入口提示（非选择模式且无可入日报片段） */}
+        {!workReportSelectionMode &&
+          todayPageData &&
+          todayPageData.timelineBlocks.filter(
+            (b) => b.reportable && b.privateRisk !== "high"
+          ).length === 0 &&
+          todayPageData.timelineBlocks.length > 0 && (
+            <div className="timeline-hint timeline-hint--warn">
+              今天还没有适合写进工作日报的片段。你也可以手动选择时间轴中的工作内容。
+            </div>
+          )}
+      </main>
+
+      {/* 右侧面板：窄屏 drawer 切换按钮 */}
+      <button
+        type="button"
+        className="side-drawer-toggle"
+        onClick={onToggleDrawer}
+        aria-label={sidePanelDrawerOpen ? "收起结果面板" : "展开结果面板"}
+        title="结果面板"
+      >
+        <PanelRight size={16} />
+      </button>
+
+      {/* 右侧面板遮罩（窄屏 drawer 模式） */}
+      {sidePanelDrawerOpen && (
+        <div
+          className="side-drawer-mask"
+          onClick={onToggleDrawer}
+          aria-hidden="true"
         />
       )}
 
-      <style>{`
-        .today-page--empty {
-          height: 100%;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          padding: 24px;
-        }
-        .empty-hero {
-          max-width: 560px;
-          text-align: center;
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
-          padding: 40px 32px;
-          box-shadow: var(--shadow-sm);
-        }
-        .empty-hero__logo {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 2px;
-          margin-bottom: 24px;
-        }
-        .empty-hero__logo-zh {
-          font-size: 28px;
-          font-weight: 600;
-          color: var(--text-primary);
-          letter-spacing: 1px;
-        }
-        .empty-hero__logo-en {
-          font-size: 12px;
-          color: var(--text-secondary);
-          letter-spacing: 2px;
-          text-transform: uppercase;
-        }
-        .empty-hero__title {
-          font-size: 16px;
-          font-weight: 500;
-          color: var(--text-primary);
-          margin: 0 0 12px 0;
-          line-height: 1.6;
-        }
-        .empty-hero__subtitle {
-          font-size: 13px;
-          color: var(--text-secondary);
-          margin: 0 0 20px 0;
-        }
-        .empty-hero__list {
-          list-style: none;
-          padding: 0;
-          margin: 0 0 24px 0;
-          text-align: left;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-        .empty-hero__list li {
-          font-size: 12px;
-          color: var(--text-secondary);
-          padding-left: 16px;
-          position: relative;
-        }
-        .empty-hero__list li::before {
-          content: "";
-          position: absolute;
-          left: 4px;
-          top: 9px;
-          width: 4px;
-          height: 4px;
-          background-color: var(--accent-green);
-          border-radius: 50%;
-        }
-        .empty-hero__actions {
-          display: flex;
-          gap: 8px;
-          justify-content: center;
-          margin-bottom: 16px;
-        }
-        .empty-hero__note {
-          font-size: 11px;
-          color: var(--text-secondary);
-          margin: 0;
-        }
-        .today-page__error {
-          background-color: #fbeeeb;
-          border: 1px solid var(--danger);
-          border-radius: var(--radius-card);
-          padding: 12px 16px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          color: var(--danger);
-          font-size: 13px;
-        }
-        /* 跨页面跳转高亮动画 */
-        .highlight-jump {
-          animation: jump-highlight 2s ease-out;
-        }
-        @keyframes jump-highlight {
-          0% { background-color: var(--accent-amber); }
-          100% { background-color: transparent; }
-        }
-      `}</style>
+      {/* 右侧面板内容 */}
+      {todayPageData ? (
+        workReportSelectionMode ? (
+          <div className={`today-side-panel-wrap${sidePanelDrawerOpen ? " is-open" : ""}`}>
+            <WorkReportSelectionPanel data={todayPageData} />
+          </div>
+        ) : (
+          <div className={`today-side-panel-wrap${sidePanelDrawerOpen ? " is-open" : ""}`}>
+            <TodaySidePanel data={todayPageData} />
+          </div>
+        )
+      ) : (
+        <div className={`today-side-panel-wrap${sidePanelDrawerOpen ? " is-open" : ""}`}>
+          <aside className="today-side-panel today-side-panel--loading">
+            <div className="side-section">
+              <h2 className="side-section__title">今日主线</h2>
+              <div className="skeleton" style={{ width: "80%", height: 14 }} />
+              <div style={{ height: 6 }} />
+              <div className="skeleton" style={{ width: "60%", height: 14 }} />
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {/* 预览弹层 */}
+      {previewModalOpen && todayPageData && (
+        <WorkReportPreviewModal data={todayPageData} />
+      )}
+
+      {/* 重新加载浮动按钮（任何时候都允许手动刷新，及时拉取 main 端新落盘的 blocks） */}
+      {todayPageData && (
+        <button
+          type="button"
+          className="today-retry-fab"
+          onClick={onRetry}
+          title="刷新今日页"
+          aria-label="刷新今日页"
+        >
+          <RefreshCw size={16} />
+        </button>
+      )}
     </div>
   );
-}
-
-// ============================================================================
-// 今日页内容（7 个模块）
-// ============================================================================
-
-interface TodayContentProps {
-  todayData: ReturnType<typeof useAppStore.getState>["todayData"];
-  reminders: ReturnType<typeof useAppStore.getState>["reminders"];
-  onGoToReminders: () => void;
-  onGoToReports: () => void;
-}
-
-function TodayContent({
-  todayData,
-  reminders,
-  onGoToReminders,
-  onGoToReports,
-}: TodayContentProps) {
-  const { observations, facts, scenes, tasks, decisions, projects } = todayData;
-
-  // 今日任务：type=task 的 facts 或 status=open/in_progress 的 tasks
-  const todayTasks = useMemo(() => {
-    const taskFacts = facts.filter((f) => f.type === "task");
-    const openTasks = tasks.filter(
-      (t) => t.status === "open" || t.status === "in_progress" || t.status === "needs_confirmation"
-    );
-    return { taskFacts, openTasks };
-  }, [facts, tasks]);
-
-  // 今日决策：type=decision 的 facts 或 decisions 表
-  const todayDecisions = useMemo(() => {
-    const decisionFacts = facts.filter((f) => f.type === "decision");
-    return { decisionFacts, decisions };
-  }, [facts, decisions]);
-
-  // 待确认：requiresUserConfirmation 或 type=needs_confirmation 的 reminders
-  const pendingConfirmations = useMemo(() => {
-    return reminders.filter(
-      (r) =>
-        r.status === "new" &&
-        (r.requiresUserConfirmation ||
-          r.type === "needs_confirmation" ||
-          r.type === "decision_review")
-    );
-  }, [reminders]);
-
-  // 应用内提醒（new 状态的 reminders）
-  const inAppReminders = useMemo(() => {
-    return reminders.filter((r) => r.status === "new").slice(0, 5);
-  }, [reminders]);
-
-  // 当前工作主线：最近 scene 摘要（最多 2 个）
-  const recentScenes = useMemo(() => {
-    return [...scenes].sort((a, b) => b.startAt.localeCompare(a.startAt)).slice(0, 2);
-  }, [scenes]);
-
-  // 主要项目名（用于今日概览文案）
-  const focusProjectNames = useMemo(() => {
-    const names = new Set<string>();
-    projects.slice(0, 3).forEach((p) => names.add(p.name));
-    facts.forEach((f) => {
-      if (f.projectHint && names.size < 3) names.add(f.projectHint);
-    });
-    return Array.from(names).slice(0, 3);
-  }, [projects, facts]);
-
-  // 如果没有任何数据，显示空状态
-  const hasAnyData =
-    observations.length > 0 ||
-    facts.length > 0 ||
-    scenes.length > 0 ||
-    tasks.length > 0 ||
-    decisions.length > 0;
-
-  if (!hasAnyData) {
-    return (
-      <EmptyState
-        variant="noReport"
-        hint="Recall 正在观察，稍后会在这里显示今日概览。"
-      />
-    );
-  }
-
-  return (
-    <>
-      {/* 模块 1：今日概览 */}
-      <TodayOverview
-        sceneCount={scenes.length}
-        factCount={facts.length}
-        taskCount={todayTasks.taskFacts.length + todayTasks.openTasks.length}
-        decisionCount={todayDecisions.decisionFacts.length + todayDecisions.decisions.length}
-        focusProjects={focusProjectNames}
-      />
-
-      {/* 模块 2：当前工作主线 */}
-      <section className="today-section">
-        <h3 className="today-section__title">当前工作主线</h3>
-        {recentScenes.length === 0 ? (
-          <p className="state-loading">还没有识别到工作片段。</p>
-        ) : (
-          <div className="today-section__list">
-            {recentScenes.map((scene) => (
-              <div key={scene.id} id={`item-${scene.id}`} className="today-scene-block">
-                <h4 className="today-scene-block__title">{scene.title}</h4>
-                <p className="today-scene-block__summary">{scene.summary}</p>
-                <div className="today-scene-block__time">
-                  {formatTime(scene.startAt)} - {formatTime(scene.endAt)}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 模块 3：应用内提醒（今日页内嵌的右侧栏模拟） */}
-      <section className="today-section">
-        <h3 className="today-section__title">
-          应用内提醒
-          {inAppReminders.length > 0 && (
-            <span
-              className="today-section__title-link"
-              onClick={onGoToReminders}
-              role="button"
-              tabIndex={0}
-            >
-              查看全部
-            </span>
-          )}
-        </h3>
-        {inAppReminders.length === 0 ? (
-          <p className="state-loading">当前没有应用内提醒。</p>
-        ) : (
-          <div className="today-section__list">
-            {inAppReminders.map((r) => (
-              <div key={r.id} className="today-confirmation-row">
-                <div className="today-task-row__title">{r.title}</div>
-                <div className="today-confirmation-row__meta">
-                  <span>{r.reason}</span>
-                  {r.requiresUserConfirmation && <span>需确认</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 模块 4：待确认 */}
-      <section className="today-section">
-        <h3 className="today-section__title">待确认</h3>
-        {pendingConfirmations.length === 0 ? (
-          <p className="state-loading">没有待确认的内容。</p>
-        ) : (
-          <div className="today-section__list">
-            {pendingConfirmations.map((r) => (
-              <div key={r.id} className="today-confirmation-row">
-                <div className="today-task-row__title">{r.title}</div>
-                <div className="today-confirmation-row__meta">
-                  <span>置信度：{confidenceLabel(r.priority)}</span>
-                  <span>来源 {r.sourceFactIds.length} 条</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* 模块 5：今日任务（分页，每页 20 条，来自 06 文档"性能原则"） */}
-      <section className="today-section">
-        <h3 className="today-section__title">今日任务</h3>
-        {todayTasks.taskFacts.length === 0 && todayTasks.openTasks.length === 0 ? (
-          <p className="state-loading">今天还没有识别到任务。</p>
-        ) : (
-          <LoadMorePager
-            items={[...todayTasks.openTasks, ...todayTasks.taskFacts]}
-            pageSize={20}
-            emptyLabel="今天还没有识别到任务。"
-            renderItem={(item, idx) => {
-              // openTasks 在前，taskFacts 在后
-              const isTask = idx < todayTasks.openTasks.length;
-              if (isTask) {
-                const task = item as typeof todayTasks.openTasks[number];
-                return (
-                  <div key={task.id} className="today-task-row">
-                    <div className="today-task-row__title">{task.title}</div>
-                    <div className="today-task-row__meta">
-                      <span>{TASK_STATUS_LABELS[task.status] ?? task.status}</span>
-                      {task.dueHint && <span>截止：{task.dueHint}</span>}
-                      <span>置信度：{confidenceLabel(task.confidence)}</span>
-                    </div>
-                  </div>
-                );
-              }
-              const fact = item as typeof todayTasks.taskFacts[number];
-              return (
-                <div key={fact.id} className="today-task-row">
-                  <div className="today-task-row__title">{fact.content}</div>
-                  <div className="today-task-row__meta">
-                    <span>{FACT_TYPE_LABELS[fact.type] ?? "任务"}</span>
-                    {fact.status && <span>{TASK_STATUS_LABELS[fact.status] ?? fact.status}</span>}
-                    <span>置信度：{confidenceLabel(fact.confidence)}</span>
-                  </div>
-                </div>
-              );
-            }}
-          />
-        )}
-      </section>
-
-      {/* 模块 6：今日决策（分页，每页 20 条） */}
-      <section className="today-section">
-        <h3 className="today-section__title">今日决策</h3>
-        {todayDecisions.decisionFacts.length === 0 &&
-        todayDecisions.decisions.length === 0 ? (
-          <p className="state-loading">今天还没有识别到决策。</p>
-        ) : (
-          <LoadMorePager
-            items={[...todayDecisions.decisions, ...todayDecisions.decisionFacts]}
-            pageSize={20}
-            emptyLabel="今天还没有识别到决策。"
-            renderItem={(item, idx) => {
-              const isDecision = idx < todayDecisions.decisions.length;
-              if (isDecision) {
-                const d = item as typeof todayDecisions.decisions[number];
-                return (
-                  <div key={d.id} className="today-decision-row">
-                    <div className="today-decision-row__title">{d.title}</div>
-                    <div className="today-decision-row__meta">
-                      <span>置信度：{confidenceLabel(d.confidence)}</span>
-                      {d.decidedAt && <span>{formatDate(d.decidedAt)}</span>}
-                    </div>
-                  </div>
-                );
-              }
-              const fact = item as typeof todayDecisions.decisionFacts[number];
-              return (
-                <div key={fact.id} className="today-decision-row">
-                  <div className="today-decision-row__title">{fact.content}</div>
-                  <div className="today-decision-row__meta">
-                    <span>置信度：{confidenceLabel(fact.confidence)}</span>
-                  </div>
-                </div>
-              );
-            }}
-          />
-        )}
-      </section>
-
-      {/* 模块 7：日报草稿入口 */}
-      <section className="today-section">
-        <h3 className="today-section__title">日报草稿</h3>
-        <div className="today-report-entry">
-          <div>
-            <p className="today-report-entry__hint">
-              {hasAnyData
-                ? "Recall 已整理今日工作上下文，可以生成日报草稿。"
-                : "今天还没有足够记忆生成日报。"}
-            </p>
-            <p className="today-report-entry__sub">
-              日报基于结构化记忆生成，不直接引用截图。
-            </p>
-          </div>
-          <button className="primary" onClick={onGoToReports}>
-            生成日报
-          </button>
-        </div>
-      </section>
-    </>
-  );
-}
-
-// ============================================================================
-// 今日概览模块
-// ============================================================================
-
-interface TodayOverviewProps {
-  sceneCount: number;
-  factCount: number;
-  taskCount: number;
-  decisionCount: number;
-  focusProjects: string[];
-}
-
-/**
- * 今日概览（来自 08 文档示例文案）
- *
- * 文案示例：
- * "今天 Recall 识别到 5 段工作场景、18 条事实、6 个待办和 3 个决策。
- *  主要集中在 Recall 产品定义和 AI pipeline 设计。"
- */
-function TodayOverview({
-  sceneCount,
-  factCount,
-  taskCount,
-  decisionCount,
-  focusProjects,
-}: TodayOverviewProps) {
-  const hasData =
-    sceneCount > 0 || factCount > 0 || taskCount > 0 || decisionCount > 0;
-
-  return (
-    <section className="today-overview">
-      {hasData ? (
-        <>
-          <p className="today-overview__headline">
-            今天 Recall 识别到 <strong>{sceneCount}</strong> 段工作场景、
-            <strong>{factCount}</strong> 条线索、<strong>{taskCount}</strong> 个待办和
-            <strong>{decisionCount}</strong> 个决策。
-          </p>
-          {focusProjects.length > 0 && (
-            <p className="today-overview__focus">
-              主要集中在 {focusProjects.join("、")}。
-            </p>
-          )}
-          <div className="today-overview__stats">
-            <div className="today-overview__stat">
-              <span className="today-overview__stat-num">{sceneCount}</span>
-              <span className="today-overview__stat-label">工作场景</span>
-            </div>
-            <div className="today-overview__stat">
-              <span className="today-overview__stat-num">{factCount}</span>
-              <span className="today-overview__stat-label">线索</span>
-            </div>
-            <div className="today-overview__stat">
-              <span className="today-overview__stat-num">{taskCount}</span>
-              <span className="today-overview__stat-label">待办</span>
-            </div>
-            <div className="today-overview__stat">
-              <span className="today-overview__stat-num">{decisionCount}</span>
-              <span className="today-overview__stat-label">决策</span>
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="today-overview__headline">
-            今天 Recall 还没有识别到工作场景。
-          </p>
-          <p className="today-overview__focus">
-            继续工作一会儿，或检查模型配置是否正确。
-          </p>
-        </>
-      )}
-    </section>
-  );
-}
-
-// ============================================================================
-// 辅助函数
-// ============================================================================
-
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
-  } catch {
-    return "";
-  }
-}
-
-function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("zh-CN");
-  } catch {
-    return "";
-  }
 }

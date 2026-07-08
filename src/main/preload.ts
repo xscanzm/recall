@@ -11,7 +11,7 @@
 // - API Key 不通过此桥暴露
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from "electron";
-import type { AppStatus } from "../shared/types";
+import type { AppStatus, IpcResult } from "../shared/types";
 
 /**
  * Renderer 调用的 IPC API 表面
@@ -44,7 +44,7 @@ const recallApi = {
   // -------------------- model --------------------
   model: {
     testConnection: (input: {
-      kind: "vision" | "language";
+      kind: "vision" | "language" | "multimodal";
       endpoint: string;
       model: string;
       apiKey: string;
@@ -52,13 +52,13 @@ const recallApi = {
       ipcRenderer.invoke("model:testConnection", input),
     // M8 新增：列出模型配置（不返回 API Key）
     listConfigs: <T>(input?: {
-      kind?: "vision" | "language";
+      kind?: "vision" | "language" | "multimodal";
       enabled?: boolean;
     }): Promise<T[]> => ipcRenderer.invoke("model:listConfigs", input),
     // M8 新增：保存模型配置（创建或更新），apiKey 可选（不传则保留原 key）
     saveConfig: (input: {
       id?: string;
-      kind: "vision" | "language";
+      kind: "vision" | "language" | "multimodal";
       providerName: string;
       endpoint: string;
       model: string;
@@ -146,8 +146,36 @@ const recallApi = {
       fromId: string;
       toId: string;
       reason?: string;
-    }): Promise<{ ok: true; merged: { ok: true; fromId: string; toId: string; objectType: string } }> =>
-      ipcRenderer.invoke("memory:mergeObjects", input),
+    }): Promise<{
+      ok: true;
+      merged: {
+        ok: true;
+        fromId: string;
+        toId: string;
+        objectType: string;
+        rewrittenFactsCount: number;
+        rewrittenScenesCount: number;
+        mergedAliases: string[];
+      };
+    }> => ipcRenderer.invoke("memory:mergeObjects", input),
+    // 012/013 新增：合并建议列表
+    listMergeSuggestions: (input?: {
+      status?: "new" | "confirmed" | "ignored" | "all";
+      limit?: number;
+    }): Promise<{ ok: true; items: unknown[] }> =>
+      ipcRenderer.invoke("memory:listMergeSuggestions", input ?? {}),
+    // 012/013 新增：拒绝某个 merge_suggestion
+    rejectMergeSuggestion: (input: { id: string }): Promise<{ ok: true }> =>
+      ipcRenderer.invoke("memory:rejectMergeSuggestion", input),
+    // 012/013 新增：列出所有已知别名
+    listAllAliases: (): Promise<{
+      ok: true;
+      projects: Array<{ id: string; name: string; aliases: string[] }>;
+      people: Array<{ id: string; name: string; aliases: string[] }>;
+    }> => ipcRenderer.invoke("memory:listAllAliases"),
+    // 012 新增：列出所有人物 / 项目（人物/项目页用）
+    listPeople: <T>(): Promise<{ ok: true; people: T[] }> => ipcRenderer.invoke("memory:listPeople"),
+    listProjects: <T>(): Promise<{ ok: true; projects: T[] }> => ipcRenderer.invoke("memory:listProjects"),
   },
 
   // -------------------- reminders --------------------
@@ -162,12 +190,15 @@ const recallApi = {
     list: <T>(input?: unknown): Promise<T[]> => ipcRenderer.invoke("reports:list", input),
     get: <T>(input: { id: string }): Promise<T | null> => ipcRenderer.invoke("reports:get", input),
     generate: (input: {
-      type: "daily" | "weekly" | "retrospective";
+      type: "daily" | "weekly" | "monthly" | "retrospective";
       dateKey: string;
+      projectId?: string;
     }): Promise<{ ok: boolean; reportId?: string; code?: string; message?: string }> =>
       ipcRenderer.invoke("reports:generate", input),
     update: (input: { id: string; contentJson: string }): Promise<{ ok: true; report?: unknown }> =>
       ipcRenderer.invoke("reports:update", input),
+    delete: (input: { id: string }): Promise<boolean> =>
+      ipcRenderer.invoke("reports:delete", input),
   },
 
   // -------------------- capture --------------------
@@ -177,6 +208,12 @@ const recallApi = {
       deletedObservations: number;
       deletedScreenshots: number;
     }> => ipcRenderer.invoke("capture:forgetRecent", input),
+  },
+
+  // -------------------- screenshot --------------------
+  screenshot: {
+    clear: (): Promise<{ ok: true; deletedScreenshots: number }> =>
+      ipcRenderer.invoke("screenshot:clear"),
   },
 
   // -------------------- data（M8 新增） --------------------
@@ -208,6 +245,73 @@ const recallApi = {
     // 查询截图缓存当前大小
     getCacheSize: (): Promise<{ ok: true; bytes: number; fileCount: number }> =>
       ipcRenderer.invoke("data:getCacheSize"),
+  },
+
+  // -------------------- Phase 2 新增：timeline / personalReview / workReport / unfinishedThreads --------------------
+  /**
+   * timeline：今日时间轴
+   * - build：触发 TimelineBuilder 生成当天时间轴（调用 LLM）
+   * - get：获取当天已持久化的 timeline blocks（不调用 LLM）
+   */
+  timeline: {
+    build: (dateKey: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("timeline:build", dateKey),
+    get: (dateKey: string): Promise<IpcResult<unknown[]>> =>
+      ipcRenderer.invoke("timeline:get", dateKey),
+  },
+
+  /**
+   * personalReview：个人复盘
+   * - generate：生成给用户自己看的今日复盘（type=personal_daily_review）
+   * - get：获取已生成的个人复盘（按 dateKey 查询）
+   */
+  personalReview: {
+    generate: (dateKey: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("personalReview:generate", dateKey),
+    get: (dateKey: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("personalReview:get", dateKey),
+  },
+
+  /**
+   * workReport：工作日报
+   * - generate：基于用户选中的 TimelineBlock 生成工作日报（type=work_daily_report）
+   * - get：获取已生成的工作日报
+   * - saveSelection：保存用户选区（不生成日报）
+   */
+  workReport: {
+    generate: (input: {
+      dateKey: string;
+      selectedBlockIds: string[];
+      style: "brief" | "standard" | "formal";
+      recipientHint?: "manager" | "team" | "client" | "self";
+    }): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("workReport:generate", input),
+    get: (dateKey: string): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("workReport:get", dateKey),
+    saveSelection: (input: {
+      dateKey: string;
+      selectedBlockIds: string[];
+      excludedBlockIds: string[];
+    }): Promise<IpcResult<null>> =>
+      ipcRenderer.invoke("workReport:saveSelection", input),
+  },
+
+  /**
+   * unfinishedThreads：待收尾列表
+   * - list：查询待收尾（按 status / dateKey 过滤，默认返回 open）
+   * - updateStatus：更新状态（open / done / snoozed / ignored）
+   */
+  unfinishedThreads: {
+    list: (input?: {
+      dateKey?: string;
+      status?: "open" | "done" | "snoozed" | "ignored";
+    }): Promise<IpcResult<unknown[]>> =>
+      ipcRenderer.invoke("unfinishedThreads:list", input),
+    updateStatus: (input: {
+      id: string;
+      status: "open" | "done" | "snoozed" | "ignored";
+    }): Promise<IpcResult<null>> =>
+      ipcRenderer.invoke("unfinishedThreads:updateStatus", input),
   },
 };
 

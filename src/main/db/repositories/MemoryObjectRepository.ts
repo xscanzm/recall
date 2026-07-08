@@ -62,6 +62,8 @@ interface PersonRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  // 012 字段：别名列表（合并过的旧名字）
+  aliases_json: string | null;
 }
 
 interface DecisionRow {
@@ -117,8 +119,8 @@ export class MemoryObjectRepository {
         `INSERT INTO projects (
           id, name, summary, status, last_active_at,
           source_fact_ids_json, source_scene_ids_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, aliases_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -129,7 +131,8 @@ export class MemoryObjectRepository {
         JSON.stringify(input.sourceFactIds),
         JSON.stringify(input.sourceSceneIds),
         now,
-        now
+        now,
+        input.aliases ? JSON.stringify(input.aliases) : null
       );
     return this.getProjectById(id)!;
   }
@@ -200,6 +203,11 @@ export class MemoryObjectRepository {
     if (patch.lastActiveAt !== undefined) { sets.push("last_active_at = ?"); params.push(patch.lastActiveAt); }
     if (patch.sourceFactIds !== undefined) { sets.push("source_fact_ids_json = ?"); params.push(JSON.stringify(patch.sourceFactIds)); }
     if (patch.sourceSceneIds !== undefined) { sets.push("source_scene_ids_json = ?"); params.push(JSON.stringify(patch.sourceSceneIds)); }
+    // 012 字段：合并项目时把 from.name 写入 to.aliases
+    if (patch.aliases !== undefined) {
+      sets.push("aliases_json = ?");
+      params.push(patch.aliases.length > 0 ? JSON.stringify(patch.aliases) : null);
+    }
     if (sets.length === 0) return this.getProjectById(id);
     sets.push("updated_at = ?");
     params.push(new Date().toISOString());
@@ -356,8 +364,8 @@ export class MemoryObjectRepository {
         `INSERT INTO people (
           id, name, role, organization, summary,
           related_project_ids_json, source_fact_ids_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, aliases_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -368,7 +376,8 @@ export class MemoryObjectRepository {
         JSON.stringify(input.relatedProjectIds),
         JSON.stringify(input.sourceFactIds),
         now,
-        now
+        now,
+        input.aliases ? JSON.stringify(input.aliases) : null
       );
     return this.getPersonById(id)!;
   }
@@ -426,12 +435,24 @@ export class MemoryObjectRepository {
     if (patch.summary !== undefined) { sets.push("summary = ?"); params.push(patch.summary); }
     if (patch.relatedProjectIds !== undefined) { sets.push("related_project_ids_json = ?"); params.push(JSON.stringify(patch.relatedProjectIds)); }
     if (patch.sourceFactIds !== undefined) { sets.push("source_fact_ids_json = ?"); params.push(JSON.stringify(patch.sourceFactIds)); }
+    if (patch.aliases !== undefined) {
+      sets.push("aliases_json = ?");
+      params.push(patch.aliases.length > 0 ? JSON.stringify(patch.aliases) : null);
+    }
     if (sets.length === 0) return this.getPersonById(id);
     sets.push("updated_at = ?");
     params.push(new Date().toISOString());
     params.push(id);
     this.db.prepare(`UPDATE people SET ${sets.join(", ")} WHERE id = ?`).run(...params);
     return this.getPersonById(id);
+  }
+
+  /**
+   * 012 新增：把别名合并进 to 人物的 aliases_json（去重 + 不重复 to.name）
+   * - 用于 mergeObjects：把 from.name 追加到 to.aliases
+   */
+  setPersonAliases(id: string, aliases: string[]): Person | null {
+    return this.updatePerson(id, { aliases });
   }
 
   softDeletePerson(id: string): boolean {
@@ -719,6 +740,48 @@ export class MemoryObjectRepository {
       .run(JSON.stringify(newIds), new Date().toISOString(), id);
     return result.changes > 0;
   }
+
+  // ============================================================================
+  // 012 新增：别名（aliases）相关方法
+  // 用于 mergeObjects 和 prompt 注入
+  // ============================================================================
+
+  /**
+   * 列出所有 active 项目的 (id, name, aliases) 三元组
+   * - 仅未归档
+   * - aliases 字段为 aliases_json 解析后的字符串数组
+   * - 用于 Linker / Extractor prompt 注入"已知项目名 + 别名"段
+   */
+  listProjectAliases(): Array<{ id: string; name: string; aliases: string[] }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, name, aliases_json FROM projects WHERE archived_at IS NULL AND status = 'active' ORDER BY updated_at DESC`
+      )
+      .all() as Array<{ id: string; name: string; aliases_json: string | null }>;
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      aliases: r.aliases_json ? safeParseArray<string>(r.aliases_json) : [],
+    }));
+  }
+
+  /**
+   * 列出所有未删除人物的 (id, name, aliases) 三元组
+   * - aliases 字段为 aliases_json 解析后的字符串数组
+   * - 用于 Linker / Extractor prompt 注入"已知人物名 + 别名"段
+   */
+  listPersonAliases(): Array<{ id: string; name: string; aliases: string[] }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, name, aliases_json FROM people WHERE deleted_at IS NULL ORDER BY updated_at DESC`
+      )
+      .all() as Array<{ id: string; name: string; aliases_json: string | null }>;
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      aliases: r.aliases_json ? safeParseArray<string>(r.aliases_json) : [],
+    }));
+  }
 }
 
 export function createMemoryObjectRepository(db: DB): MemoryObjectRepository {
@@ -778,6 +841,8 @@ function mapPersonRow(row: PersonRow): Person {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    // 012 字段
+    aliases: row.aliases_json ? safeParseArray<string>(row.aliases_json) : [],
   };
 }
 

@@ -1,312 +1,271 @@
 // src/renderer/pages/TasksPage.tsx
-// 任务页（来自 spec.md "任务页"章节）
+// 待收尾页（spec.md Phase 5 / doc 24）
 //
-// 功能：
-// - 任务按状态分组：进行中/未完成/可能已完成/阻塞/待确认/已完成
-// - 每任务显示：标题/项目/最近证据/状态/优先级/更新时间
-// - 操作：标记完成/改项目/编辑标题/删除/查看来源/纠错
+// 目标：帮用户找回"今天或近期可能还没处理完的事情"。
+// 不是传统任务管理器。
+//
+// 5 分组：
+// 1. 今天要看一眼 — 当天 open
+// 2. 近期未收尾 — 近 7 天 open（排除今天）
+// 3. 可能已完成，待确认 — priority=low 且超过 7 天的 open
+// 4. 已完成 — status=done
+// 5. 已忽略 — status=ignored
+//
+// 每条待收尾卡片含：标题 / 原因 / 建议下一步 / 项目标签 + 最近出现时间 / 操作按钮
+// 操作：标记完成 / 稍后 / 忽略 / 改项目 / 查看来源
 //
 // 重要约束：
-// - soft delete 优先
+// - 每条待收尾都有原因和建议下一步
+// - 不把所有 facts 都变成待收尾
+// - 不出现"检测到用户未完成任务"等技术化文案
 // - 不使用 emoji
-// - 中文注释
-// - 不暴露 L0/L1/L2/L3 术语
 
 import { useEffect, useMemo, useState } from "react";
-import { useAppStore, type TaskItem } from "../state/store";
-import { TaskRow } from "../components/TaskRow";
-import { CorrectionDialog } from "../components/CorrectionDialog";
-import { TASK_STATUS_LABELS, NAMING } from "../app/naming";
+import {
+  Check,
+  Clock,
+  X,
+  FolderKanban,
+  Link2,
+} from "lucide-react";
+import type { UnfinishedThread } from "../../shared/types";
+import { useAppStore } from "../state/store";
+import { Button } from "../components/Button";
+import { Tag } from "../components/Tag";
+import { EmptyState } from "../components/EmptyState";
+import { ErrorState } from "../components/ErrorState";
+import { Loading } from "../components/Loading";
 
-/**
- * 任务状态分组顺序（来自 spec.md）
- * 与 TASK_STATUS_LABELS 一致，但分组顺序按"待办优先"
- */
-const STATUS_GROUPS: Array<{
-  status: string;
-  label: string;
-  emptyHint: string;
-}> = [
-  {
-    status: "in_progress",
-    label: TASK_STATUS_LABELS.in_progress,
-    emptyHint: "没有进行中的任务",
-  },
-  {
-    status: "open",
-    label: TASK_STATUS_LABELS.open,
-    emptyHint: "没有未完成的任务",
-  },
-  {
-    status: "likely_done",
-    label: TASK_STATUS_LABELS.likely_done,
-    emptyHint: "没有可能已完成的任务",
-  },
-  {
-    status: "blocked",
-    label: TASK_STATUS_LABELS.blocked,
-    emptyHint: "没有阻塞的任务",
-  },
-  {
-    status: "needs_confirmation",
-    label: TASK_STATUS_LABELS.needs_confirmation,
-    emptyHint: "没有待确认的任务",
-  },
-  {
-    status: "done",
-    label: TASK_STATUS_LABELS.done,
-    emptyHint: "没有已完成的任务",
-  },
-];
+// ============================================================================
+// 日期辅助
+// ============================================================================
 
-/**
- * 编辑任务的内联表单
- */
-interface EditState {
-  id: string;
-  mode: "title" | "project";
-  value: string;
+/** 生成本地时区的 dateKey（YYYY-MM-DD） */
+function todayDateKey(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
+
+/** 将 ISO 时间字符串转为本地时区 dateKey（YYYY-MM-DD） */
+function isoToDateKey(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** 判断 ISO 时间是否属于今天 */
+function isToday(iso: string | undefined): boolean {
+  return isoToDateKey(iso) === todayDateKey();
+}
+
+/** 判断 ISO 时间是否在最近 N 天内（含今天） */
+function isWithinDays(iso: string | undefined, days: number): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return false;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  return t >= cutoff;
+}
+
+/** 友好时间格式：今天显示 HH:MM，其它显示 MM-DD HH:MM */
+function formatSeenAt(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  if (isToday(iso)) return `今天 ${hh}:${mm}`;
+  const m = (d.getMonth() + 1).toString().padStart(2, "0");
+  const day = d.getDate().toString().padStart(2, "0");
+  return `${m}-${day} ${hh}:${mm}`;
+}
+
+// ============================================================================
+// 分组定义
+// ============================================================================
+
+interface GroupDef {
+  key: string;
+  title: string;
+  threads: UnfinishedThread[];
+}
+
+/**
+ * 将待收尾列表按 5 分组归类。
+ * 依赖 lastSeenAt 作为日期判定（UnfinishedThread 类型未暴露 dateKey）。
+ */
+function groupThreads(threads: UnfinishedThread[]): GroupDef[] {
+  const today: UnfinishedThread[] = [];
+  const recent: UnfinishedThread[] = [];
+  const maybeDone: UnfinishedThread[] = [];
+  const done: UnfinishedThread[] = [];
+  const ignored: UnfinishedThread[] = [];
+
+  for (const t of threads) {
+    if (t.status === "done") {
+      done.push(t);
+    } else if (t.status === "ignored") {
+      ignored.push(t);
+    } else if (t.status === "open") {
+      if (isToday(t.lastSeenAt)) {
+        today.push(t);
+      } else if (isWithinDays(t.lastSeenAt, 7)) {
+        recent.push(t);
+      } else if (t.priority === "low") {
+        // 超过 7 天且低优先级：可能已完成，待确认
+        maybeDone.push(t);
+      } else {
+        // 超过 7 天但非低优先级：仍归入近期未收尾
+        recent.push(t);
+      }
+    }
+    // snoozed：暂时隐藏，不显示在任何分组
+  }
+
+  // 每组内按 priority 降序（high > medium > low），再按 lastSeenAt 降序
+  const priorityRank: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  const sortFn = (a: UnfinishedThread, b: UnfinishedThread): number => {
+    const pa = priorityRank[a.priority] ?? 3;
+    const pb = priorityRank[b.priority] ?? 3;
+    if (pa !== pb) return pa - pb;
+    return (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? "");
+  };
+  today.sort(sortFn);
+  recent.sort(sortFn);
+  maybeDone.sort(sortFn);
+  done.sort(sortFn);
+  ignored.sort(sortFn);
+
+  return [
+    { key: "today", title: "今天要看一眼", threads: today },
+    { key: "recent", title: "近期未收尾", threads: recent },
+    { key: "maybe-done", title: "可能已完成，待确认", threads: maybeDone },
+    { key: "done", title: "已完成", threads: done },
+    { key: "ignored", title: "已忽略", threads: ignored },
+  ];
+}
+
+// ============================================================================
+// 来源查看弹窗
+// ============================================================================
+
+interface SourceDialogState {
+  thread: UnfinishedThread;
+}
+
+// ============================================================================
+// 主组件
+// ============================================================================
 
 export function TasksPage() {
   const isReady = useAppStore((s) => s.isReady);
-  const todayData = useAppStore((s) => s.todayData);
-  const todayLoading = useAppStore((s) => s.todayLoading);
-  const todayError = useAppStore((s) => s.todayError);
-  const loadToday = useAppStore((s) => s.loadToday);
-  const updateTask = useAppStore((s) => s.updateTask);
-  const deleteObject = useAppStore((s) => s.deleteObject);
-  const projects = useAppStore((s) => s.todayData.projects);
-  const setPage = useAppStore((s) => s.setPage);
+  const threads = useAppStore((s) => s.unfinishedThreads);
+  const loading = useAppStore((s) => s.unfinishedLoading);
+  const error = useAppStore((s) => s.unfinishedError);
+  const loadUnfinished = useAppStore((s) => s.loadUnfinishedThreads);
+  const updateStatus = useAppStore((s) => s.updateUnfinishedStatus);
 
-  const [editState, setEditState] = useState<EditState | null>(null);
-  const [correctionTarget, setCorrectionTarget] = useState<{
-    targetType: "task";
-    targetId: string;
-  } | null>(null);
+  const [sourceDialog, setSourceDialog] = useState<SourceDialogState | null>(null);
+  // 改项目入口（预留）：当前仅提示，spec 允许后置
+  const [projectHintId, setProjectHintId] = useState<string | null>(null);
 
-  // 进入页面时加载今日数据
   useEffect(() => {
     if (isReady) {
-      void loadToday();
+      void loadUnfinished();
     }
-  }, [isReady, loadToday]);
+  }, [isReady, loadUnfinished]);
 
-  // 构建项目 ID -> 项目名 映射
-  const projectNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of projects) {
-      map.set(p.id, p.name);
-    }
-    return map;
-  }, [projects]);
+  const groups = useMemo(() => groupThreads(threads), [threads]);
+  const visibleCount = groups.reduce((sum, g) => sum + g.threads.length, 0);
 
-  // 过滤未删除的任务
-  const activeTasks = useMemo(() => {
-    return todayData.tasks.filter((t) => !t.deletedAt);
-  }, [todayData.tasks]);
-
-  // 按状态分组
-  const tasksByStatus = useMemo(() => {
-    const groups = new Map<string, TaskItem[]>();
-    for (const task of activeTasks) {
-      const list = groups.get(task.status) ?? [];
-      list.push(task);
-      groups.set(task.status, list);
-    }
-    // 每组内按 updated_at 降序
-    for (const list of groups.values()) {
-      list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    }
-    return groups;
-  }, [activeTasks]);
-
-  // 操作处理
-  const handleComplete = async (id: string) => {
-    try {
-      await updateTask(id, { status: "done", completedAt: new Date().toISOString() });
-    } catch (err) {
-      console.error("标记完成失败:", err);
-    }
+  // ---- 操作处理 ----
+  const handleMarkDone = (id: string) => {
+    void updateStatus(id, "done");
   };
-
-  const handleEdit = (id: string) => {
-    const task = activeTasks.find((t) => t.id === id);
-    setEditState({
-      id,
-      mode: "title",
-      value: task?.title ?? "",
-    });
+  const handleSnooze = (id: string) => {
+    void updateStatus(id, "snoozed");
   };
-
+  const handleIgnore = (id: string) => {
+    void updateStatus(id, "ignored");
+  };
   const handleChangeProject = (id: string) => {
-    const task = activeTasks.find((t) => t.id === id);
-    setEditState({
-      id,
-      mode: "project",
-      value: task?.projectId ?? "",
-    });
+    // 预留入口：当前仅提示用户功能尚在规划
+    setProjectHintId(id);
+    window.setTimeout(() => setProjectHintId(null), 2400);
+  };
+  const handleViewSource = (thread: UnfinishedThread) => {
+    setSourceDialog({ thread });
   };
 
-  const handleEditSubmit = async () => {
-    if (!editState) return;
-    try {
-      if (editState.mode === "title") {
-        await updateTask(editState.id, { title: editState.value.trim() });
-      } else if (editState.mode === "project") {
-        await updateTask(editState.id, { projectId: editState.value || null });
-      }
-    } catch (err) {
-      console.error("编辑任务失败:", err);
-    }
-    setEditState(null);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (!confirm("确定要删除这个任务吗？删除后会写入 user_feedback，后续 Judge 会参考。")) {
-      return;
-    }
-    try {
-      await deleteObject(id, "task");
-    } catch (err) {
-      console.error("删除任务失败:", err);
-    }
-  };
-
-  const handleViewSource = (id: string) => {
-    // 查看来源：跳转到记忆库搜索，搜索任务相关线索
-    setPage("memory");
-    // 这里简化处理，仅跳转页面
-    // 完整实现应该带上搜索 query 到 memory 页面
-    console.log("查看任务来源:", id);
-  };
-
-  const handleCorrect = (id: string) => {
-    setCorrectionTarget({ targetType: "task", targetId: id });
-  };
-
+  // ---- 渲染 ----
   if (!isReady) {
     return (
-      <div className="tasks-page">
+      <div className="unfinished-page">
         <header className="page-header">
-          <h2>{NAMING.task}</h2>
+          <h2>待收尾</h2>
         </header>
-        <p className="state-loading">正在加载...</p>
+        <Loading variant="inline" />
       </div>
     );
   }
 
   return (
-    <div className="tasks-page">
+    <div className="unfinished-page">
       <header className="page-header">
-        <h2>{NAMING.task}</h2>
+        <h2>待收尾</h2>
         <p className="page-header__sub">
-          Recall 自动从工作上下文中识别任务。你可以确认、编辑或删除。
+          这里整理了 Recall 认为可能还需要你继续看一眼的事情。
         </p>
       </header>
 
-      {todayError && (
-        <div className="tasks-page__error">
-          <span>加载失败：{todayError}</span>
-          <button onClick={() => void loadToday()}>重试</button>
-        </div>
+      {error && (
+        <ErrorState
+          title="加载失败"
+          description={error}
+          primaryAction={{ label: "重试", onClick: () => void loadUnfinished() }}
+        />
       )}
 
-      {todayLoading && activeTasks.length === 0 ? (
-        <p className="state-loading">正在加载任务...</p>
-      ) : activeTasks.length === 0 ? (
-        <div className="empty-state">
-          <p>当前没有任务。</p>
-          <p className="empty-state__hint">
-            开始观察后，Recall 会把发现的事项整理到这里。
-          </p>
-        </div>
+      {loading && visibleCount === 0 ? (
+        <Loading variant="inline" />
+      ) : visibleCount === 0 && !error ? (
+        <EmptyState
+          title="目前没有需要收尾的事。"
+          description="如果今天出现明确待办或未完成事项，Recall 会把它们放在这里。"
+        />
       ) : (
-        <div className="tasks-groups">
-          {STATUS_GROUPS.map((group) => {
-            const tasks = tasksByStatus.get(group.status) ?? [];
-            if (tasks.length === 0) return null;
+        <div className="unfinished-groups">
+          {groups.map((group) => {
+            if (group.threads.length === 0) return null;
             return (
-              <section key={group.status} className="tasks-group">
-                <header className="tasks-group__header">
-                  <h3 className="tasks-group__title">
-                    {group.label}
-                    <span className="tasks-group__count">{tasks.length}</span>
+              <section key={group.key} className="unfinished-group">
+                <header className="unfinished-group__header">
+                  <h3 className="unfinished-group__title">
+                    {group.title}
+                    <span className="unfinished-group__count">
+                      {group.threads.length}
+                    </span>
                   </h3>
                 </header>
-                <div className="tasks-group__list">
-                  {tasks.map((task) => (
-                    <div key={task.id}>
-                      <TaskRow
-                        id={task.id}
-                        title={task.title}
-                        status={task.status as never}
-                        projectName={
-                          task.projectId ? projectNameMap.get(task.projectId) : undefined
-                        }
-                        summary={task.summary}
-                        priority={task.priority}
-                        sourceFactIds={task.sourceFactIds}
-                        updatedAt={task.updatedAt}
-                        orphanStatus={task.orphanStatus}
-                        onComplete={task.status !== "done" ? handleComplete : undefined}
-                        onEdit={handleEdit}
-                        onChangeProject={handleChangeProject}
-                        onViewSource={handleViewSource}
-                        onCorrect={handleCorrect}
-                        onDelete={handleDelete}
-                      />
-                      {editState?.id === task.id && editState.mode === "title" && (
-                        <div className="task-edit">
-                          <p className="task-edit__hint">编辑任务标题</p>
-                          <input
-                            type="text"
-                            className="task-edit__input"
-                            value={editState.value}
-                            onChange={(e) =>
-                              setEditState({ ...editState, value: e.target.value })
-                            }
-                            autoFocus
-                          />
-                          <div className="task-edit__actions">
-                            <button
-                              className="primary"
-                              onClick={handleEditSubmit}
-                              disabled={!editState.value.trim()}
-                            >
-                              保存
-                            </button>
-                            <button onClick={() => setEditState(null)}>取消</button>
-                          </div>
-                        </div>
-                      )}
-                      {editState?.id === task.id && editState.mode === "project" && (
-                        <div className="task-edit">
-                          <p className="task-edit__hint">选择归属项目</p>
-                          <select
-                            className="task-edit__select"
-                            value={editState.value}
-                            onChange={(e) =>
-                              setEditState({ ...editState, value: e.target.value })
-                            }
-                            autoFocus
-                          >
-                            <option value="">-- 无项目 --</option>
-                            {projects.map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.name}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="task-edit__actions">
-                            <button className="primary" onClick={handleEditSubmit}>
-                              保存
-                            </button>
-                            <button onClick={() => setEditState(null)}>取消</button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                <div className="unfinished-group__list">
+                  {group.threads.map((thread) => (
+                    <UnfinishedCard
+                      key={thread.id}
+                      thread={thread}
+                      showProjectHint={projectHintId === thread.id}
+                      onMarkDone={handleMarkDone}
+                      onSnooze={handleSnooze}
+                      onIgnore={handleIgnore}
+                      onChangeProject={handleChangeProject}
+                      onViewSource={handleViewSource}
+                    />
                   ))}
                 </div>
               </section>
@@ -315,100 +274,242 @@ export function TasksPage() {
         </div>
       )}
 
-      {/* 用户纠错对话框 */}
-      <CorrectionDialog
-        open={correctionTarget !== null}
-        targetType="task"
-        targetId={correctionTarget?.targetId ?? ""}
-        onClose={() => setCorrectionTarget(null)}
-        onSubmitted={() => {
-          // 纠错后重新加载今日数据
-          void loadToday();
-        }}
-      />
+      {/* 查看来源弹窗 */}
+      {sourceDialog && (
+        <SourceDialog
+          thread={sourceDialog.thread}
+          onClose={() => setSourceDialog(null)}
+        />
+      )}
+    </div>
+  );
+}
 
-      <style>{`
-        .tasks-page__error {
-          background-color: #fbeeeb;
-          border: 1px solid var(--danger);
-          border-radius: var(--radius-card);
-          padding: 12px 16px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          gap: 12px;
-          color: var(--danger);
-          font-size: 13px;
-        }
-        .tasks-groups {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-        .tasks-group {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
-          overflow: hidden;
-          box-shadow: var(--shadow-sm);
-        }
-        .tasks-group__header {
-          padding: 12px 16px;
-          background-color: #f0eee7;
-          border-bottom: 1px solid var(--border);
-        }
-        .tasks-group__title {
-          font-size: 13px;
-          font-weight: 600;
-          color: var(--text-primary);
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .tasks-group__count {
-          background-color: var(--accent-green);
-          color: #fff;
-          font-size: 11px;
-          padding: 1px 8px;
-          border-radius: var(--radius-pill);
-          font-weight: 500;
-        }
-        .tasks-group__list {
-          display: flex;
-          flex-direction: column;
-        }
-        .task-edit {
-          padding: 12px 16px;
-          background-color: var(--bg);
-          border-bottom: 1px solid var(--border);
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .task-edit__hint {
-          font-size: 12px;
-          color: var(--text-secondary);
-          margin: 0;
-        }
-        .task-edit__input,
-        .task-edit__select {
-          padding: 8px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
-          font-family: inherit;
-          font-size: 13px;
-          background-color: var(--surface);
-        }
-        .task-edit__input:focus,
-        .task-edit__select:focus {
-          outline: none;
-          border-color: var(--accent-green);
-        }
-        .task-edit__actions {
-          display: flex;
-          gap: 6px;
-        }
-      `}</style>
+// ============================================================================
+// 待收尾卡片
+// ============================================================================
+
+interface UnfinishedCardProps {
+  thread: UnfinishedThread;
+  showProjectHint: boolean;
+  onMarkDone: (id: string) => void;
+  onSnooze: (id: string) => void;
+  onIgnore: (id: string) => void;
+  onChangeProject: (id: string) => void;
+  onViewSource: (thread: UnfinishedThread) => void;
+}
+
+function UnfinishedCard({
+  thread,
+  showProjectHint,
+  onMarkDone,
+  onSnooze,
+  onIgnore,
+  onChangeProject,
+  onViewSource,
+}: UnfinishedCardProps) {
+  const sourceCount =
+    thread.sourceFactIds.length + thread.sourceTimelineBlockIds.length;
+  const isDone = thread.status === "done";
+  const isIgnored = thread.status === "ignored";
+
+  return (
+    <article className="unfinished-card">
+      <div className="unfinished-card__head">
+        <h4 className="unfinished-card__title">{thread.title}</h4>
+        {thread.priority === "high" && (
+          <Tag type="warning">优先</Tag>
+        )}
+      </div>
+
+      {thread.reason && (
+        <p className="unfinished-card__reason">{thread.reason}</p>
+      )}
+
+      {thread.suggestedNextAction && (
+        <p className="unfinished-card__action">
+          <span className="unfinished-card__action-label">建议下一步：</span>
+          {thread.suggestedNextAction}
+        </p>
+      )}
+
+      <div className="unfinished-card__meta">
+        {thread.projectName && (
+          <Tag type="project">{thread.projectName}</Tag>
+        )}
+        {thread.lastSeenAt && (
+          <span className="unfinished-card__time">
+            最近出现：{formatSeenAt(thread.lastSeenAt)}
+          </span>
+        )}
+      </div>
+
+      <div className="unfinished-card__actions-label">操作：</div>
+      <div className="unfinished-card__actions">
+        {!isDone && !isIgnored && (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onMarkDone(thread.id)}
+              title="标记为完成"
+              aria-label="标记为完成"
+            >
+              <Check size={14} style={{ marginRight: 4 }} />
+              标记完成
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => onSnooze(thread.id)}
+              title="稍后再看"
+              aria-label="稍后再看"
+            >
+              <Clock size={14} style={{ marginRight: 4 }} />
+              稍后
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onIgnore(thread.id)}
+              title="忽略此条"
+              aria-label="忽略此条"
+            >
+              <X size={14} style={{ marginRight: 4 }} />
+              忽略
+            </Button>
+          </>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onChangeProject(thread.id)}
+          title="改项目"
+          aria-label="改项目"
+        >
+          <FolderKanban size={14} style={{ marginRight: 4 }} />
+          改项目
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onViewSource(thread)}
+          title="查看来源"
+          aria-label="查看来源"
+        >
+          <Link2 size={14} style={{ marginRight: 4 }} />
+          查看来源
+        </Button>
+        {(isDone || isIgnored) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => onMarkDone(thread.id)}
+            title="重新标记为完成"
+            aria-label="重新标记为完成"
+          >
+            <Check size={14} style={{ marginRight: 4 }} />
+            重新打开
+          </Button>
+        )}
+      </div>
+
+      {showProjectHint && (
+        <p className="unfinished-card__hint">
+          改项目功能即将开放，当前可先在项目页整理。
+        </p>
+      )}
+
+      {isDone && (
+        <p className="unfinished-card__hint">已标记为完成。</p>
+      )}
+      {isIgnored && (
+        <p className="unfinished-card__hint">已忽略。可重新标记为完成或稍后。</p>
+      )}
+
+      {sourceCount > 0 && (
+        <p className="unfinished-card__source-count">
+          来自 {sourceCount} 个来源记录
+        </p>
+      )}
+    </article>
+  );
+}
+
+// ============================================================================
+// 来源查看弹窗
+// ============================================================================
+
+interface SourceDialogProps {
+  thread: UnfinishedThread;
+  onClose: () => void;
+}
+
+function SourceDialog({ thread, onClose }: SourceDialogProps) {
+  const hasTimelineBlocks = thread.sourceTimelineBlockIds.length > 0;
+  const hasFacts = thread.sourceFactIds.length > 0;
+
+  return (
+    <div
+      className="unfinished-source-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="查看来源"
+    >
+      <div className="unfinished-source-dialog__panel">
+        <header className="unfinished-source-dialog__header">
+          <h3>来源记录</h3>
+          <button
+            type="button"
+            className="unfinished-source-dialog__close"
+            aria-label="关闭"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <div className="unfinished-source-dialog__body">
+          <p className="unfinished-source-dialog__title-ref">{thread.title}</p>
+          {hasTimelineBlocks && (
+            <div className="unfinished-source-dialog__section">
+              <p className="unfinished-source-dialog__section-title">
+                相关时间轴片段（{thread.sourceTimelineBlockIds.length}）
+              </p>
+              <ul className="unfinished-source-dialog__list">
+                {thread.sourceTimelineBlockIds.map((id) => (
+                  <li key={id} className="unfinished-source-dialog__item">
+                    {id}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {hasFacts && (
+            <div className="unfinished-source-dialog__section">
+              <p className="unfinished-source-dialog__section-title">
+                相关线索（{thread.sourceFactIds.length}）
+              </p>
+              <ul className="unfinished-source-dialog__list">
+                {thread.sourceFactIds.map((id) => (
+                  <li key={id} className="unfinished-source-dialog__item">
+                    {id}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!hasTimelineBlocks && !hasFacts && (
+            <p className="unfinished-source-dialog__empty">
+              这条待收尾没有关联来源记录。
+            </p>
+          )}
+        </div>
+        <footer className="unfinished-source-dialog__footer">
+          <Button variant="secondary" size="sm" onClick={onClose}>
+            关闭
+          </Button>
+        </footer>
+      </div>
     </div>
   );
 }

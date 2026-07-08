@@ -21,9 +21,8 @@
 // - report overview: 2000 chars
 
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
-import type { Observation } from "../models/types";
+import type { Observation, ObserverOutputV2 } from "../models/types";
 import type { CaptureBundle, ScreenshotRetentionPolicy } from "../models/types";
-import type { VisionObservationOutput } from "../models/schemas";
 import { TEXT_LIMITS } from "../models/schemas";
 import type { PrivacyGuard } from "./PrivacyGuard";
 
@@ -77,7 +76,7 @@ export class ObservationNormalizer {
    * @returns 处理结果（discarded=true 表示按隐私规则丢弃，未写入正式表）
    */
   normalize(input: {
-    visionOutput: VisionObservationOutput;
+    visionOutput: ObserverOutputV2;
     captureBundle: CaptureBundle;
   }): NormalizeResult {
     const warnings: string[] = [];
@@ -118,6 +117,8 @@ export class ObservationNormalizer {
     const screenshotRetention = this.mapRetentionPolicy(captureBundle.retentionPolicy);
 
     // 4. 构造 observation 并写入数据库
+    //    V2 体验字段（userFacingSummary/likelyWorkPurpose/privacyRisk/reportableSignal）
+    //    来自 ObserverExtractorWorker 的 V2 输出，直接落库。
     const observation = this.observationRepo.create({
       captureId: captureBundle.captureId,
       capturedAt: captureBundle.capturedAt,
@@ -136,6 +137,11 @@ export class ObservationNormalizer {
       uncertainties: cleanedVisionOutput.uncertainties,
       screenshotRetention,
       screenshotPaths,
+      // V2 体验字段（来自 ObserverExtractorWorker 的 V2 输出）
+      userFacingSummary: cleanedVisionOutput.userFacingSummary,
+      likelyWorkPurpose: cleanedVisionOutput.likelyWorkPurpose,
+      privacyRisk: cleanedVisionOutput.privacyRisk,
+      reportableSignal: cleanedVisionOutput.reportableSignal,
     });
 
     return {
@@ -152,9 +158,9 @@ export class ObservationNormalizer {
    * - 截断时记录 warning
    */
   private truncateLongFields(
-    output: VisionObservationOutput,
+    output: ObserverOutputV2,
     warnings: string[]
-  ): VisionObservationOutput {
+  ): ObserverOutputV2 {
     // sceneSummary: 1000 chars
     const sceneSummary = truncateText(
       output.sceneSummary,
@@ -266,15 +272,31 @@ export class ObservationNormalizer {
       return { ...p, text, projectHint, evidence };
     });
 
-    // sensitivityReason: 500 chars
-    const sensitivityReason = output.sensitivityReason
-      ? truncateText(
-          output.sensitivityReason,
-          TEXT_LIMITS.reason,
-          "sensitivityReason",
-          warnings
-        )
-      : undefined;
+    // V2 体验字段截断
+    const userFacingSummary = truncateText(
+      output.userFacingSummary,
+      TEXT_LIMITS.summary,
+      "userFacingSummary",
+      warnings
+    );
+    const likelyWorkPurpose = truncateText(
+      output.likelyWorkPurpose,
+      TEXT_LIMITS.factContent,
+      "likelyWorkPurpose",
+      warnings
+    );
+    const privacyRiskReason = truncateText(
+      output.privacyRiskReason,
+      TEXT_LIMITS.reason,
+      "privacyRiskReason",
+      warnings
+    );
+    const reportableReason = truncateText(
+      output.reportableReason,
+      TEXT_LIMITS.reason,
+      "reportableReason",
+      warnings
+    );
 
     // uncertainties: 清洗每条
     const uncertainties = output.uncertainties.map((u, idx) =>
@@ -290,7 +312,10 @@ export class ObservationNormalizer {
       possibleTasks,
       possibleDecisions,
       possibleProjectProgress,
-      sensitivityReason,
+      userFacingSummary,
+      likelyWorkPurpose,
+      privacyRiskReason,
+      reportableReason,
       uncertainties,
     };
   }

@@ -16,7 +16,7 @@
 import { useEffect, useState } from "react";
 import type { ModelConfigItem } from "../state/store";
 
-export type ModelKind = "vision" | "language";
+export type ModelKind = "vision" | "language" | "multimodal";
 
 export interface ModelConfigFormProps {
   /**
@@ -47,6 +47,9 @@ export interface ModelConfigFormProps {
     model: string;
     apiKey?: string;
     enabled?: boolean;
+    // Phase 7：可选字段，留空时使用模型默认值
+    temperature?: number;
+    maxTokens?: number;
   }) => Promise<{ ok: boolean; warning?: string; error?: string }>;
   /**
    * 删除配置回调
@@ -83,6 +86,9 @@ interface FormFields {
   endpoint: string;
   model: string;
   apiKey: string;
+  // Phase 7：可选字段，留空（undefined）时使用模型默认值
+  temperature?: number;
+  maxTokens?: number;
 }
 
 const EMPTY_FIELDS: FormFields = {
@@ -90,6 +96,8 @@ const EMPTY_FIELDS: FormFields = {
   endpoint: "",
   model: "",
   apiKey: "",
+  temperature: undefined,
+  maxTokens: undefined,
 };
 
 export function ModelConfigForm(props: ModelConfigFormProps) {
@@ -125,11 +133,14 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
     setTestOk(null);
   }, [kind, wizardMode]);
 
-  const kindLabel = kind === "vision" ? "视觉模型" : "语言模型";
+  const kindLabel =
+    kind === "vision" ? "视觉模型" : kind === "language" ? "语言模型" : "多模态模型";
   const kindDescription =
     kind === "vision"
       ? "用于分析屏幕截图，识别窗口内容、实体和可能意图。"
-      : "用于提取线索、构建场景、生成报告和回答用户问题。";
+      : kind === "language"
+      ? "用于提取线索、构建场景、生成报告和回答用户问题。"
+      : "同时支持视觉和语言任务，可替代分开配置的视觉模型与语言模型。";
 
   /**
    * 开始新建配置
@@ -148,14 +159,29 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
    * 开始编辑现有配置
    * 注意：不加载已存的 API Key（API Key 不返回 renderer）
    * 留空 API Key 表示保留原 key
+   * Phase 7：从 optionsJson 解析 temperature/maxTokens 填入表单
    */
   const handleStartEdit = (config: ModelConfigItem) => {
+    // 从 optionsJson 解析 temperature / max_tokens
+    let temperature: number | undefined;
+    let maxTokens: number | undefined;
+    try {
+      const opts = JSON.parse(config.optionsJson || "{}");
+      if (opts && typeof opts === "object" && !Array.isArray(opts)) {
+        if (typeof opts.temperature === "number") temperature = opts.temperature;
+        if (typeof opts.max_tokens === "number") maxTokens = opts.max_tokens;
+      }
+    } catch {
+      // optionsJson 损坏时忽略，使用 undefined
+    }
     setEditingId(config.id);
     setFields({
       providerName: config.providerName,
       endpoint: config.endpoint,
       model: config.model,
       apiKey: "", // 不显示已存 key，留空保留原 key
+      temperature,
+      maxTokens,
     });
     setFormError(null);
     setWarning(null);
@@ -246,6 +272,8 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         endpoint: fields.endpoint,
         model: fields.model,
         apiKey: fields.apiKey || undefined, // 留空则不传，保留原 key
+        temperature: fields.temperature, // undefined 时后端不写入 options_json
+        maxTokens: fields.maxTokens,     // undefined 时后端不写入 options_json
       });
       if (result.ok) {
         // 提交后立即清空 apiKey 输入框
@@ -417,6 +445,48 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
             </p>
           </div>
 
+          <div className="model-form__field">
+            <label>温度（可选）</label>
+            <input
+              type="number"
+              step="0.1"
+              min="0"
+              max="2"
+              value={fields.temperature ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "") {
+                  setFields({ ...fields, temperature: undefined });
+                  return;
+                }
+                const n = Number(v);
+                setFields({ ...fields, temperature: Number.isNaN(n) ? undefined : n });
+              }}
+              placeholder="留空使用模型默认值"
+            />
+            <p className="model-form__hint">0 更确定，1 更多样，2 更随机</p>
+          </div>
+
+          <div className="model-form__field">
+            <label>最大输出长度（可选）</label>
+            <input
+              type="number"
+              min="1"
+              value={fields.maxTokens ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "") {
+                  setFields({ ...fields, maxTokens: undefined });
+                  return;
+                }
+                const n = Number(v);
+                setFields({ ...fields, maxTokens: Number.isNaN(n) ? undefined : n });
+              }}
+              placeholder="留空使用模型默认值"
+            />
+            <p className="model-form__hint">单位：token</p>
+          </div>
+
           <div className="model-form__actions">
             <button
               type="button"
@@ -441,7 +511,7 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
           {testResult && (
             <p
               className="model-form__result"
-              style={{ color: testOk ? "var(--accent-green)" : "var(--danger)" }}
+              style={{ color: testOk ? "var(--recall-accent)" : "var(--recall-danger)" }}
             >
               {testResult}
             </p>
@@ -470,20 +540,20 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         .model-config__desc {
           margin: 0;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
         }
         .model-config__list {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 12px;
         }
         .model-config__hint {
           margin: 0;
           padding: 8px 0;
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           text-align: center;
         }
         .model-config__items {
@@ -499,9 +569,9 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
           justify-content: space-between;
           align-items: center;
           padding: 8px 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
+          background-color: var(--recall-bg);
+          border-radius: var(--radius-md);
+          border: 1px solid var(--recall-border);
         }
         .model-config__item-main {
           display: flex;
@@ -516,20 +586,20 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         }
         .model-config__item-model {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .model-config__item-status {
           font-size: 11px;
           padding: 2px 8px;
           border-radius: var(--radius-pill);
-          border: 1px solid var(--border);
+          border: 1px solid var(--recall-border);
         }
         .model-config__item-status.is-enabled {
-          color: var(--accent-green);
-          border-color: var(--accent-green);
+          color: var(--recall-accent);
+          border-color: var(--recall-accent);
         }
         .model-config__item-status.is-disabled {
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .model-config__item-actions {
           display: flex;
@@ -538,18 +608,18 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         .model-config__item-actions button {
           padding: 4px 10px;
           font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
         }
         .model-config__item-actions button:hover:not(:disabled) {
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
         }
         .model-config__delete-btn {
-          color: var(--danger) !important;
-          border-color: var(--danger) !important;
+          color: var(--recall-danger) !important;
+          border-color: var(--recall-danger) !important;
         }
         .model-config__actions {
           display: flex;
@@ -562,12 +632,12 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         .model-config__error {
           margin: 0;
           font-size: 12px;
-          color: var(--danger);
+          color: var(--recall-danger);
         }
         .model-form {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 16px;
           display: flex;
           flex-direction: column;
@@ -585,19 +655,19 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         }
         .model-form__field label {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .model-form__field input {
           padding: 6px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           font-family: inherit;
           font-size: 13px;
         }
         .model-form__hint {
           margin: 0;
           font-size: 11px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.5;
         }
         .model-form__actions {
@@ -608,16 +678,16 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         .model-form__actions button {
           padding: 6px 14px;
           font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
         }
         .model-form__actions button.primary {
-          background-color: var(--accent-green);
+          background-color: var(--recall-accent);
           color: white;
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .model-form__actions button:disabled {
           opacity: 0.5;
@@ -626,12 +696,12 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
         .model-form__error {
           margin: 0;
           font-size: 12px;
-          color: var(--danger);
+          color: var(--recall-danger);
         }
         .model-form__warning {
           margin: 0;
           font-size: 12px;
-          color: var(--accent-amber);
+          color: var(--recall-amber);
         }
         .model-form__result {
           font-size: 12px;

@@ -11,8 +11,9 @@
 // 后续 Milestone 逐步填充真实业务逻辑。
 
 import { ipcMain, BrowserWindow } from "electron";
-import type { AppStatus } from "../../shared/types";
+import type { AppStatus, PersonalReview, WorkReport } from "../../shared/types";
 import { isInvokeChannel } from "./channels";
+import { z } from "zod";
 import {
   AppStatusSchema,
   DataExportInputSchema,
@@ -54,6 +55,15 @@ import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRe
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { ReporterWorker } from "../services/ReporterWorker";
 import type { ReportScheduler } from "../services/ReportScheduler";
+// Phase 2 新增
+import type { TimelineBuilderWorker } from "../services/TimelineBuilderWorker";
+import type { PersonalReviewWriterWorker } from "../services/PersonalReviewWriterWorker";
+import type { WorkReportWriterWorker } from "../services/WorkReportWriterWorker";
+import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
+import type { ReportSelectionRepository } from "../db/repositories/ReportSelectionRepository";
+import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
+// 012 新增：ObjectMerge 审计
+import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
 import type { Fact, Scene } from "../models/types";
 import {
   cascadeMarkAfterFactSceneDelete,
@@ -102,6 +112,15 @@ export interface IpcDeps {
    * 不暴露给 renderer，仅在 main 内使用
    */
   db?: DB;
+  // Phase 2 新增：TimelineBuilder / PersonalReviewWriter / WorkReportWriter
+  timelineBuilderWorker?: TimelineBuilderWorker;
+  personalReviewWriterWorker?: PersonalReviewWriterWorker;
+  workReportWriterWorker?: WorkReportWriterWorker;
+  timelineBlockRepo?: TimelineBlockRepository;
+  reportSelectionRepo?: ReportSelectionRepository;
+  unfinishedThreadRepo?: UnfinishedThreadRepository;
+  // 012 新增：ObjectMerge 审计 Repository
+  objectMergeRepo?: ObjectMergeRepository;
 }
 
 /**
@@ -211,10 +230,10 @@ export function registerIpcHandlers(deps: IpcDeps): void {
    * renderer 通过 kind 过滤 vision / language
    */
   ipcMain.handle("model:listConfigs", (_event, input: unknown) => {
-    const opts: { kind?: "vision" | "language"; enabled?: boolean } = {};
+    const opts: { kind?: "vision" | "language" | "multimodal"; enabled?: boolean } = {};
     if (input && typeof input === "object") {
       const obj = input as Record<string, unknown>;
-      if (obj.kind === "vision" || obj.kind === "language") opts.kind = obj.kind;
+      if (obj.kind === "vision" || obj.kind === "language" || obj.kind === "multimodal") opts.kind = obj.kind;
       if (typeof obj.enabled === "boolean") opts.enabled = obj.enabled;
     }
     return deps.settingsService.listModelConfigs(opts);
@@ -240,7 +259,37 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     if (!deps.secretService) {
       fail("not_ready", "SecretService 未初始化");
     }
-    const { id, kind, providerName, endpoint, model, apiKey, enabled } = parsed.data;
+    const { id, kind, providerName, endpoint, model, apiKey, enabled, temperature, maxTokens } = parsed.data;
+
+    // Phase 7：把 temperature/maxTokens 写入 options_json
+    // - 留空（undefined）时从 options_json 中删除对应键，使用模型默认值
+    // - 更新模式下与现有 optionsJson 合并，保留其他自定义键
+    // - ModelGateway 从 options_json 读取 temperature / max_tokens（snake_case）
+    const buildOptionsJson = (existing: string | null | undefined): string => {
+      let existingOptions: Record<string, unknown> = {};
+      if (existing) {
+        try {
+          const parsedExisting = JSON.parse(existing);
+          if (parsedExisting && typeof parsedExisting === "object" && !Array.isArray(parsedExisting)) {
+            existingOptions = parsedExisting as Record<string, unknown>;
+          }
+        } catch {
+          // 旧 optionsJson 损坏时忽略，从空对象开始
+        }
+      }
+      const next: Record<string, unknown> = { ...existingOptions };
+      if (temperature !== undefined) {
+        next.temperature = temperature;
+      } else {
+        delete next.temperature;
+      }
+      if (maxTokens !== undefined) {
+        next.max_tokens = maxTokens;
+      } else {
+        delete next.max_tokens;
+      }
+      return JSON.stringify(next);
+    };
 
     let saved: ModelConfig;
     if (id) {
@@ -249,11 +298,13 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       if (!existing) {
         fail("not_found", `未找到模型配置 ${id}`);
       }
+      const optionsJson = buildOptionsJson(existing.optionsJson);
       const updated = deps.settingsService.updateModelConfig(id, {
         providerName,
         endpoint,
         model,
         enabled,
+        optionsJson,
       });
       if (!updated) {
         fail("not_found", `更新模型配置失败 ${id}`);
@@ -261,12 +312,14 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       saved = updated;
     } else {
       // 创建新配置
+      const optionsJson = buildOptionsJson(undefined);
       saved = deps.settingsService.createModelConfig({
         kind,
         providerName,
         endpoint,
         model,
         enabled: enabled ?? true,
+        optionsJson,
       });
     }
 
@@ -702,10 +755,12 @@ ${context}
    * 当 Linker 输出 mergeSuggestions 时，写入 proactive_items 作为 needs_confirmation。
    * 用户在提醒页确认合并时，调用合并 API。
    *
-   * 合并策略：
-   * - 把 fromId 对象的 sourceFactIds 合并到 toId 对象
-   * - soft delete fromId 对象
-   * - 删除对应的 proactive_item（status=done）
+   * 012 增强：
+   * - facts.projectHint / projectId 改写（项目合并）
+   * - facts.people_hints 改写（人物合并）
+   * - scenes.entityNames 改写
+   * - to.aliases 追加 from.name
+   * - object_merges 审计
    */
   ipcMain.handle("memory:mergeObjects", (_event, input: unknown) => {
     const parsed = MergeObjectsInputSchema.safeParse(input);
@@ -715,10 +770,106 @@ ${context}
     if (!deps.memoryObjectRepo || !deps.factRepo || !deps.sceneRepo) {
       fail("not_ready", "Repositories 未初始化");
     }
-    const { objectType, fromId, toId } = parsed.data;
+    const { objectType, fromId, toId, reason } = parsed.data;
 
-    const merged = mergeObjects(deps, objectType, fromId, toId);
+    const merged = mergeObjects(deps, objectType, fromId, toId, {
+      source: "user_manual",
+      reason,
+    });
     return { ok: true, merged };
+  });
+
+  // -------------------- memory: 合并建议（来自 Linker 输出的 mergeSuggestions） --------------------
+  /**
+   * 012/013 新增：列出所有 merge_suggestion 类型的 proactive_item
+   * - 用于前端"合并建议"列表（默认 status='new'）
+   * - 配合 mergeSuggestion payloadJson 解析后展示 from/to 详情
+   */
+  ipcMain.handle("memory:listMergeSuggestions", (_event, input: unknown) => {
+    const parsed = z
+      .object({
+        status: z.enum(["new", "confirmed", "ignored", "all"]).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      })
+      .safeParse(input ?? {});
+    if (!parsed.success) {
+      fail("schema_invalid", `memory:listMergeSuggestions 参数校验失败: ${parsed.error.message}`);
+    }
+    if (!deps.proactiveItemRepo) {
+      fail("not_ready", "ProactiveItemRepository 未初始化");
+    }
+    const opts: { status?: string; limit?: number } = { limit: parsed.data.limit ?? 200 };
+    if (parsed.data.status && parsed.data.status !== "all") {
+      opts.status = parsed.data.status;
+    }
+    const items = deps.proactiveItemRepo.listMergeSuggestions(opts);
+    return { ok: true, items };
+  });
+
+  /**
+   * 012/013 新增：拒绝某个 merge_suggestion
+   * - 不执行合并，仅把 proactive_item 状态改为 ignored
+   * - 用户后续可以再通过"合并到..."手动发起
+   */
+  ipcMain.handle("memory:rejectMergeSuggestion", (_event, input: unknown) => {
+    const parsed = z
+      .object({ id: z.string().min(1) })
+      .safeParse(input);
+    if (!parsed.success) {
+      fail("schema_invalid", `memory:rejectMergeSuggestion 参数校验失败: ${parsed.error.message}`);
+    }
+    if (!deps.proactiveItemRepo) {
+      fail("not_ready", "ProactiveItemRepository 未初始化");
+    }
+    const item = deps.proactiveItemRepo.getById(parsed.data.id);
+    if (!item) {
+      fail("not_found", `merge_suggestion ${parsed.data.id} 不存在`);
+    }
+    if (item!.type !== "merge_suggestion") {
+      fail("invalid_input", `proactive_item ${parsed.data.id} 不是 merge_suggestion 类型`);
+    }
+    deps.proactiveItemRepo.updateStatus(parsed.data.id, "ignored");
+    return { ok: true };
+  });
+
+  /**
+   * 012/013 新增：列出所有已知别名（项目 + 人物）
+   * - 用于 Linker / Extractor prompt 注入，让模型识别到 from.name 时映射到 to
+   * - 返回简化格式：{projects: [{id, name, aliases}], people: [{id, name, aliases}]}
+   */
+  ipcMain.handle("memory:listAllAliases", () => {
+    if (!deps.memoryObjectRepo) {
+      fail("not_ready", "MemoryObjectRepository 未初始化");
+    }
+    return {
+      ok: true,
+      projects: deps.memoryObjectRepo.listProjectAliases(),
+      people: deps.memoryObjectRepo.listPersonAliases(),
+    };
+  });
+
+  /**
+   * 012 新增：列出所有人物
+   * - 用于人物页 PeoplePage 渲染
+   * - 返回 Person 完整字段（含 aliases）
+   */
+  ipcMain.handle("memory:listPeople", () => {
+    if (!deps.memoryObjectRepo) {
+      fail("not_ready", "MemoryObjectRepository 未初始化");
+    }
+    return { ok: true, people: deps.memoryObjectRepo.listPeople({ includeDeleted: false }) };
+  });
+
+  /**
+   * 012 新增：列出所有项目
+   * - 用于项目页 ProjectsPage 渲染
+   * - 返回 Project 完整字段（含 aliases）
+   */
+  ipcMain.handle("memory:listProjects", () => {
+    if (!deps.memoryObjectRepo) {
+      fail("not_ready", "MemoryObjectRepository 未初始化");
+    }
+    return { ok: true, projects: deps.memoryObjectRepo.listProjects({ includeArchived: false, limit: 500 }) };
   });
 
   // -------------------- reminders --------------------
@@ -763,6 +914,14 @@ ${context}
 
   ipcMain.handle("reports:list", (_event, input: unknown) => {
     // 宽松校验 input（可选字段：type/dateFrom/dateTo/limit）
+    const ALLOWED_TYPES = [
+      "daily",
+      "weekly",
+      "monthly",
+      "retrospective",
+      "personal_daily_review",
+      "work_daily_report",
+    ];
     const filter: {
       type?: string;
       dateFrom?: string;
@@ -771,7 +930,7 @@ ${context}
     } = {};
     if (input && typeof input === "object") {
       const obj = input as Record<string, unknown>;
-      if (typeof obj.type === "string" && (obj.type === "daily" || obj.type === "weekly")) {
+      if (typeof obj.type === "string" && ALLOWED_TYPES.includes(obj.type)) {
         filter.type = obj.type;
       }
       if (typeof obj.dateFrom === "string") filter.dateFrom = obj.dateFrom;
@@ -804,8 +963,8 @@ ${context}
     if (!parsed.success) {
       fail("schema_invalid", `reports:generate 参数校验失败: ${parsed.error.message}`);
     }
-    const { type, dateKey } = parsed.data;
-    // 仅支持 daily / weekly；retrospective 暂未实现
+    const { type, dateKey, projectId } = parsed.data;
+    // 仅支持 daily / weekly / monthly；retrospective 暂未实现
     if (type === "retrospective") {
       return {
         ok: false,
@@ -824,9 +983,21 @@ ${context}
       let result;
       if (type === "daily") {
         result = await deps.reportScheduler.generateDailyReportNow(dateKey);
+      } else if (type === "monthly") {
+        // 月报：复用 weekly 生成逻辑（按月范围汇总），再将 type 更新为 monthly
+        // 月报 6 大板块（doc 23 §6.4）：本月概览/主要项目/关键成果/重要决策/持续风险/下月重点
+        // 当前 ReporterWorker 未单独实现 monthly，复用 weekly 生成后更新 type
+        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey);
+        if (result.ok && result.reportId && deps.reportRepo) {
+          deps.reportRepo.update(result.reportId, { type: "monthly", projectId: projectId ?? null });
+        }
       } else {
         // weekly：dateKey 视为 weekStart
         result = await deps.reportScheduler.generateWeeklyReportNow(dateKey);
+      }
+      // 若传入 projectId，更新报告的 project_id
+      if (projectId && result.ok && result.reportId && deps.reportRepo && type !== "monthly") {
+        deps.reportRepo.update(result.reportId, { projectId });
       }
       if (result.ok) {
         return { ok: true, reportId: result.reportId };
@@ -866,6 +1037,21 @@ ${context}
       fail("not_found", `未找到报告 ${id}`);
     }
     return { ok: true, report: updated };
+  });
+
+  /**
+   * reports:delete — 物理删除报告
+   * 用于历史报告 Tab 的删除按钮，直接 DELETE FROM reports WHERE id = ?
+   */
+  ipcMain.handle("reports:delete", (_event, input: { id: string }) => {
+    if (!deps.reportRepo) {
+      fail("not_ready", "ReportRepository 未初始化");
+    }
+    if (!input || typeof input.id !== "string") {
+      fail("schema_invalid", "reports:delete 参数校验失败: 缺少 id");
+    }
+    const deleted = deps.reportRepo.deleteById(input.id);
+    return deleted;
   });
 
   // -------------------- capture --------------------
@@ -954,6 +1140,29 @@ ${context}
     }
 
     return { ok: true, deletedObservations, deletedScreenshots };
+  });
+
+  // -------------------- screenshot --------------------
+  /**
+   * screenshot:clear — 仅清空截图文件，不删除结构化记忆
+   *
+   * 与 capture:forgetRecent("all") 区别：
+   * - screenshot:clear 只删除截图文件，不调用 forgetRecent，不标记 observation
+   * - 适用于设置页"清空截图缓存"按钮，保留观察/线索/工作片段等结构化记忆
+   *
+   * 复用 ScreenshotCache.clearAll() 的路径逻辑（cache/screenshots 目录）。
+   */
+  ipcMain.handle("screenshot:clear", async () => {
+    let deletedScreenshots = 0;
+    if (deps.screenshotCache) {
+      try {
+        const result = await deps.screenshotCache.clearAll();
+        deletedScreenshots = result.deletedScreenshots;
+      } catch {
+        // 目录可能不存在，忽略
+      }
+    }
+    return { ok: true as const, deletedScreenshots };
   });
 
   // -------------------- data（M8 新增） --------------------
@@ -1092,6 +1301,366 @@ ${context}
     }
   });
 
+  // -------------------- Phase 2 新增：timeline / personalReview / workReport / unfinishedThreads --------------------
+  /**
+   * timeline:build — 触发 TimelineBuilder 生成当天时间轴
+   *
+   * 调用 TimelineBuilderWorker.buildTimeline(dateKey)：
+   * - 查询当天 observations / facts / scenes
+   * - 调用 LLM 生成 TimelineBlock 数组
+   * - 同 dateKey 替换：先删除当天所有 blocks，再插入新生成的
+   *
+   * 返回 IpcResult<TimelineBuilderResult>：
+   * - ok=true：data 含 blocks / dayStartSummary / dayMainThread
+   * - ok=false：error / code 描述失败原因
+   */
+  ipcMain.handle("timeline:build", async (_event, dateKey: string) => {
+    if (!deps.timelineBuilderWorker) {
+      fail("not_ready", "TimelineBuilderWorker 未初始化");
+    }
+    try {
+      const result = await deps.timelineBuilderWorker.buildTimeline(dateKey);
+      if (result.ok) {
+        return { ok: true as const, data: result };
+      }
+      return {
+        ok: false as const,
+        error: result.errorMessage ?? "timeline build 失败",
+        code: result.errorCode,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  /**
+   * timeline:get — 获取当天已持久化的 timeline blocks
+   *
+   * 直接从 timeline_blocks 表读取，不调用 LLM。
+   * 按 start_at 升序返回。
+   */
+  ipcMain.handle("timeline:get", (_event, dateKey: string) => {
+    if (!deps.timelineBlockRepo) {
+      fail("not_ready", "TimelineBlockRepository 未初始化");
+    }
+    try {
+      const blocks = deps.timelineBlockRepo.findByDateKey(dateKey);
+      return { ok: true as const, data: blocks };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  /**
+   * personalReview:generate — 生成个人复盘
+   *
+   * 调用 PersonalReviewWriterWorker.writePersonalReview(dateKey)：
+   * - 查询当天 TimelineBlock / UnfinishedThread / decisions / memoriesWorthKeeping
+   * - 调用 LLM 生成 PersonalReview
+   * - 持久化到 reports 表（type=personal_daily_review）
+   *
+   * 返回 IpcResult<PersonalReviewResult>。
+   */
+  ipcMain.handle("personalReview:generate", async (_event, dateKey: string) => {
+    if (!deps.personalReviewWriterWorker) {
+      fail("not_ready", "PersonalReviewWriterWorker 未初始化");
+    }
+    try {
+      const result = await deps.personalReviewWriterWorker.writePersonalReview(dateKey);
+      if (result.ok) {
+        return { ok: true as const, data: result };
+      }
+      return {
+        ok: false as const,
+        error: result.errorMessage ?? "personal review 生成失败",
+        code: result.errorCode,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  /**
+   * personalReview:get — 获取已生成的个人复盘
+   *
+   * 从 reports 表按 type=personal_daily_review + dateKey 查询。
+   * 未生成时返回 data=null。
+   */
+  ipcMain.handle("personalReview:get", (_event, dateKey: string) => {
+    if (!deps.reportRepo) {
+      fail("not_ready", "ReportRepository 未初始化");
+    }
+    try {
+      const report = deps.reportRepo.getByTypeAndDate("personal_daily_review", dateKey);
+      if (!report) {
+        return { ok: true as const, data: null };
+      }
+      // 修复（2026-07-07）：把 Report.contentJson (string) 解析为 PersonalReview 对象
+      // 之前直接返回 Report，renderer 强转 PersonalReview 后访问 .overview/.unfinished.length 崩 → 白屏
+      try {
+        const parsed = JSON.parse(report.contentJson) as Record<string, unknown>;
+        // contentJson 包含完整 PersonalReview 字段（id/dateKey/title/overview/...）
+        const personalReview: PersonalReview = {
+          id: typeof parsed.id === "string" ? parsed.id : report.id,
+          dateKey: typeof parsed.dateKey === "string" ? parsed.dateKey : report.dateKey,
+          title: typeof parsed.title === "string" ? parsed.title : report.title,
+          overview: typeof parsed.overview === "string" ? parsed.overview : "",
+          mainThreads: Array.isArray(parsed.mainThreads) ? (parsed.mainThreads as string[]) : [],
+          meaningfulProgress: Array.isArray(parsed.meaningfulProgress)
+            ? (parsed.meaningfulProgress as string[])
+            : [],
+          unfinished: Array.isArray(parsed.unfinished)
+            ? (parsed.unfinished as PersonalReview["unfinished"])
+            : [],
+          worthRemembering: Array.isArray(parsed.worthRemembering)
+            ? (parsed.worthRemembering as PersonalReview["worthRemembering"])
+            : [],
+          tomorrowStartHere: Array.isArray(parsed.tomorrowStartHere)
+            ? (parsed.tomorrowStartHere as string[])
+            : [],
+          createdAt: report.createdAt,
+          updatedAt: report.updatedAt,
+        };
+        return { ok: true as const, data: personalReview };
+      } catch {
+        // contentJson 损坏时返回 null（避免渲染崩）
+        return { ok: true as const, data: null };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  /**
+   * workReport:generate — 生成工作日报
+   *
+   * 调用 WorkReportWriterWorker.writeWorkReport：
+   * - 加载用户选中的 TimelineBlock（selectedBlockIds）
+   * - 严格过滤 privateRisk=high 内容
+   * - 调用 LLM 按 style / recipientHint 生成 WorkReport
+   * - 持久化到 reports 表（type=work_daily_report）
+   * - 写入 report_selections 表记录 selected/excluded ids
+   *
+   * 返回 IpcResult<WorkReportResult>。
+   */
+  ipcMain.handle(
+    "workReport:generate",
+    async (
+      _event,
+      params: {
+        dateKey: string;
+        selectedBlockIds: string[];
+        style: "brief" | "standard" | "formal";
+        recipientHint?: "manager" | "team" | "client" | "self";
+      }
+    ) => {
+      if (!deps.workReportWriterWorker) {
+        fail("not_ready", "WorkReportWriterWorker 未初始化");
+      }
+      // 基本参数校验
+      if (
+        !params ||
+        typeof params.dateKey !== "string" ||
+        !Array.isArray(params.selectedBlockIds) ||
+        !["brief", "standard", "formal"].includes(params.style)
+      ) {
+        fail("schema_invalid", "workReport:generate 参数校验失败");
+      }
+      try {
+        const result = await deps.workReportWriterWorker.writeWorkReport(
+          params.dateKey,
+          params.selectedBlockIds,
+          params.style,
+          params.recipientHint
+        );
+        if (result.ok) {
+          return { ok: true as const, data: result };
+        }
+        return {
+          ok: false as const,
+          error: result.errorMessage ?? "work report 生成失败",
+          code: result.errorCode,
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: message, code: "unknown_error" };
+      }
+    }
+  );
+
+  /**
+   * workReport:get — 获取已生成的工作日报
+   *
+   * 从 reports 表按 type=work_daily_report + dateKey 查询。
+   * 未生成时返回 data=null。
+   */
+  ipcMain.handle("workReport:get", (_event, dateKey: string) => {
+    if (!deps.reportRepo) {
+      fail("not_ready", "ReportRepository 未初始化");
+    }
+    try {
+      const report = deps.reportRepo.getByTypeAndDate("work_daily_report", dateKey);
+      if (!report) {
+        return { ok: true as const, data: null };
+      }
+      // 修复（2026-07-07）：与 personalReview:get 同根因，把 Report.contentJson 解析为 WorkReport 对象
+      // 之前直接返回 Report，renderer 强转 WorkReport 后访问 .sections.completed.length 等崩
+      try {
+        const parsed = JSON.parse(report.contentJson) as Record<string, unknown>;
+        const sections = (parsed.sections ?? {}) as Record<string, unknown>;
+        const workReport: WorkReport = {
+          id: typeof parsed.id === "string" ? parsed.id : report.id,
+          dateKey: typeof parsed.dateKey === "string" ? parsed.dateKey : report.dateKey,
+          title: typeof parsed.title === "string" ? parsed.title : report.title,
+          plainText: typeof parsed.plainText === "string" ? parsed.plainText : "",
+          sections: {
+            completed: Array.isArray(sections.completed) ? (sections.completed as string[]) : [],
+            projectProgress: Array.isArray(sections.projectProgress) ? (sections.projectProgress as string[]) : [],
+            risks: Array.isArray(sections.risks) ? (sections.risks as string[]) : [],
+            tomorrowPlan: Array.isArray(sections.tomorrowPlan) ? (sections.tomorrowPlan as string[]) : [],
+          },
+          sourceTimelineBlockIds: Array.isArray(parsed.sourceTimelineBlockIds)
+            ? (parsed.sourceTimelineBlockIds as string[])
+            : [],
+          sourceFactIds: Array.isArray(parsed.sourceFactIds)
+            ? (parsed.sourceFactIds as string[])
+            : [],
+          omittedForPrivacy:
+            typeof parsed.omittedForPrivacy === "number" ? parsed.omittedForPrivacy : 0,
+          warnings: Array.isArray(parsed.warnings) ? (parsed.warnings as string[]) : [],
+          createdAt: report.createdAt,
+          updatedAt: report.updatedAt,
+        };
+        return { ok: true as const, data: workReport };
+      } catch {
+        return { ok: true as const, data: null };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  /**
+   * workReport:saveSelection — 保存用户选区（不生成日报）
+   *
+   * 用于"先保存选区、稍后再生成日报"的流程：
+   * - selectedBlockIds：用户勾选的 timeline block ids
+   * - excludedBlockIds：用户未选中的 timeline block ids
+   *
+   * 持久化到 report_selections 表（type=work_daily_report）。
+   */
+  ipcMain.handle(
+    "workReport:saveSelection",
+    (
+      _event,
+      params: {
+        dateKey: string;
+        selectedBlockIds: string[];
+        excludedBlockIds: string[];
+      }
+    ) => {
+      if (!deps.reportSelectionRepo) {
+        fail("not_ready", "ReportSelectionRepository 未初始化");
+      }
+      if (
+        !params ||
+        typeof params.dateKey !== "string" ||
+        !Array.isArray(params.selectedBlockIds) ||
+        !Array.isArray(params.excludedBlockIds)
+      ) {
+        fail("schema_invalid", "workReport:saveSelection 参数校验失败");
+      }
+      try {
+        deps.reportSelectionRepo.upsert(
+          params.dateKey,
+          "work_daily_report",
+          params.selectedBlockIds,
+          params.excludedBlockIds
+        );
+        return { ok: true as const, data: null };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: message, code: "unknown_error" };
+      }
+    }
+  );
+
+  /**
+   * unfinishedThreads:list — 获取待收尾列表（按分组）
+   *
+   * 参数优先级：
+   * - params.status：按 status 过滤（open/done/snoozed/ignored）
+   * - params.dateKey：按 dateKey 过滤
+   * - 都不传：默认返回所有 open 状态
+   *
+   * 返回 IpcResult<UnfinishedThread[]>。
+   */
+  ipcMain.handle(
+    "unfinishedThreads:list",
+    (_event, params?: { dateKey?: string; status?: string }) => {
+      if (!deps.unfinishedThreadRepo) {
+        fail("not_ready", "UnfinishedThreadRepository 未初始化");
+      }
+      try {
+        if (params?.status) {
+          return { ok: true as const, data: deps.unfinishedThreadRepo.findByStatus(params.status) };
+        }
+        if (params?.dateKey) {
+          return { ok: true as const, data: deps.unfinishedThreadRepo.findByDateKey(params.dateKey) };
+        }
+        // 默认返回所有 open 状态
+        return { ok: true as const, data: deps.unfinishedThreadRepo.findByStatus("open") };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: message, code: "unknown_error" };
+      }
+    }
+  );
+
+  /**
+   * unfinishedThreads:updateStatus — 更新待收尾状态
+   *
+   * 状态枚举：open / done / snoozed / ignored
+   * 用于用户在 UI 上标记待收尾为已完成/暂缓/忽略。
+   */
+  ipcMain.handle(
+    "unfinishedThreads:updateStatus",
+    (
+      _event,
+      params: { id: string; status: "open" | "done" | "snoozed" | "ignored" }
+    ) => {
+      if (!deps.unfinishedThreadRepo) {
+        fail("not_ready", "UnfinishedThreadRepository 未初始化");
+      }
+      if (
+        !params ||
+        typeof params.id !== "string" ||
+        !["open", "done", "snoozed", "ignored"].includes(params.status)
+      ) {
+        fail("schema_invalid", "unfinishedThreads:updateStatus 参数校验失败");
+      }
+      try {
+        const updated = deps.unfinishedThreadRepo.updateStatus(params.id, params.status);
+        if (!updated) {
+          return {
+            ok: false as const,
+            error: `未找到待收尾 ${params.id}`,
+            code: "not_found",
+          };
+        }
+        return { ok: true as const, data: null };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { ok: false as const, error: message, code: "unknown_error" };
+      }
+    }
+  );
+
   // -------------------- 白名单校验 --------------------
   // 额外安全网：捕获未注册的 channel 调用（理论上不会发生，因为 ipcMain.handle 已限定）
   // 这里仅作为开发期检查：断言所有 channel 都已注册
@@ -1137,11 +1706,23 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "reports:get",
   "reports:generate",
   "reports:update",
+  "reports:delete",
   "capture:forgetRecent",
+  "screenshot:clear",
   // M8 新增：数据导出/清空 + 缓存大小查询
   "data:export",
   "data:clearAll",
   "data:getCacheSize",
+  // Phase 2 新增：时间轴 / 个人复盘 / 工作日报 / 待收尾
+  "timeline:build",
+  "timeline:get",
+  "personalReview:generate",
+  "personalReview:get",
+  "workReport:generate",
+  "workReport:get",
+  "workReport:saveSelection",
+  "unfinishedThreads:list",
+  "unfinishedThreads:updateStatus",
 ] as const;
 
 // ============================================================================

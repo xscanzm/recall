@@ -17,6 +17,7 @@ import { TasksPage } from "./pages/TasksPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { ReportsPage } from "./pages/ReportsPage";
 import { MemorySearchPage } from "./pages/MemorySearchPage";
+import { PeoplePage } from "./pages/PeoplePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TrustCenterPage } from "./pages/TrustCenterPage";
 import { useAppStore, type AppSettingsState } from "./state/store";
@@ -106,17 +107,17 @@ export default function App() {
             align-items: center;
             justify-content: center;
             padding: 24px;
-            background-color: var(--bg);
+            background-color: var(--recall-bg);
           }
           .boot-error h1 {
             font-size: 20px;
             margin: 0 0 12px 0;
-            color: var(--danger);
+            color: var(--recall-danger);
           }
           .boot-error p {
             font-size: 13px;
             margin: 0 0 8px 0;
-            color: var(--text-secondary);
+            color: var(--recall-text-muted);
             line-height: 1.6;
             text-align: center;
           }
@@ -135,11 +136,11 @@ export default function App() {
             display: flex;
             align-items: center;
             justify-content: center;
-            background-color: var(--bg);
+            background-color: var(--recall-bg);
           }
           .boot-loading p {
             font-size: 14px;
-            color: var(--text-secondary);
+            color: var(--recall-text-muted);
           }
         `}</style>
       </div>
@@ -171,6 +172,8 @@ function renderPage(page: string) {
       return <ReportsPage />;
     case "memory":
       return <MemorySearchPage />;
+    case "people":
+      return <PeoplePage />;
     case "settings":
       return <SettingsPage />;
     case "trust":

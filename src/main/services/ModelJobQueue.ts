@@ -1,17 +1,17 @@
 // src/main/services/ModelJobQueue.ts
-// 并发和队列（来自 03 文档）
+// 并发和队列（来自 03 文档 + 多模态统一架构改造）
 //
 // 职责：
-// - 视觉任务可并发 1-2 个
-// - LLM 任务按 observation/fact 顺序处理（FIFO）
+// - 统一多模态任务队列（原视觉 + LLM 双队列已合并）
+// - 并发上限 3（可配置），支持多 capture 并行处理
 // - 同一 capture 不重复提交
 // - 失败任务可重试，最多 2 次（总尝试 3 次）
-// - 用户暂停后，正在进行的任务可完成，但不再新增采集任务
+// - 用户暂停后，正在进行的任务可完成，但不再接受新任务
 // - model_jobs 表状态持久化
 //
 // 设计：
-// - 视觉任务池：最多 2 个并发
-// - LLM 任务队列：串行处理，避免对模型 endpoint 造成并发压力
+// - 统一 multimodalQueue：所有模型任务（observer_extractor/linker_scene_judge/timeline_builder 等）共用
+// - 并发池：最多 3 个并发（MULTIMODAL_CONCURRENCY）
 // - 同一 captureId 去重：避免重复提交
 // - 暂停后：不再接受新任务，正在执行的可完成
 //
@@ -25,15 +25,31 @@
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 
 /**
- * 任务类型（来自 spec.md）
+ * 任务类型（来自 spec.md + 多模态统一架构改造）
+ *
+ * 合并后的类型：
+ * - observer_extractor：原 observer + extractor 合并
+ * - linker_scene_judge：原 linker + scene_builder + judge 合并
+ *
+ * 保留的类型（仅切换到 callMultimodal）：
+ * - reporter / timeline_builder / personal_review
+ *
+ * 兼容类型（旧 Worker 迁移期间使用）：
+ * - observer / extractor / linker / scene_builder / judge / json_repair
  */
 export type ModelJobType =
+  // 新合并类型
+  | "observer_extractor"
+  | "linker_scene_judge"
+  | "personal_review"
+  // 兼容旧类型（迁移完成后可删除）
   | "observer"
   | "extractor"
   | "linker"
   | "scene_builder"
   | "judge"
   | "reporter"
+  | "timeline_builder"
   | "json_repair";
 
 /**
@@ -91,10 +107,33 @@ const RETRYABLE_ERROR_CODES = new Set([
 const MAX_ATTEMPTS = 3;
 
 /**
- * 视觉任务并发上限
- * spec.md 要求"视觉任务可并发 1-2 个"
+ * 计算重试退避时间（毫秒）
+ *
+ * - rate_limited：长退避（10s / 30s / 60s）
+ *   多模态模型限流窗口通常需要 10s+ 才能恢复，1s/2s/4s 太短会再次触发 429
+ * - 其他可重试错误（timeout/network_error/invalid_json/schema_invalid）：短退避（1s / 2s / 4s）
+ * - unknown_error：短退避（1s / 2s / 4s）
+ *
+ * @param errorCode 错误码
+ * @param attempts 当前尝试次数（从 1 开始）
  */
-const VISION_CONCURRENCY = 2;
+function computeBackoffMs(errorCode: string | undefined, attempts: number): number {
+  if (errorCode === "rate_limited") {
+    // 限流长退避：10s / 30s / 60s
+    const longBackoffs = [10000, 30000, 60000];
+    return longBackoffs[Math.min(attempts - 1, longBackoffs.length - 1)] ?? 60000;
+  }
+  // 默认短退避：1s / 2s / 4s
+  return Math.min(1000 * Math.pow(2, attempts - 1), 4000);
+}
+
+/**
+ * 多模态任务并发上限
+ *
+ * 改造前：vision=2, llm=1（串行）
+ * 改造后：统一 3 并发（激进合并后单次 capture 只需 2 次调用，总调用量大幅下降，可安全提升并发）
+ */
+const MULTIMODAL_CONCURRENCY = 3;
 
 /**
  * 内部任务条目
@@ -104,7 +143,7 @@ interface QueueEntry<T = unknown> {
   id: string;
   /** 任务类型 */
   type: ModelJobType;
-  /** 关联的 captureId（用于去重；LLM 任务可能没有） */
+  /** 关联的 captureId（用于去重；部分任务可能没有） */
   captureId?: string;
   /** 执行函数 */
   executor: () => Promise<JobResult<T>>;
@@ -116,30 +155,30 @@ interface QueueEntry<T = unknown> {
   attempts: number;
   /** 创建时间（用于排序） */
   createdAt: number;
+  /** 优先级：数字越小越先执行 */
+  priority: number;
+  /** 去重键：相同 key 的 pending/running 任务复用同一个 Promise */
+  dedupeKey?: string;
 }
 
 /**
  * 队列状态
  */
 export interface QueueStatus {
-  /** 待执行的视觉任务数 */
-  pendingVision: number;
-  /** 执行中的视觉任务数 */
-  runningVision: number;
-  /** 待执行的 LLM 任务数 */
-  pendingLlm: number;
-  /** 执行中的 LLM 任务数（0 或 1） */
-  runningLlm: number;
+  /** 待执行的任务数 */
+  pending: number;
+  /** 执行中的任务数 */
+  running: number;
   /** 是否已暂停 */
   paused: boolean;
 }
 
 /**
- * ModelJobQueue：模型任务队列调度器
+ * ModelJobQueue：模型任务队列调度器（多模态统一架构）
  *
  * 设计要点：
- * 1. 视觉任务池：使用 Promise 池实现并发 1-2 个
- * 2. LLM 任务队列：串行处理，按 FIFO 顺序
+ * 1. 统一 multimodalQueue：所有模型任务共用一个队列
+ * 2. 并发池：最多 3 个并发（MULTIMODAL_CONCURRENCY）
  * 3. 同一 captureId 去重：避免重复提交同一捕获
  * 4. 暂停后：不再接受新任务，正在执行的可完成
  * 5. 失败重试：仅对可重试错误码重试，最多 2 次（总 3 次）
@@ -147,33 +186,34 @@ export interface QueueStatus {
  */
 export class ModelJobQueue {
   private readonly modelJobRepo: ModelJobRepository | null;
-  private readonly visionQueue: QueueEntry[] = [];
-  private readonly llmQueue: QueueEntry[] = [];
-  private runningVisionCount = 0;
-  private runningLlmCount = 0;
+  private readonly multimodalQueue: QueueEntry[] = [];
+  private runningCount = 0;
   private isPaused = false;
-  /** 已提交的 captureId 集合（用于去重） */
+  /** 已提交的 captureId:type 集合（用于去重） */
   private readonly submittedCaptureIds = new Set<string>();
-  /** LLM 队列处理中标志 */
-  private isLlmProcessing = false;
+  /** dedupe key -> 正在等待或执行的 Promise */
+  private readonly pendingByDedupeKey = new Map<string, Promise<JobResult<unknown>>>();
 
   constructor(deps: { modelJobRepo?: ModelJobRepository } = {}) {
     this.modelJobRepo = deps.modelJobRepo ?? null;
   }
 
   /**
-   * 提交视觉任务
+   * 提交多模态任务（统一入口）
    *
    * @param input 任务输入
    * @returns 任务执行结果
    *
    * 去重逻辑：
-   * - 如果同一 captureId 已提交且未完成，返回 ok=false, errorCode=duplicate
+   * - 如果同一 dedupeKey 已提交且未完成，复用同一个 Promise
+   * - 如果同一 captureId:type 已提交且未完成，返回 ok=false, errorCode=duplicate
    * - 暂停状态：返回 ok=false, errorCode=paused
    */
-  async enqueueVisionJob<T = unknown>(input: {
-    type: "observer";
-    captureId: string;
+  async enqueueMultimodalJob<T = unknown>(input: {
+    type: ModelJobType;
+    captureId?: string;
+    priority?: number;
+    dedupeKey?: string;
     executor: () => Promise<JobResult<T>>;
   }): Promise<JobResult<T>> {
     // 暂停状态检查
@@ -181,71 +221,112 @@ export class ModelJobQueue {
       return {
         ok: false,
         errorCode: "paused",
-        errorMessage: "队列已暂停，不再接受新视觉任务",
+        errorMessage: "队列已暂停，不再接受新任务",
       };
     }
 
-    // 同一 capture 去重
-    if (this.submittedCaptureIds.has(input.captureId)) {
-      return {
-        ok: false,
-        errorCode: "duplicate",
-        errorMessage: `captureId ${input.captureId} 已提交，不重复处理`,
-      };
+    // dedupeKey 复用
+    if (input.dedupeKey) {
+      const existing = this.pendingByDedupeKey.get(input.dedupeKey);
+      if (existing) {
+        return existing as Promise<JobResult<T>>;
+      }
     }
-    this.submittedCaptureIds.add(input.captureId);
 
-    return this.enqueueEntry<T>({
-      type: input.type,
-      captureId: input.captureId,
-      executor: input.executor,
-      kind: "vision",
-    });
-  }
-
-  /**
-   * 提交 LLM 任务
-   *
-   * @param input 任务输入
-   * @returns 任务执行结果
-   *
-   * 暂停状态：仍接受 LLM 任务（因为可能由已采集的 observation 触发的后续处理）
-   * 但 pause 后不再接受新的 observer 任务（由 enqueueVisionJob 检查）
-   *
-   * 注意：spec.md "用户暂停后，正在进行的任务可完成，但不再新增采集任务"
-   * - "采集任务" = observer 视觉任务
-   * - LLM 后续处理（extractor/linker/judge）属于"正在进行的任务"的延续
-   */
-  async enqueueLanguageJob<T = unknown>(input: {
-    type: "extractor" | "linker" | "scene_builder" | "judge" | "reporter";
-    captureId?: string;
-    executor: () => Promise<JobResult<T>>;
-  }): Promise<JobResult<T>> {
-    // captureId 去重（仅当提供 captureId 时）
-    if (input.captureId && this.submittedCaptureIds.has(`llm:${input.captureId}:${input.type}`)) {
+    // captureId:type 去重（仅当提供 captureId 时）
+    const dedupeKey = input.captureId ? `${input.type}:${input.captureId}` : null;
+    if (dedupeKey && this.submittedCaptureIds.has(dedupeKey)) {
       return {
         ok: false,
         errorCode: "duplicate",
         errorMessage: `captureId ${input.captureId} 的 ${input.type} 任务已提交`,
       };
     }
-    if (input.captureId) {
-      this.submittedCaptureIds.add(`llm:${input.captureId}:${input.type}`);
+    if (dedupeKey) {
+      this.submittedCaptureIds.add(dedupeKey);
     }
 
-    return this.enqueueEntry<T>({
+    const promise = this.enqueueEntry<T>({
+      type: input.type,
+      captureId: input.captureId,
+      priority: input.priority,
+      dedupeKey: input.dedupeKey,
+      executor: input.executor,
+    });
+
+    if (input.dedupeKey) {
+      this.pendingByDedupeKey.set(input.dedupeKey, promise as Promise<JobResult<unknown>>);
+      void promise.then(
+        () => this.pendingByDedupeKey.delete(input.dedupeKey!),
+        () => this.pendingByDedupeKey.delete(input.dedupeKey!)
+      );
+    }
+
+    return promise;
+  }
+
+  /**
+   * 提交视觉任务（兼容旧 Worker，内部转为 enqueueMultimodalJob）
+   *
+   * @deprecated 新代码请使用 enqueueMultimodalJob
+   */
+  async enqueueVisionJob<T = unknown>(input: {
+    type: "observer";
+    captureId: string;
+    executor: () => Promise<JobResult<T>>;
+  }): Promise<JobResult<T>> {
+    // 旧视觉任务的 captureId 去重语义：同一 captureId 不重复提交
+    // 转换为新语义：observer:captureId
+    const dedupeKey = `observer:${input.captureId}`;
+    if (this.submittedCaptureIds.has(dedupeKey)) {
+      return {
+        ok: false,
+        errorCode: "duplicate",
+        errorMessage: `captureId ${input.captureId} 已提交，不重复处理`,
+      };
+    }
+    // 不在这里 add，让 enqueueMultimodalJob 统一处理
+    // 但 enqueueMultimodalJob 用 type:captureId 格式，这里需特殊处理
+    this.submittedCaptureIds.add(dedupeKey);
+
+    return this.enqueueMultimodalJob<T>({
       type: input.type,
       captureId: input.captureId,
       executor: input.executor,
-      kind: "llm",
+    });
+  }
+
+  /**
+   * 提交 LLM 任务（兼容旧 Worker，内部转为 enqueueMultimodalJob）
+   *
+   * @deprecated 新代码请使用 enqueueMultimodalJob
+   */
+  async enqueueLanguageJob<T = unknown>(input: {
+    type:
+      | "extractor"
+      | "linker"
+      | "scene_builder"
+      | "judge"
+      | "reporter"
+      | "timeline_builder";
+    captureId?: string;
+    priority?: number;
+    dedupeKey?: string;
+    executor: () => Promise<JobResult<T>>;
+  }): Promise<JobResult<T>> {
+    return this.enqueueMultimodalJob<T>({
+      type: input.type,
+      captureId: input.captureId,
+      priority: input.priority,
+      dedupeKey: input.dedupeKey,
+      executor: input.executor,
     });
   }
 
   /**
    * 暂停队列
-   * - 不再接受新的视觉任务（采集任务）
+   * - 不再接受新任务
    * - 正在执行的任务可完成
-   * - LLM 队列中的任务继续处理（属于"正在进行的任务"的延续）
    */
   pause(): void {
     this.isPaused = true;
@@ -257,8 +338,7 @@ export class ModelJobQueue {
   resume(): void {
     this.isPaused = false;
     // 恢复后触发调度
-    this.scheduleVision();
-    this.scheduleLlm();
+    this.scheduleMultimodal();
   }
 
   /**
@@ -273,10 +353,8 @@ export class ModelJobQueue {
    */
   getStatus(): QueueStatus {
     return {
-      pendingVision: this.visionQueue.length,
-      runningVision: this.runningVisionCount,
-      pendingLlm: this.llmQueue.length,
-      runningLlm: this.runningLlmCount,
+      pending: this.multimodalQueue.length,
+      running: this.runningCount,
       paused: this.isPaused,
     };
   }
@@ -287,15 +365,16 @@ export class ModelJobQueue {
    * - 保留最近完成的 captureId 一段时间，避免同一 capture 短时间内重复提交
    *
    * 简化实现：任务完成后立即从 set 中移除（允许同一 captureId 重新提交）
-   * - 实际上 observer 不会对同一 captureId 重复触发
-   * - LLM 任务的 captureId 去重也只在 captureBundle 处理期间有效
    */
   forgetCaptureId(captureId: string): void {
-    this.submittedCaptureIds.delete(captureId);
-    this.submittedCaptureIds.delete(`llm:${captureId}:extractor`);
-    this.submittedCaptureIds.delete(`llm:${captureId}:linker`);
-    this.submittedCaptureIds.delete(`llm:${captureId}:scene_builder`);
-    this.submittedCaptureIds.delete(`llm:${captureId}:judge`);
+    this.submittedCaptureIds.delete(`observer:${captureId}`);
+    this.submittedCaptureIds.delete(`observer_extractor:${captureId}`);
+    this.submittedCaptureIds.delete(`linker_scene_judge:${captureId}`);
+    // 兼容旧类型
+    this.submittedCaptureIds.delete(`extractor:${captureId}`);
+    this.submittedCaptureIds.delete(`linker:${captureId}`);
+    this.submittedCaptureIds.delete(`scene_builder:${captureId}`);
+    this.submittedCaptureIds.delete(`judge:${captureId}`);
   }
 
   // ----------------------------------------------------------------
@@ -308,8 +387,9 @@ export class ModelJobQueue {
   private enqueueEntry<T>(entry: {
     type: ModelJobType;
     captureId?: string;
+    priority?: number;
+    dedupeKey?: string;
     executor: () => Promise<JobResult<T>>;
-    kind: "vision" | "llm";
   }): Promise<JobResult<T>> {
     return new Promise<JobResult<T>>((resolve, reject) => {
       const queueEntry: QueueEntry<T> = {
@@ -321,51 +401,55 @@ export class ModelJobQueue {
         reject,
         attempts: 0,
         createdAt: Date.now(),
+        priority: entry.priority ?? 2,
+        dedupeKey: entry.dedupeKey,
       };
 
-      if (entry.kind === "vision") {
-        this.visionQueue.push(queueEntry as QueueEntry<unknown>);
-        this.scheduleVision();
-      } else {
-        this.llmQueue.push(queueEntry as QueueEntry<unknown>);
-        this.scheduleLlm();
-      }
+      this.multimodalQueue.push(queueEntry as QueueEntry<unknown>);
+      this.scheduleMultimodal();
     });
   }
 
   /**
-   * 调度视觉任务
+   * 调度多模态任务
    * - 检查并发数是否未达上限
    * - 暂停时不调度新任务（但正在执行的可完成）
    */
-  private scheduleVision(): void {
+  private scheduleMultimodal(): void {
     // 暂停时不调度新任务
     if (this.isPaused) return;
-    while (this.runningVisionCount < VISION_CONCURRENCY && this.visionQueue.length > 0) {
-      const entry = this.visionQueue.shift()!;
-      this.runningVisionCount++;
-      void this.runEntry(entry, "vision");
+    while (this.runningCount < MULTIMODAL_CONCURRENCY && this.multimodalQueue.length > 0) {
+      const entry = this.shiftNextEntry();
+      if (!entry) break;
+      this.runningCount++;
+      void this.runEntry(entry);
     }
   }
 
   /**
-   * 调度 LLM 任务（串行）
-   * - 同一时刻只处理 1 个 LLM 任务
-   * - 不受 pause 影响（pause 只阻断新视觉任务）
+   * 从队列中取下一项：优先级小的先执行，同优先级保持 FIFO。
    */
-  private scheduleLlm(): void {
-    if (this.isLlmProcessing) return;
-    if (this.llmQueue.length === 0) return;
-    const entry = this.llmQueue.shift()!;
-    this.isLlmProcessing = true;
-    this.runningLlmCount = 1;
-    void this.runEntry(entry, "llm");
+  private shiftNextEntry(): QueueEntry | null {
+    if (this.multimodalQueue.length === 0) return null;
+    let bestIndex = 0;
+    for (let i = 1; i < this.multimodalQueue.length; i++) {
+      const candidate = this.multimodalQueue[i];
+      const best = this.multimodalQueue[bestIndex];
+      if (
+        candidate.priority < best.priority ||
+        (candidate.priority === best.priority && candidate.createdAt < best.createdAt)
+      ) {
+        bestIndex = i;
+      }
+    }
+    const [entry] = this.multimodalQueue.splice(bestIndex, 1);
+    return entry;
   }
 
   /**
    * 执行单个任务条目（含重试逻辑）
    */
-  private async runEntry(entry: QueueEntry, kind: "vision" | "llm"): Promise<void> {
+  private async runEntry(entry: QueueEntry): Promise<void> {
     try {
       let lastResult: JobResult | null = null;
 
@@ -397,8 +481,10 @@ export class ModelJobQueue {
             return;
           }
 
-          // 等待重试退避（指数退避：1s, 2s, 4s）
-          const backoffMs = Math.min(1000 * Math.pow(2, entry.attempts - 1), 4000);
+          // 等待重试退避
+          // - rate_limited 单独走更长退避（10s/30s/60s），给限流窗口足够恢复时间
+          // - 其他错误走短退避（1s/2s/4s）
+          const backoffMs = computeBackoffMs(errorCode, entry.attempts);
           await sleep(backoffMs);
         } catch (err) {
           // executor 抛出异常
@@ -415,8 +501,8 @@ export class ModelJobQueue {
             return;
           }
 
-          // 异常也走重试
-          const backoffMs = Math.min(1000 * Math.pow(2, entry.attempts - 1), 4000);
+          // 异常也走重试（unknown_error 走短退避）
+          const backoffMs = computeBackoffMs("unknown_error", entry.attempts);
           await sleep(backoffMs);
         }
       }
@@ -438,22 +524,13 @@ export class ModelJobQueue {
       entry.reject(new Error(errorMessage));
     } finally {
       // 释放并发槽位
-      if (kind === "vision") {
-        this.runningVisionCount--;
-        // 清理 captureId 记录（允许同一 capture 重新提交）
-        if (entry.captureId) {
-          this.forgetCaptureId(entry.captureId);
-        }
-        // 触发下一次调度
-        this.scheduleVision();
-      } else {
-        this.isLlmProcessing = false;
-        this.runningLlmCount = 0;
-        if (entry.captureId) {
-          this.forgetCaptureId(entry.captureId);
-        }
-        this.scheduleLlm();
+      this.runningCount--;
+      // 清理 captureId 记录（允许同一 capture 重新提交）
+      if (entry.captureId) {
+        this.forgetCaptureId(entry.captureId);
       }
+      // 触发下一次调度
+      this.scheduleMultimodal();
     }
   }
 }

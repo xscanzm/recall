@@ -162,16 +162,20 @@ export class TrayService {
 
   /**
    * 解析图标文件路径
-   * - 开发模式：项目根 resources/icon.png
-   * - 打包模式：process.resourcesPath/icon.png
+   * - 优先使用 resources/icons/tray-32.png（圆角矩形浅色版 @2x）
+   * - 回退到 resources/icons/tray-16.png（@1x）
+   * - 开发模式：从 dist/main/services 上溯到项目根 resources/icons/
+   * - 打包模式：process.resourcesPath/icons/
+   *
+   * 由 scripts/build-logos.mjs 统一生成，所有尺寸见 resources/icons/README.md
    */
   private resolveIconPath(): string | null {
     if (app.isPackaged) {
-      return path.join(process.resourcesPath, "icon.png");
+      return path.join(process.resourcesPath, "icons", "tray-32.png");
     }
     // 开发模式：从 dist/main/services 上溯到项目根
     // __dirname 在编译产物中是 dist/main/services
-    return path.join(__dirname, "..", "..", "..", "resources", "icon.png");
+    return path.join(__dirname, "..", "..", "..", "resources", "icons", "tray-32.png");
   }
 
   /**

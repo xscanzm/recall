@@ -6,7 +6,7 @@
 // - 不能直接总结截图，必须基于结构化记忆（facts/scenes/tasks/decisions/projects/proactive_items）
 // - 重要条目必须保留 evidenceFactIds 或 evidenceSceneIds
 // - 不确定内容放入 needsReview（日报）或 risks（周报），不要写成确定事实
-// - 调用 ModelGateway.callLanguage
+// - 调用 ModelGateway.callMultimodal
 // - zod 校验 DailyReportOutput / WeeklyReportOutput
 // - 写入 reports 表（type=daily/weekly，content_json = 报告 JSON）
 //
@@ -184,13 +184,13 @@ export class ReporterWorker {
    * @returns 日报生成结果（ok=true 时包含 DailyReportOutput 和写入的 report 记录）
    */
   async generateDailyReport(date: string): Promise<DailyReportResult> {
-    // 1. 获取语言模型配置
-    const languageModelConfigId = this.getActiveLanguageModelConfigId();
-    if (!languageModelConfigId) {
+    // 1. 获取多模态模型配置
+    const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
+    if (!multimodalModelConfigId) {
       return {
         ok: false,
         errorCode: "no_language_model",
-        errorMessage: "未配置启用的语言模型，无法生成日报",
+        errorMessage: "未配置启用的多模态模型，无法生成日报",
       };
     }
 
@@ -244,13 +244,13 @@ export class ReporterWorker {
     });
 
     // 6. 提交 LLM 任务
-    const result = await this.modelJobQueue.enqueueLanguageJob<DailyReportOutput>({
+    const result = await this.modelJobQueue.enqueueMultimodalJob<DailyReportOutput>({
       type: "reporter",
       executor: async () => {
-        return this.modelGateway.callLanguage<DailyReportOutput>(
+        return this.modelGateway.callMultimodal<DailyReportOutput>(
           {
-            kind: "language",
-            configId: languageModelConfigId,
+            kind: "multimodal",
+            configId: multimodalModelConfigId,
             systemPrompt: "",
             userPrompt,
             jobType: "reporter",
@@ -304,13 +304,13 @@ export class ReporterWorker {
    * @returns 周报生成结果
    */
   async generateWeeklyReport(weekStart: string): Promise<WeeklyReportResult> {
-    // 1. 获取语言模型配置
-    const languageModelConfigId = this.getActiveLanguageModelConfigId();
-    if (!languageModelConfigId) {
+    // 1. 获取多模态模型配置
+    const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
+    if (!multimodalModelConfigId) {
       return {
         ok: false,
         errorCode: "no_language_model",
-        errorMessage: "未配置启用的语言模型，无法生成周报",
+        errorMessage: "未配置启用的多模态模型，无法生成周报",
       };
     }
 
@@ -379,13 +379,13 @@ export class ReporterWorker {
     });
 
     // 8. 提交 LLM 任务
-    const result = await this.modelJobQueue.enqueueLanguageJob<WeeklyReportOutput>({
+    const result = await this.modelJobQueue.enqueueMultimodalJob<WeeklyReportOutput>({
       type: "reporter",
       executor: async () => {
-        return this.modelGateway.callLanguage<WeeklyReportOutput>(
+        return this.modelGateway.callMultimodal<WeeklyReportOutput>(
           {
-            kind: "language",
-            configId: languageModelConfigId,
+            kind: "multimodal",
+            configId: multimodalModelConfigId,
             systemPrompt: "",
             userPrompt: weeklyUserPrompt,
             jobType: "reporter",
@@ -435,12 +435,12 @@ export class ReporterWorker {
   // ----------------------------------------------------------------
 
   /**
-   * 获取启用的语言模型配置 id
+   * 获取启用的多模态模型配置 id
    */
-  private getActiveLanguageModelConfigId(): string | null {
+  private getActiveMultimodalModelConfigId(): string | null {
     if (!this.settingsService) return null;
     try {
-      const configs = this.settingsService.listLanguageModelConfigs();
+      const configs = this.settingsService.listMultimodalModelConfigs();
       const enabled = configs.find((c) => c.enabled);
       return enabled?.id ?? null;
     } catch {
@@ -688,14 +688,28 @@ export class ReporterWorker {
 // ============================================================================
 
 /**
- * 计算某天的起始/结束 ISO 时间
- * - startOfDay: YYYY-MM-DDT00:00:00.000Z
- * - endOfDay: YYYY-MM-DDT23:59:59.999Z
+ * 计算指定本地日期的 UTC ISO 范围（startOfDay / endOfDay）
+ *
+ * 修复：之前直接用 `${date}T00:00:00.000Z` 把"本地日期"当 UTC 解释，
+ * 在 UTC+8 时区下：
+ * - startOfDay 实际是本地 08:00，**漏掉**当天 0:00-8:00 的事实
+ * - endOfDay 实际是次日 07:59:59，**误吸**次日 0:00-8:00 的事实
+ *
+ * 新版：用 Intl.DateTimeFormat 或 Date.UTC 反推本地 0:00 对应的 UTC ISO 字符串。
+ * - 本地 0:00 → 减去时区偏移 → UTC ISO
+ * - 本地 23:59:59.999 → 同上 + 24h - 1ms
  */
 function getDateRange(date: string): { startOfDay: string; endOfDay: string } {
+  // 2026-07-07 变更：工作日报数据范围改为昨天 19:00 → 今天 19:00（滚动 24 小时）
+  // 原因：工作日报在 19:00 生成，覆盖"从昨天下班后到今天下班前"的完整工作周期
+  const [y, m, d] = date.split("-").map(Number);
+  // 今天 19:00（本地）
+  const today19 = new Date(y, (m ?? 1) - 1, d ?? 1, 19, 0, 0, 0);
+  // 昨天 19:00（本地）= 今天 19:00 - 24h
+  const yesterday19 = new Date(today19.getTime() - 24 * 60 * 60 * 1000);
   return {
-    startOfDay: `${date}T00:00:00.000Z`,
-    endOfDay: `${date}T23:59:59.999Z`,
+    startOfDay: yesterday19.toISOString(),
+    endOfDay: today19.toISOString(),
   };
 }
 
@@ -703,9 +717,13 @@ function getDateRange(date: string): { startOfDay: string; endOfDay: string } {
  * 给日期字符串加 N 天，返回 YYYY-MM-DD
  */
 function addDays(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00.000Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  const [y, m, d] = date.split("-").map(Number);
+  const dt = new Date(y, (m ?? 1) - 1, d ?? 1);
+  dt.setDate(dt.getDate() + days);
+  const yy = dt.getFullYear();
+  const mm = (dt.getMonth() + 1).toString().padStart(2, "0");
+  const dd = dt.getDate().toString().padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
 }
 
 /**

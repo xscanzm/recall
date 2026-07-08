@@ -40,43 +40,43 @@ export function SceneBlock(props: SceneBlockProps) {
       </div>
       <style>{`
         .scene-block {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 14px 16px;
           cursor: ${props.onClick ? "pointer" : "default"};
           transition: border-color 0.15s ease;
         }
         .scene-block:hover {
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .scene-block__header {
           display: flex;
           gap: 12px;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin-bottom: 6px;
         }
         .scene-block__project {
-          color: var(--accent-green);
+          color: var(--recall-accent);
         }
         .scene-block__title {
           font-size: 14px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin-bottom: 6px;
         }
         .scene-block__summary {
           margin: 0 0 8px 0;
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.5;
         }
         .scene-block__meta {
           display: flex;
           gap: 12px;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
       `}</style>
     </div>

@@ -47,7 +47,7 @@ import { zodToDescription } from "./zodToDescription";
 /**
  * 模型种类
  */
-export type ModelKind = "vision" | "language";
+export type ModelKind = "vision" | "language" | "multimodal";
 
 /**
  * 默认超时（毫秒）
@@ -249,6 +249,30 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: "callLanguage 只接受 kind=language 的调用",
+      };
+    }
+    return this.callInternal<T>(input, schema);
+  }
+
+  /**
+   * 调用 multimodal 模型（可同时处理图片 + 文本，也可纯文本）
+   *
+   * 统一替代 callVision 和 callLanguage：
+   * - 提供 imagePaths 时走 content 数组（与 vision 一致）
+   * - 不提供 imagePaths 时走纯文本（与 language 一致）
+   *
+   * @param input 调用输入（kind 必须为 "multimodal"）
+   * @param schema 输出 schema（zod）
+   */
+  async callMultimodal<T>(
+    input: ModelCallInput,
+    schema: ZodSchemaLike<T>
+  ): Promise<ModelCallResult<T>> {
+    if (input.kind !== "multimodal") {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: "callMultimodal 只接受 kind=multimodal 的调用",
       };
     }
     return this.callInternal<T>(input, schema);
@@ -725,12 +749,13 @@ function buildMessages(params: {
 }): Array<Record<string, unknown>> {
   const systemContent = `${COMMON_SYSTEM_PROMPT}\n\n${params.systemPrompt}`;
 
-  if (params.kind === "vision" && params.imagePaths && params.imagePaths.length > 0) {
-    // vision：构造 content 数组
+  // vision 或 multimodal（有图片时）：构造 content 数组
+  const hasImages = params.imagePaths && params.imagePaths.length > 0;
+  if ((params.kind === "vision" || params.kind === "multimodal") && hasImages) {
     const userContent: Array<Record<string, unknown>> = [
       { type: "text", text: params.userPrompt },
     ];
-    for (const imgPath of params.imagePaths) {
+    for (const imgPath of params.imagePaths!) {
       const dataUrl = imagePathToDataUrl(imgPath);
       if (dataUrl) {
         userContent.push({
@@ -745,7 +770,7 @@ function buildMessages(params: {
     ];
   }
 
-  // language：纯文本
+  // language 或 multimodal（无图片时）：纯文本
   return [
     { role: "system", content: systemContent },
     { role: "user", content: params.userPrompt },
@@ -794,15 +819,78 @@ function mapExtToMime(ext: string): string | null {
 
 /**
  * 尝试 JSON parse
+ *
+ * 处理顺序：stripReasoningTags → stripMarkdownCodeFence → JSON.parse
+ * - reasoning 模型（如 deepseek-v4-flash）常输出 <think>...</think> 包裹的推理过程
+ * - 若不先剥离，JSON.parse 会在 <think 起始处立即抛错，导致 invalid_json 失败
  */
 function tryParseJson(text: string): { ok: true; data: unknown } | { ok: false; error: string } {
   try {
-    // 去除可能的 markdown 代码块包裹
-    const cleaned = stripMarkdownCodeFence(text);
+    // 先剥离 reasoning 模型的 <think>/<reasoning> 标签
+    const withoutReasoning = stripReasoningTags(text);
+    // 再去除可能的 markdown 代码块包裹
+    const cleaned = stripMarkdownCodeFence(withoutReasoning);
     return { ok: true, data: JSON.parse(cleaned) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * 剥离 reasoning 模型的推理标签
+ *
+ * reasoning 模型（deepseek-v4-flash 等）常在正式 JSON 之前输出：
+ *   <think>让我分析这个 observation...</think>
+ *   {"facts": [...]}
+ *
+ * 部分模型还会使用 <reasoning>...</reasoning> 或 <reflection>...</reflection> 包裹。
+ * 此函数去除这些包裹块，只保留正式输出内容。
+ *
+ * 处理策略：
+ * 1. 先去除成对标签 <think>...</think>（含未闭合的 <think> 到结尾）
+ * 2. 找到第一个 { 或 [ 字符（JSON 起始），截取到结尾再交给 JSON.parse
+ *    这样即使标签未闭合或混入其他文本，也能稳定提取 JSON
+ */
+function stripReasoningTags(text: string): string {
+  let s = text;
+
+  // 1. 去除成对的 <think>...</think> / <reasoning>...</reasoning> / <reflection>...</reflection>
+  const tagPairs = [
+    /<think\b[^>]*>[\s\S]*?<\/think\s*>/gi,
+    /<reasoning\b[^>]*>[\s\S]*?<\/reasoning\s*>/gi,
+    /<reflection\b[^>]*>[\s\S]*?<\/reflection\s*>/gi,
+  ];
+  for (const re of tagPairs) {
+    s = s.replace(re, "");
+  }
+
+  // 2. 去除未闭合的 <think>...</think>（只有开头 <think> 没有结尾）
+  //    部分模型输出 <think>xxx 直到结尾都没闭合
+  const unclosedTags = [/<think\b[^>]*>[\s\S]*$/gi, /<reasoning\b[^>]*>[\s\S]*$/gi, /<reflection\b[^>]*>[\s\S]*$/gi];
+  for (const re of unclosedTags) {
+    s = s.replace(re, "");
+  }
+
+  // 3. 若剩余文本仍含 <think 起始但无闭合，截掉前面部分
+  //    找第一个 JSON 起始字符 { 或 [，取从该位置到结尾
+  const trimmed = s.trim();
+  if (!trimmed) return trimmed;
+
+  // 4. 定位第一个 { 或 [（JSON 对象/数组起始），截掉其前的任何文字
+  const firstObj = trimmed.indexOf("{");
+  const firstArr = trimmed.indexOf("[");
+  let startIdx = -1;
+  if (firstObj >= 0 && firstArr >= 0) {
+    startIdx = Math.min(firstObj, firstArr);
+  } else if (firstObj >= 0) {
+    startIdx = firstObj;
+  } else if (firstArr >= 0) {
+    startIdx = firstArr;
+  }
+  if (startIdx > 0) {
+    return trimmed.slice(startIdx);
+  }
+  return trimmed;
 }
 
 /**

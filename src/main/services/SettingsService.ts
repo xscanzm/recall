@@ -63,7 +63,9 @@ export class SettingsService {
 
   /**
    * 更新应用偏好（写入 settings.json）
-   * patch 采用浅合并：observation/screenshot/notification/dailyReport/onboardingCompleted 各自整体替换
+   * patch 采用浅合并：observation/screenshot/notification/dailyReport/personalReview/schedule/onboardingCompleted 各自整体替换
+   * - schedule 字段：仅 ReportScheduler 内部写，外部 API 不应直接 patch；
+   *   这里提供独立方法 setSchedule() 以便区分。
    */
   update(patch: Partial<AppSettings>): AppSettings {
     if (!this.initialized) this.init();
@@ -73,10 +75,27 @@ export class SettingsService {
       screenshot: patch.screenshot ?? this.cache.screenshot,
       notification: patch.notification ?? this.cache.notification,
       dailyReport: patch.dailyReport ?? this.cache.dailyReport,
+      personalReview: patch.personalReview ?? this.cache.personalReview,
+      schedule: patch.schedule ?? this.cache.schedule,
       onboardingCompleted:
         patch.onboardingCompleted ?? this.cache.onboardingCompleted,
     };
 
+    this.saveToFile(this.cache);
+    return this.cache;
+  }
+
+  /**
+   * 仅更新 schedule 字段（用于 ReportScheduler 写入 lastRunDate）
+   * - 单独方法避免误覆盖其他字段
+   * - 同步写 settings.json 保证重启后能恢复
+   */
+  setSchedule(patch: Partial<AppSettings["schedule"]>): AppSettings {
+    if (!this.initialized) this.init();
+    this.cache = {
+      ...this.cache,
+      schedule: { ...this.cache.schedule, ...patch },
+    };
     this.saveToFile(this.cache);
     return this.cache;
   }
@@ -96,7 +115,7 @@ export class SettingsService {
   }
 
   listModelConfigs(opts: {
-    kind?: "vision" | "language";
+    kind?: "vision" | "language" | "multimodal";
     enabled?: boolean;
   } = {}): ModelConfig[] {
     return this.settingsRepo.listModelConfigs(opts);
@@ -108,6 +127,26 @@ export class SettingsService {
 
   listLanguageModelConfigs(): ModelConfig[] {
     return this.settingsRepo.listLanguageModelConfigs();
+  }
+
+  listMultimodalModelConfigs(): ModelConfig[] {
+    return this.settingsRepo.listMultimodalModelConfigs();
+  }
+
+  /**
+   * 获取当前启用的多模态模型配置 id
+   * - 优先返回 listMultimodalModelConfigs() 中第一个 enabled 配置
+   * - 无启用配置时返回 null
+   * - 供 Pipeline / 新合并 Worker 解析当前生效的多模态配置
+   */
+  getActiveMultimodalModelConfigId(): string | null {
+    try {
+      const configs = this.listMultimodalModelConfigs();
+      const enabled = configs.find((c) => c.enabled);
+      return enabled?.id ?? null;
+    } catch {
+      return null;
+    }
   }
 
   updateModelConfig(id: string, patch: UpdateModelConfigInput): ModelConfig | null {
@@ -206,6 +245,11 @@ export class SettingsService {
         screenshot: { ...DEFAULT_SETTINGS.screenshot, ...parsed.screenshot },
         notification: { ...DEFAULT_SETTINGS.notification, ...parsed.notification },
         dailyReport: { ...DEFAULT_SETTINGS.dailyReport, ...parsed.dailyReport },
+        personalReview: {
+          ...DEFAULT_SETTINGS.personalReview,
+          ...parsed.personalReview,
+        },
+        schedule: { ...DEFAULT_SETTINGS.schedule, ...parsed.schedule },
         onboardingCompleted:
           parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,
       };

@@ -331,9 +331,9 @@ export function CorrectionDialog({
           z-index: 1000;
         }
         .correction-dialog__modal {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           box-shadow: 0 4px 24px rgba(30, 36, 35, 0.12);
           width: 90%;
           max-width: 560px;
@@ -346,7 +346,7 @@ export function CorrectionDialog({
           justify-content: space-between;
           align-items: center;
           padding: 16px 20px;
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid var(--recall-border);
         }
         .correction-dialog__header h3 {
           font-size: 16px;
@@ -356,7 +356,7 @@ export function CorrectionDialog({
           font-size: 12px;
           padding: 4px 10px;
           background-color: transparent;
-          border: 1px solid var(--border);
+          border: 1px solid var(--recall-border);
         }
         .correction-dialog__body {
           padding: 16px 20px;
@@ -365,13 +365,13 @@ export function CorrectionDialog({
         }
         .correction-dialog__hint {
           font-size: 13px;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin: 0 0 4px 0;
           font-weight: 500;
         }
         .correction-dialog__sub {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0 0 12px 0;
           line-height: 1.6;
         }
@@ -384,9 +384,9 @@ export function CorrectionDialog({
         .correction-dialog__option {
           text-align: left;
           padding: 10px 14px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
-          background-color: var(--surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
+          background-color: var(--recall-surface);
           transition: border-color 0.12s ease, background-color 0.12s ease;
           cursor: pointer;
         }
@@ -394,18 +394,18 @@ export function CorrectionDialog({
           background-color: #f0eee7;
         }
         .correction-dialog__option--active {
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
           background-color: #eef3f1;
         }
         .correction-dialog__option-label {
           font-size: 13px;
           font-weight: 500;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin-bottom: 2px;
         }
         .correction-dialog__option-desc {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .correction-dialog__field {
           margin-bottom: 12px;
@@ -415,18 +415,18 @@ export function CorrectionDialog({
         }
         .correction-dialog__field-label {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           font-weight: 500;
         }
         .correction-dialog__field-required {
-          color: var(--danger);
+          color: var(--recall-danger);
           margin-left: 2px;
         }
         .correction-dialog__textarea {
           width: 100%;
           padding: 8px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           font-family: inherit;
           font-size: 13px;
           resize: vertical;
@@ -435,7 +435,7 @@ export function CorrectionDialog({
         }
         .correction-dialog__textarea:focus {
           outline: none;
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .correction-dialog__textarea--note {
           min-height: 40px;
@@ -443,19 +443,19 @@ export function CorrectionDialog({
         .correction-dialog__select {
           width: 100%;
           padding: 8px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           font-family: inherit;
           font-size: 13px;
           box-sizing: border-box;
-          background-color: var(--surface);
+          background-color: var(--recall-surface);
         }
         .correction-dialog__select:focus {
           outline: none;
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .correction-dialog__error {
-          color: var(--danger);
+          color: var(--recall-danger);
           font-size: 12px;
           margin: 8px 0 0 0;
         }
@@ -464,7 +464,7 @@ export function CorrectionDialog({
           justify-content: flex-end;
           gap: 8px;
           padding: 12px 20px;
-          border-top: 1px solid var(--border);
+          border-top: 1px solid var(--recall-border);
         }
       `}</style>
     </div>

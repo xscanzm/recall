@@ -103,10 +103,10 @@ export class SettingsRepository {
   }
 
   /**
-   * 按 kind 查询（vision / language）
+   * 按 kind 查询（vision / language / multimodal）
    */
   listModelConfigs(opts: {
-    kind?: "vision" | "language";
+    kind?: "vision" | "language" | "multimodal";
     enabled?: boolean;
   } = {}): ModelConfig[] {
     const conditions: string[] = [];
@@ -135,9 +135,16 @@ export class SettingsRepository {
   }
 
   /**
+   * 查询 multimodal 模型配置
+   */
+  listMultimodalModelConfigs(): ModelConfig[] {
+    return this.listModelConfigs({ kind: "multimodal" });
+  }
+
+  /**
    * 查询启用的模型配置
    */
-  listEnabledModelConfigs(kind?: "vision" | "language"): ModelConfig[] {
+  listEnabledModelConfigs(kind?: "vision" | "language" | "multimodal"): ModelConfig[] {
     return this.listModelConfigs({ kind, enabled: true });
   }
 
@@ -317,7 +324,7 @@ export function createSettingsRepository(db: DB): SettingsRepository {
 function mapModelConfigRow(row: ModelConfigRow): ModelConfig {
   return {
     id: row.id,
-    kind: row.kind as "vision" | "language",
+    kind: row.kind as "vision" | "language" | "multimodal",
     providerName: row.provider_name,
     endpoint: row.endpoint,
     model: row.model,

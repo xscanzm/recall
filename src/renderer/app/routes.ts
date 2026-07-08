@@ -20,6 +20,7 @@ export const ROUTES: RouteMeta[] = [
   { key: "projects", label: "项目", description: "项目卡片与详情" },
   { key: "reports", label: "报告", description: "日报、历史日报、周报" },
   { key: "memory", label: "记忆库", description: "搜索线索、工作片段、任务、项目、决策、报告" },
+  { key: "people", label: "人物", description: "人物列表与详情" },
   { key: "settings", label: "设置", description: "模型配置、观察设置、截图保留、通知、黑名单" },
   { key: "trust", label: "信任中心", description: "Recall 看到什么、保存什么、如何删除" },
 ];

@@ -8,6 +8,7 @@
 
 import type { DB } from "../Database";
 import type { Report, CreateReportInput } from "../../models/types";
+import type { PersonalReview } from "../../../shared/types";
 
 interface ReportRow {
   id: string;
@@ -23,6 +24,8 @@ interface ReportRow {
   is_stale: number;
   stale_reason: string | null;
   stale_at: string | null;
+  // 010 字段
+  project_id: string | null;
 }
 
 export class ReportRepository {
@@ -40,8 +43,8 @@ export class ReportRepository {
         `INSERT INTO reports (
           id, type, date_key, title, content_json,
           source_fact_ids_json, source_scene_ids_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, project_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -52,7 +55,8 @@ export class ReportRepository {
         JSON.stringify(input.sourceFactIds),
         JSON.stringify(input.sourceSceneIds),
         now,
-        now
+        now,
+        input.projectId ?? null
       );
 
     return this.getById(id)!;
@@ -142,6 +146,7 @@ export class ReportRepository {
     if (patch.contentJson !== undefined) { sets.push("content_json = ?"); params.push(patch.contentJson); }
     if (patch.sourceFactIds !== undefined) { sets.push("source_fact_ids_json = ?"); params.push(JSON.stringify(patch.sourceFactIds)); }
     if (patch.sourceSceneIds !== undefined) { sets.push("source_scene_ids_json = ?"); params.push(JSON.stringify(patch.sourceSceneIds)); }
+    if (patch.projectId !== undefined) { sets.push("project_id = ?"); params.push(patch.projectId ?? null); }
     if (sets.length === 0) return this.getById(id);
     sets.push("updated_at = ?");
     params.push(new Date().toISOString());
@@ -166,6 +171,67 @@ export class ReportRepository {
       cnt: number;
     };
     return row.cnt;
+  }
+
+  // ============================================================================
+  // Phase 2 新增：PersonalReview 持久化（type=personal_daily_review）
+  // ============================================================================
+
+  /**
+   * Upsert PersonalReview 到 reports 表（type=personal_daily_review）
+   *
+   * 同一 dateKey 重复生成时：
+   * - 若已存在：更新 title / content_json / source_fact_ids_json，清除 stale 标记
+   * - 若不存在：创建新记录
+   *
+   * content_json 存储完整的 PersonalReview JSON（含 id / overview / mainThreads 等），
+   * 便于 renderer 端直接 parse 还原 PersonalReview 实体。
+   * source_fact_ids_json 聚合 unfinished[] / worthRemembering[] 中的 sourceFactIds，
+   * 便于 findReportsReferencingFact 反向追溯。
+   *
+   * @param dateKey 日期 key YYYY-MM-DD
+   * @param review PersonalReview 实体
+   * @returns 写入后的 Report 记录
+   */
+  upsertPersonalReview(dateKey: string, review: PersonalReview): Report {
+    const existing = this.getByTypeAndDate("personal_daily_review", dateKey);
+    const sourceFactIds = collectPersonalReviewFactIds(review);
+    const contentJson = JSON.stringify({
+      id: review.id,
+      dateKey: review.dateKey,
+      title: review.title,
+      overview: review.overview,
+      mainThreads: review.mainThreads,
+      meaningfulProgress: review.meaningfulProgress,
+      unfinished: review.unfinished,
+      worthRemembering: review.worthRemembering,
+      tomorrowStartHere: review.tomorrowStartHere,
+    });
+
+    if (existing) {
+      const updated = this.update(existing.id, {
+        title: review.title,
+        contentJson,
+        sourceFactIds,
+        sourceSceneIds: [],
+      });
+      // 清除 stale 标记（重新生成成功）
+      if (updated) {
+        this.clearStale(updated.id);
+        return updated;
+      }
+      return existing;
+    }
+
+    return this.create({
+      id: review.id,
+      type: "personal_daily_review",
+      dateKey,
+      title: review.title,
+      contentJson,
+      sourceFactIds,
+      sourceSceneIds: [],
+    });
   }
 
   // ============================================================================
@@ -254,6 +320,60 @@ export class ReportRepository {
       .all(sceneId) as ReportRow[];
     return rows.map(mapRow);
   }
+
+  // ============================================================================
+  // Phase 2 新增：工作日报 upsert（type=work_daily_report）
+  // ============================================================================
+
+  /**
+   * Upsert 工作日报（type=work_daily_report）
+   *
+   * 若同 dateKey 已存在 work_daily_report 记录，更新其内容；否则创建新记录。
+   * sourceSceneIds 列复用为 sourceTimelineBlockIds（reports 表未单独建列），
+   * 完整数据（含 sourceTimelineBlockIds）已在 contentJson 中保留。
+   *
+   * @param dateKey 日期 YYYY-MM-DD
+   * @param input 报告内容（title / contentJson / sourceFactIds / sourceTimelineBlockIds）
+   * @returns 持久化后的 Report 记录
+   */
+  upsertWorkReport(
+    dateKey: string,
+    input: {
+      title: string;
+      contentJson: string;
+      sourceFactIds: string[];
+      sourceTimelineBlockIds: string[];
+    }
+  ): Report {
+    const existing = this.getByTypeAndDate("work_daily_report", dateKey);
+    if (existing) {
+      const updated = this.update(existing.id, {
+        title: input.title,
+        contentJson: input.contentJson,
+        sourceFactIds: input.sourceFactIds,
+        sourceSceneIds: input.sourceTimelineBlockIds,
+      });
+      if (updated) return updated;
+      // update 返回 null 的极端情况：回退到 create（使用原 id）
+      return this.create({
+        id: existing.id,
+        type: "work_daily_report",
+        dateKey,
+        title: input.title,
+        contentJson: input.contentJson,
+        sourceFactIds: input.sourceFactIds,
+        sourceSceneIds: input.sourceTimelineBlockIds,
+      });
+    }
+    return this.create({
+      type: "work_daily_report",
+      dateKey,
+      title: input.title,
+      contentJson: input.contentJson,
+      sourceFactIds: input.sourceFactIds,
+      sourceSceneIds: input.sourceTimelineBlockIds,
+    });
+  }
 }
 
 export function createReportRepository(db: DB): ReportRepository {
@@ -279,6 +399,8 @@ function mapRow(row: ReportRow): Report {
     isStale: row.is_stale,
     staleReason: row.stale_reason,
     staleAt: row.stale_at,
+    // 010 字段
+    projectId: row.project_id,
   };
 }
 
@@ -293,4 +415,21 @@ function safeParseArray<T = unknown>(json: string): T[] {
 
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * 从 PersonalReview 中收集所有 sourceFactIds（用于 reports.source_fact_ids_json）
+ *
+ * 聚合 unfinished[].sourceFactIds 和 worthRemembering[].sourceFactIds，
+ * 便于 findReportsReferencingFact 反向追溯 report 引用了哪些 fact。
+ */
+function collectPersonalReviewFactIds(review: PersonalReview): string[] {
+  const ids = new Set<string>();
+  for (const item of review.unfinished) {
+    for (const id of item.sourceFactIds) ids.add(id);
+  }
+  for (const item of review.worthRemembering) {
+    for (const id of item.sourceFactIds) ids.add(id);
+  }
+  return Array.from(ids);
 }

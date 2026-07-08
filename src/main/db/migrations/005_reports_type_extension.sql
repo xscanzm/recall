@@ -1,0 +1,21 @@
+-- 005_reports_type_extension.sql
+-- Phase 2 Task 2.1：扩展 reports.type 支持的枚举值（spec.md 行 1207-1210）
+--
+-- reports.type 字段在 001_initial_schema.sql 中已定义为 TEXT NOT NULL，
+-- 因此无需 ALTER TABLE。本迁移仅作为版本标记，记录 type 允许的枚举值扩展：
+--
+-- 旧值（保留兼容）：
+--   - daily
+--   - weekly
+--   - retrospective
+--
+-- Phase 2 新增允许值：
+--   - personal_daily_review  （PersonalReviewWriter 输出，自用复盘）
+--   - work_daily_report      （WorkReportWriter 输出，工作日报）
+--   - weekly_report          （Phase 2 周报，后续 worker 接入）
+--   - monthly_report         （月报，预留）
+--
+-- 注意：应用层在写入 reports 行时必须使用上述枚举值之一。
+-- 旧值 daily/weekly 在 Phase 2 后续任务中由 Reporter 迁移到 work_daily_report/weekly_report。
+
+SELECT 1;

@@ -87,16 +87,16 @@ export function LoadMorePager<T>({
           margin-top: 8px;
           align-self: center;
           font-size: 12px;
-          color: var(--text-secondary);
-          background-color: var(--bg);
-          border: 1px solid var(--border);
+          color: var(--recall-text-muted);
+          background-color: var(--recall-bg);
+          border: 1px solid var(--recall-border);
           padding: 6px 16px;
           border-radius: var(--radius-pill);
         }
         .load-more-pager__btn:hover {
           background-color: #f0eee7;
-          color: var(--accent-green);
-          border-color: var(--accent-green);
+          color: var(--recall-accent);
+          border-color: var(--recall-accent);
         }
       `}</style>
     </>

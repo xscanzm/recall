@@ -10,6 +10,12 @@
 import type { DB } from "../Database";
 import type { Fact, CreateFactInput, UpdateFactInput } from "../../models/types";
 
+/**
+ * DB 行类型
+ *
+ * V2 字段（008 迁移新增，均可空）：
+ * - display_use（JSON 数组存 TEXT）/ reportable（INTEGER 0/1）/ private_risk / user_value
+ */
 interface FactRow {
   id: string;
   type: string;
@@ -26,6 +32,13 @@ interface FactRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  // 008 V2 字段
+  display_use: string | null;
+  reportable: number | null;
+  private_risk: string | null;
+  user_value: string | null;
+  // 011 新增
+  people_hints_json: string | null;
 }
 
 export class FactRepository {
@@ -33,6 +46,11 @@ export class FactRepository {
 
   /**
    * 创建 fact
+   *
+   * V2 字段（displayUse / reportable / privateRisk / userValue）来自 008 迁移，均可空。
+   * - displayUse：JSON 数组以 TEXT 存储
+   * - reportable：boolean 以 INTEGER 0/1 存储
+   * V1 写入路径不传这些字段时落库为 NULL。
    */
   create(input: CreateFactInput): Fact {
     const id = input.id ?? generateId("fact");
@@ -44,8 +62,10 @@ export class FactRepository {
           id, type, content, status, project_id, project_hint,
           importance, confidence, inferred, evidence_text,
           source_observation_ids_json, tags_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at,
+          display_use, reportable, private_risk, user_value,
+          people_hints_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -61,7 +81,15 @@ export class FactRepository {
         JSON.stringify(input.sourceObservationIds),
         JSON.stringify(input.tags),
         now,
-        now
+        now,
+        input.displayUse ? JSON.stringify(input.displayUse) : null,
+        input.reportable === undefined ? null : input.reportable ? 1 : 0,
+        input.privateRisk ?? null,
+        input.userValue ?? null,
+        // 011 新增：peopleHints 入库
+        input.peopleHints && input.peopleHints.length > 0
+          ? JSON.stringify(input.peopleHints)
+          : null
       );
 
     return this.getById(id)!;
@@ -151,6 +179,130 @@ export class FactRepository {
       )
       .all(...params, limit, offset) as FactRow[];
     return rows.map(mapRow);
+  }
+
+  /**
+   * 012 新增：按 project_hint 精确查询
+   * - 用于 mergeObjects 改写：找出 projectHint == from.name 的 facts，把它们重写为 to.name
+   * - 仅未删除
+   */
+  listByProjectHintExact(
+    projectHint: string,
+    opts: { includeDeleted?: boolean; limit?: number } = {}
+  ): Fact[] {
+    const conditions = ["project_hint = ?"];
+    const params: unknown[] = [projectHint];
+    if (!opts.includeDeleted) {
+      conditions.push("deleted_at IS NULL");
+    }
+    const limit = opts.limit ?? 1000;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM facts WHERE ${conditions.join(" AND ")} LIMIT ?`
+      )
+      .all(...params, limit) as FactRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
+   * 012 新增：批量改写 fact.project_hint（用于项目/人物合并）
+   * - 把所有 projectHint == fromHint 的 fact 的 projectHint 改为 toHint
+   * - 同时如果 fact.projectId == fromId 则改为 toId（仅 project 类型合并时调用）
+   * - 不修改其他字段
+   * @returns 实际改写的 fact 数量
+   */
+  rewriteProjectHintBatch(opts: {
+    fromHint: string;
+    toHint: string;
+    fromId?: string; // 可选；同时改写 project_id
+    toId?: string;   // 可选；同时改写 project_id
+  }): number {
+    if (opts.fromHint === opts.toHint && (!opts.fromId || !opts.toId)) {
+      return 0;
+    }
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.fromHint !== opts.toHint) {
+      conditions.push("project_hint = ?");
+      params.push(opts.fromHint);
+    }
+    if (opts.fromId && opts.toId && opts.fromId !== opts.toId) {
+      conditions.push("project_id = ?");
+      params.push(opts.fromId);
+    }
+    if (conditions.length === 0) return 0;
+    const sets: string[] = [];
+    if (opts.fromHint !== opts.toHint) {
+      sets.push("project_hint = ?");
+    }
+    if (opts.fromId && opts.toId && opts.fromId !== opts.toId) {
+      sets.push("project_id = ?");
+    }
+    sets.push("updated_at = ?");
+    // WHERE 子句占位符按 conditions 顺序收集，SET 子句占位符按 sets 顺序收集
+    // SQL 拼接顺序：SET ... WHERE (cond1 OR cond2)
+    // 因此实际绑定顺序为：SET params + WHERE params
+    const updateParams: unknown[] = [];
+    if (opts.fromHint !== opts.toHint) updateParams.push(opts.toHint);
+    if (opts.fromId && opts.toId && opts.fromId !== opts.toId) updateParams.push(opts.toId);
+    updateParams.push(new Date().toISOString());
+    // 追加 WHERE 子句对应的参数（conditions 顺序）
+    updateParams.push(...params);
+    const whereAnd = conditions.length > 0 ? `(${conditions.join(" OR ")})` : "";
+    const stmt = this.db.prepare(
+      `UPDATE facts SET ${sets.join(", ")} WHERE ${whereAnd}`
+    );
+    const result = stmt.run(...updateParams);
+    return result.changes;
+  }
+
+  /**
+   * 012 新增：批量改写 fact.people_hints_json 中的某个名字
+   * - 遍历 people_hints_json 数组，把 fromName 替换为 toName（去重 + 不重复 toName）
+   * - 仅当 fromName 真正存在数组中时才更新
+   * - 用于人物合并：把历史 facts 的 people_hints 中 from.name → to.name
+   * @returns 实际改写的 fact 数量
+   */
+  rewritePeopleHintBatch(fromName: string, toName: string): number {
+    if (fromName === toName) return 0;
+    // 找出包含 fromName 的所有 fact（people_hints_json 中含 fromName）
+    const rows = this.db
+      .prepare(
+        `SELECT id, people_hints_json FROM facts
+         WHERE people_hints_json IS NOT NULL
+         AND EXISTS (
+           SELECT 1 FROM json_each(facts.people_hints_json)
+           WHERE json_each.value = ?
+         )`
+      )
+      .all(fromName) as Array<{ id: string; people_hints_json: string }>;
+    if (rows.length === 0) return 0;
+    const updateStmt = this.db.prepare(
+      `UPDATE facts SET people_hints_json = ?, updated_at = ? WHERE id = ?`
+    );
+    const txn = this.db.transaction(() => {
+      for (const row of rows) {
+        let arr: string[] = [];
+        try {
+          const parsed = JSON.parse(row.people_hints_json);
+          if (Array.isArray(parsed)) arr = parsed.map((v) => String(v));
+        } catch {
+          continue;
+        }
+        const newHints: string[] = [];
+        const seen = new Set<string>();
+        for (const name of arr) {
+          const newName = name === fromName ? toName : name;
+          if (!seen.has(newName)) {
+            seen.add(newName);
+            newHints.push(newName);
+          }
+        }
+        updateStmt.run(JSON.stringify(newHints), new Date().toISOString(), row.id);
+      }
+    });
+    txn();
+    return rows.length;
   }
 
   /**
@@ -258,6 +410,32 @@ export class FactRepository {
       sets.push("tags_json = ?");
       params.push(JSON.stringify(patch.tags));
     }
+    // 008 V2 字段
+    if (patch.displayUse !== undefined) {
+      sets.push("display_use = ?");
+      params.push(patch.displayUse ? JSON.stringify(patch.displayUse) : null);
+    }
+    if (patch.reportable !== undefined) {
+      sets.push("reportable = ?");
+      params.push(patch.reportable ? 1 : 0);
+    }
+    if (patch.privateRisk !== undefined) {
+      sets.push("private_risk = ?");
+      params.push(patch.privateRisk ?? null);
+    }
+    if (patch.userValue !== undefined) {
+      sets.push("user_value = ?");
+      params.push(patch.userValue ?? null);
+    }
+    // 011 新增：peopleHints 字段更新
+    if (patch.peopleHints !== undefined) {
+      sets.push("people_hints_json = ?");
+      params.push(
+        patch.peopleHints && patch.peopleHints.length > 0
+          ? JSON.stringify(patch.peopleHints)
+          : null
+      );
+    }
 
     if (sets.length === 0) {
       return this.getById(id);
@@ -364,8 +542,10 @@ export class FactRepository {
         id, type, content, status, project_id, project_hint,
         importance, confidence, inferred, evidence_text,
         source_observation_ids_json, tags_json,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        created_at, updated_at,
+        display_use, reportable, private_risk, user_value,
+        people_hints_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
     const ids: string[] = [];
     const txn = this.db.transaction(() => {
@@ -386,7 +566,15 @@ export class FactRepository {
           JSON.stringify(input.sourceObservationIds),
           JSON.stringify(input.tags),
           now,
-          now
+          now,
+          input.displayUse ? JSON.stringify(input.displayUse) : null,
+          input.reportable === undefined ? null : input.reportable ? 1 : 0,
+          input.privateRisk ?? null,
+          input.userValue ?? null,
+          // 011 新增
+          input.peopleHints && input.peopleHints.length > 0
+            ? JSON.stringify(input.peopleHints)
+            : null
         );
       }
     });
@@ -441,6 +629,15 @@ function mapRow(row: FactRow): Fact {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    // 008 V2 字段（null-safe）
+    displayUse: row.display_use ? safeParseArray<string>(row.display_use) : null,
+    reportable: row.reportable === null ? null : row.reportable === 1,
+    privateRisk: (row.private_risk as Fact["privateRisk"]) ?? null,
+    userValue: (row.user_value as Fact["userValue"]) ?? null,
+    // 011 新增
+    peopleHints: row.people_hints_json
+      ? safeParseArray<string>(row.people_hints_json)
+      : null,
   };
 }
 

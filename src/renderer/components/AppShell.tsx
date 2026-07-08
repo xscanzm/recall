@@ -1,51 +1,65 @@
 // src/renderer/components/AppShell.tsx
-// 应用主框架（来自 08_UI_UX_BRAND_SPEC.md "App Shell 布局" 章节）
+// 应用主框架（统一 Sidebar + MainContent 结构）
 //
-// 布局规范（来自 08 文档）：
-// - 左侧窄导航栏：8 个导航项 + Logo
-// - 顶部状态栏：StatusPill + 当前活动 app + 今日已整理数量 + 暂停/恢复按钮
-// - 主内容区：根据当前路由渲染对应页面
-// - 右侧可选上下文栏：用于提醒栏或来源信息（M5+ 用于提醒，今日页内嵌）
+// 布局规范（doc 22 第 4 节 + doc 21 第 2.2 节 + doc 24 第 2 节）：
+// - 左侧窄导航栏（76px）：仅图标 + Logo，hover tooltip 显示中文名称
+// - 当前页图标使用低饱和青绿色背景 var(--recall-accent-soft)
+// - 顶部状态栏（48px）：StatusPill + 暂停/恢复按钮
+// - 主内容区：根据当前路由渲染对应页面（页面自行管理滚动与右侧面板）
 //
 // 品牌约束：
 // - 不使用眼睛/摄像头/大脑 logo
 // - Logo 概念：回环线 + 3 节点
-// - 中文 "回声" + 英文 "Recall"
 
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, type ComponentType } from "react";
+import {
+  CalendarDays,
+  ListTodo,
+  FileText,
+  FolderKanban,
+  Search,
+  Users,
+  Settings,
+  ShieldCheck,
+  Pause,
+  Play,
+} from "lucide-react";
 import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
 import { getIpc } from "../state/ipc";
+import { Button } from "./Button";
 
 interface NavItem {
   key: PageKey;
   label: string;
+  Icon: ComponentType<{ size?: string | number; className?: string }>;
 }
 
 /**
- * 8 个页面路由（来自 08 文档）
- * 今日 / 提醒 / 任务 / 项目 / 报告 / 记忆库 / 设置 / 信任中心
+ * 8 个主导航项（顺序严格，来自 spec）
+ * 今日 / 待收尾 / 报告 / 项目 / 记忆库 / 人物 / 设置 / 信任中心
  */
 const NAV_ITEMS: NavItem[] = [
-  { key: "today", label: "今日" },
-  { key: "reminders", label: "提醒" },
-  { key: "tasks", label: "任务" },
-  { key: "projects", label: "项目" },
-  { key: "reports", label: "报告" },
-  { key: "memory", label: "记忆库" },
-  { key: "settings", label: "设置" },
-  { key: "trust", label: "信任中心" },
+  { key: "today", label: "今日", Icon: CalendarDays },
+  { key: "tasks", label: "待收尾", Icon: ListTodo },
+  { key: "reports", label: "报告", Icon: FileText },
+  { key: "projects", label: "项目", Icon: FolderKanban },
+  { key: "memory", label: "记忆库", Icon: Search },
+  { key: "people", label: "人物", Icon: Users },
+  { key: "settings", label: "设置", Icon: Settings },
+  { key: "trust", label: "信任中心", Icon: ShieldCheck },
 ];
 
 interface AppShellProps {
   children: ReactNode;
 }
 
-export function AppShell({ children }: AppShellProps) {
+export const AppShell = ({ children }: AppShellProps) => {
   const currentPage = useAppStore((s) => s.currentPage);
   const setPage = useAppStore((s) => s.setPage);
   const appStatus = useAppStore((s) => s.appStatus);
-  const todayData = useAppStore((s) => s.todayData);
+
+  const isObserving = appStatus.observing && !appStatus.paused;
 
   const handlePauseToggle = async () => {
     try {
@@ -60,91 +74,58 @@ export function AppShell({ children }: AppShellProps) {
     }
   };
 
-  const isObserving = appStatus.observing && !appStatus.paused;
-
-  // 今日已整理数量（observations + facts + scenes + tasks + decisions）
-  const todayOrganizedCount = useMemo(() => {
-    return (
-      todayData.observations.length +
-      todayData.facts.length +
-      todayData.scenes.length +
-      todayData.tasks.length +
-      todayData.decisions.length
-    );
-  }, [todayData]);
-
-  const currentApp = appStatus.currentWindow?.appName;
-  const currentWindowTitle = appStatus.currentWindow?.windowTitle;
-
   return (
     <div className="app-shell">
-      <aside className="app-shell__nav">
+      <aside className="app-shell__sidebar">
         <div className="app-shell__brand">
-          <div className="app-shell__brand-logo">
-            <BrandMark />
-            <div className="app-shell__brand-text">
-              <span className="app-shell__brand-zh">回声</span>
-              <span className="app-shell__brand-en">Recall</span>
-            </div>
-          </div>
+          <BrandMark />
         </div>
-        <nav className="app-shell__nav-list">
-          {NAV_ITEMS.map((item) => (
+        <nav className="app-shell__nav">
+          {NAV_ITEMS.map(({ key, label, Icon }) => (
             <button
-              key={item.key}
-              className={
-                "app-shell__nav-item" +
-                (currentPage === item.key ? " app-shell__nav-item--active" : "")
-              }
-              onClick={() => setPage(item.key)}
-              aria-current={currentPage === item.key ? "page" : undefined}
+              key={key}
+              type="button"
+              className={`app-shell__nav-item${currentPage === key ? " is-active" : ""}`}
+              onClick={() => setPage(key)}
+              title={label}
+              aria-label={label}
+              aria-current={currentPage === key ? "page" : undefined}
             >
-              {item.label}
+              <Icon size={18} />
+              <span className="app-shell__nav-label">{label}</span>
             </button>
           ))}
         </nav>
       </aside>
-
-      <div className="app-shell__main">
+      <main className="app-shell__main">
         <header className="app-shell__topbar">
-          <div className="app-shell__topbar-left">
-            <StatusPill />
-            {isObserving && currentApp && (
-              <span
-                className="app-shell__topbar-app"
-                title={currentWindowTitle ?? undefined}
-              >
-                {currentApp}
-              </span>
-            )}
-          </div>
-          <div className="app-shell__topbar-right">
-            <div className="app-shell__topbar-meta">
-              <span
-                className="app-shell__topbar-stat"
-                title="今日 Recall 已整理的观察、线索、工作片段、任务和决策数量"
-              >
-                今日已整理 {todayOrganizedCount}
-              </span>
-            </div>
-            <button
-              className={isObserving ? "" : "primary"}
+          <StatusPill />
+          <div className="app-shell__topbar-actions">
+            <Button
+              variant={isObserving ? "secondary" : "primary"}
+              size="sm"
               onClick={handlePauseToggle}
               aria-label={isObserving ? "暂停观察" : "开始观察"}
             >
-              {isObserving
-                ? "暂停"
-                : appStatus.paused
-                ? "恢复"
-                : "开始观察"}
-            </button>
+              {isObserving ? (
+                <>
+                  <Pause size={14} style={{ marginRight: 4 }} />
+                  暂停观察
+                </>
+              ) : (
+                <>
+                  <Play size={14} style={{ marginRight: 4 }} />
+                  开始观察
+                </>
+              )}
+            </Button>
           </div>
         </header>
-        <main className="app-shell__content">{children}</main>
-      </div>
+        <div className="app-shell__content">{children}</div>
+      </main>
     </div>
   );
-}
+};
 
 /**
  * 品牌 Logo 标识（来自 08 文档"Logo 建议"）
@@ -156,27 +137,25 @@ export function AppShell({ children }: AppShellProps) {
  * - 不使用眼睛、摄像头、大脑 logo
  * - 使用 SVG 实现柔和的回环线 + 3 节点
  */
-function BrandMark() {
-  return (
-    <svg
-      className="app-shell__brand-mark"
-      viewBox="0 0 24 24"
+const BrandMark = () => (
+  <svg
+    className="app-shell__brand-mark"
+    viewBox="0 0 24 24"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+    aria-hidden="true"
+  >
+    {/* 柔和回环线：从左下节点出发，经过中间节点，再回到底部右侧节点 */}
+    <path
+      d="M4 16 Q 8 4, 12 12 Q 16 20, 20 8"
+      stroke="var(--recall-accent)"
+      strokeWidth="1.8"
+      strokeLinecap="round"
       fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      {/* 柔和回环线：从左下节点出发，经过中间节点，再回到底部右侧节点 */}
-      <path
-        d="M4 16 Q 8 4, 12 12 Q 16 20, 20 8"
-        stroke="var(--accent-green)"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        fill="none"
-      />
-      {/* 3 个节点 */}
-      <circle cx="4" cy="16" r="2.2" fill="var(--accent-green)" />
-      <circle cx="12" cy="12" r="2.2" fill="var(--accent-amber)" />
-      <circle cx="20" cy="8" r="2.2" fill="var(--accent-green)" />
-    </svg>
-  );
-}
+    />
+    {/* 3 个节点 */}
+    <circle cx="4" cy="16" r="2.2" fill="var(--recall-accent)" />
+    <circle cx="12" cy="12" r="2.2" fill="var(--recall-amber)" />
+    <circle cx="20" cy="8" r="2.2" fill="var(--recall-accent)" />
+  </svg>
+);

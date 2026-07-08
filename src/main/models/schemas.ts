@@ -57,6 +57,47 @@ export const EvidenceTextSchema = z.string().max(TEXT_LIMITS.evidenceText);
 export const ReasonSchema = z.string().max(TEXT_LIMITS.reason);
 
 /**
+ * ISO 8601 时间归一化辅助：把任何 ISO 字符串统一成 UTC Z 后缀
+ *
+ * 处理：
+ * - "2026-07-07T08:30:00.000Z" → 原样
+ * - "2026-07-07T16:30:00.000+08:00" → "2026-07-07T08:30:00.000Z"
+ * - "2026-07-07T08:30:00.000"（无时区） → 当作系统本地时间，转 UTC
+ * - 解析失败时原样返回（让后续 zod 校验捕获）
+ *
+ * 修复：LLM 输出可能无时区 / 带 Z / 带 offset 三种格式混用，导致渲染端错位
+ */
+export function normalizeIsoToZ(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  try {
+    const d = new Date(trimmed);
+    if (Number.isNaN(d.getTime())) return value;
+    return d.toISOString();
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * 强约束的 ISO 8601 datetime schema（必须带时区：Z 或 ±HH:MM）
+ * - 修复：之前用 z.string() 放过无时区字符串，渲染端 new Date() 解析为本地时间，导致错位
+ * - 配合 z.preprocess(normalizeIsoToZ, ...) 容忍 LLM 输出混合格式
+ */
+export const IsoDateTimeWithOffsetSchema = z.preprocess(
+  normalizeIsoToZ,
+  z
+    .string()
+    .refine(
+      (v) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/i.test(v),
+      {
+        message: "ISO 8601 datetime must include timezone (Z or ±HH:MM)",
+      }
+    )
+);
+
+/**
  * PrivacyRule schema（用于 privacy:addRule / privacy:updateRule IPC 参数校验）
  */
 export const PrivacyRuleInputSchema = z.object({
@@ -79,7 +120,7 @@ export const SettingsUpdateSchema = z.record(z.string(), z.unknown());
  * 模型配置测试 IPC 参数 schema
  */
 export const ModelTestConnectionInputSchema = z.object({
-  kind: z.enum(["vision", "language"]),
+  kind: z.enum(["vision", "language", "multimodal"]),
   endpoint: z.string().url(),
   model: z.string().min(1),
   // API Key 不进入 renderer/SQLite/日志：测试连接时通过临时字段传入 main 进程
@@ -94,12 +135,15 @@ export const ModelTestConnectionInputSchema = z.object({
  */
 export const ModelSaveConfigInputSchema = z.object({
   id: z.string().min(1).optional(),
-  kind: z.enum(["vision", "language"]),
+  kind: z.enum(["vision", "language", "multimodal"]),
   providerName: z.string().min(1).max(120),
   endpoint: z.string().url(),
   model: z.string().min(1).max(120),
   apiKey: z.string().min(1).optional(),
   enabled: z.boolean().optional(),
+  // Phase 7：可选字段，留空时使用模型默认值（写入 options_json）
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().int().min(1).optional(),
 });
 
 /**
@@ -149,8 +193,9 @@ export const ReminderUpdateStatusInputSchema = z.object({
  * 报告生成 IPC 参数 schema
  */
 export const ReportGenerateInputSchema = z.object({
-  type: z.enum(["daily", "weekly", "retrospective"]),
+  type: z.enum(["daily", "weekly", "monthly", "retrospective"]),
   dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  projectId: z.string().optional(),
 });
 
 /**
@@ -893,7 +938,112 @@ export const ExtractorOutputSchema = z.preprocess(
 /**
  * L2 LinkerOutput：记忆关联模型输出
  */
-export const LinkerOutputSchema = z.object({
+function normalizeLinkerLinks(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const targetType = pickFirst(obj, ["targetType", "objectType", "type"]);
+    const targetId = pickFirst(obj, ["targetId", "id"]);
+    const factIds = normalizeStringArray(
+      pickFirst(obj, ["sourceFactIds", "factIds", "sourceFactId", "factId"])
+    );
+    if (typeof targetType !== "string" || typeof targetId !== "string" || factIds.length === 0) continue;
+
+    const rawRelationship = pickFirst(obj, ["relationship", "relation"]);
+    const relationship =
+      typeof rawRelationship === "string" && rawRelationship.trim()
+        ? rawRelationship
+        : targetType === "project"
+        ? "belongs_to"
+        : "mentions";
+    const reasonRaw = pickFirst(obj, ["reason", "rationale", "why"]);
+    const reason = typeof reasonRaw === "string" ? reasonRaw : "模型建议关联";
+    const confidence = normalizeNumber(pickFirst(obj, ["confidence", "score"]), 0.6);
+
+    for (const sourceFactId of factIds) {
+      result.push({
+        sourceFactId,
+        targetType,
+        targetId,
+        relationship,
+        confidence: Math.max(0, Math.min(1, confidence)),
+        reason: reason.slice(0, TEXT_LIMITS.reason),
+      });
+    }
+  }
+  return result;
+}
+
+function normalizeLinkerNewObjects(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const objectType = pickFirst(obj, ["objectType", "targetType", "type", "kind"]);
+    const title = pickFirst(obj, ["title", "name", "displayName"]);
+    const summaryRaw = pickFirst(obj, ["summary", "description", "reason", "rationale"]);
+    const sourceFactIds = normalizeStringArray(
+      pickFirst(obj, ["sourceFactIds", "factIds", "sourceFactId", "factId"])
+    );
+    if (typeof objectType !== "string" || typeof title !== "string" || !title.trim()) continue;
+    if (sourceFactIds.length === 0) continue;
+
+    const summary =
+      typeof summaryRaw === "string" && summaryRaw.trim()
+        ? summaryRaw.trim()
+        : title.trim();
+    const confidence = normalizeNumber(pickFirst(obj, ["confidence", "score"]), 0.6);
+
+    result.push({
+      objectType,
+      title: title.trim().slice(0, TEXT_LIMITS.title),
+      summary: summary.slice(0, TEXT_LIMITS.summary),
+      sourceFactIds,
+      confidence: Math.max(0, Math.min(1, confidence)),
+    });
+  }
+  return result;
+}
+
+function normalizeLinkerMergeSuggestions(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const objectType = pickFirst(obj, ["objectType", "targetType", "type"]);
+    const fromId = pickFirst(obj, ["fromId", "mergeId"]);
+    const toId = pickFirst(obj, ["toId", "keepId"]);
+    const reasonRaw = pickFirst(obj, ["reason", "rationale", "why"]);
+    if (typeof objectType !== "string" || typeof fromId !== "string" || typeof toId !== "string") continue;
+
+    const reason = typeof reasonRaw === "string" ? reasonRaw : "模型判断两个对象可能重复";
+    const confidence = normalizeNumber(pickFirst(obj, ["confidence", "score"]), 0.6);
+    result.push({
+      objectType,
+      fromId,
+      toId,
+      reason: reason.slice(0, TEXT_LIMITS.reason),
+      confidence: Math.max(0, Math.min(1, confidence)),
+    });
+  }
+  return result;
+}
+
+function normalizeLinkerOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  return {
+    links: normalizeLinkerLinks(obj.links),
+    newObjects: normalizeLinkerNewObjects(obj.newObjects),
+    mergeSuggestions: normalizeLinkerMergeSuggestions(obj.mergeSuggestions),
+  };
+}
+
+const LinkerOutputCoreSchema = z.object({
   links: z.array(
     z.object({
       sourceFactId: z.string(),
@@ -941,16 +1091,128 @@ export const LinkerOutputSchema = z.object({
   ),
 });
 
+export const LinkerOutputSchema = z.preprocess(
+  normalizeLinkerOutput,
+  LinkerOutputCoreSchema
+);
+
 /**
  * L2 SceneBuilderOutput：场景聚合模型输出
+ *
+ * - startAt/endAt 强约束必须带时区（IsoDateTimeWithOffsetSchema）
+ * - 修复：之前 z.string() 放过无时区字符串，渲染端 new Date() 解析为本地时间，导致错位
+ *
+ * 2026-07-07 修复：
+ * - 新增 z.preprocess 包装（normalizeSceneBuilderOutput），处理字段名变体
+ * - 之前无 preprocess 兜底，LLM 输出 project/fact_ids/entities 等变体时直接 schema_invalid
+ * - 失败率 99%（541/2）。修复后对齐项目里其他 V2 schema 的设计约定
  */
-export const SceneBuilderOutputSchema = z.object({
+
+/**
+ * SceneBuilderOutput scenes 数组元素归一化
+ *
+ * 处理字段名变体：
+ * - title / name
+ * - summary / description
+ * - startAt / start / startTime / beginAt
+ * - endAt / end / endTime
+ * - projectHint / project / projectName
+ * - factIds / fact_ids / facts
+ * - entityNames / entities / entity_names / names
+ * - taskIds / task_ids / tasks
+ * - decisionIds / decision_ids / decisions
+ * - confidence / score
+ *
+ * 时间字段容错：缺失或非字符串时返回 ""，由 IsoDateTimeWithOffsetSchema 校验拒绝
+ * （但不会污染整个数组——title 缺失才跳过该 scene）
+ */
+function normalizeSceneBuilderScenes(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+
+    // title 是核心字段，缺失则跳过该 scene
+    const title = typeof obj.title === "string" ? obj.title : typeof obj.name === "string" ? obj.name : "";
+    if (!title.trim()) continue;
+
+    const summary =
+      typeof obj.summary === "string"
+        ? obj.summary
+        : typeof obj.description === "string"
+        ? obj.description
+        : "";
+
+    // 时间字段：取字符串，否则空串（让 IsoDateTimeWithOffsetSchema 拒绝）
+    const startAt =
+      typeof obj.startAt === "string"
+        ? obj.startAt
+        : typeof obj.start === "string"
+        ? obj.start
+        : typeof obj.startTime === "string"
+        ? obj.startTime
+        : typeof obj.beginAt === "string"
+        ? obj.beginAt
+        : "";
+    const endAt =
+      typeof obj.endAt === "string"
+        ? obj.endAt
+        : typeof obj.end === "string"
+        ? obj.end
+        : typeof obj.endTime === "string"
+        ? obj.endTime
+        : "";
+
+    // projectHint 可选
+    const projectHintRaw = obj.projectHint ?? obj.project ?? obj.projectName;
+    const projectHint = typeof projectHintRaw === "string" ? projectHintRaw : undefined;
+
+    // 数组字段归一化
+    const factIds = normalizeStringArray(obj.factIds ?? obj.facts);
+    const entityNames = normalizeStringArray(obj.entityNames ?? obj.entities ?? obj.names);
+    const taskIds = normalizeStringArray(obj.taskIds ?? obj.tasks);
+    const decisionIds = normalizeStringArray(obj.decisionIds ?? obj.decisions);
+
+    const confidence = normalizeNumber(obj.confidence ?? obj.score, 0.5);
+
+    result.push({
+      title: title.slice(0, TEXT_LIMITS.title),
+      summary: summary.slice(0, TEXT_LIMITS.summary),
+      startAt,
+      endAt,
+      ...(projectHint !== undefined ? { projectHint: projectHint.slice(0, TEXT_LIMITS.title) } : {}),
+      factIds,
+      entityNames,
+      taskIds,
+      decisionIds,
+      confidence: Math.max(0, Math.min(1, confidence)),
+    });
+  }
+  return result;
+}
+
+/**
+ * SceneBuilderOutput 归一化函数
+ */
+function normalizeSceneBuilderOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+  result.scenes = normalizeSceneBuilderScenes(obj.scenes);
+  return result;
+}
+
+/**
+ * SceneBuilderOutput CoreSchema（导出 preprocess 包装后的版本）
+ */
+const SceneBuilderOutputCoreSchema = z.object({
   scenes: z.array(
     z.object({
       title: TitleSchema,
       summary: SummarySchema,
-      startAt: z.string(),
-      endAt: z.string(),
+      startAt: IsoDateTimeWithOffsetSchema,
+      endAt: IsoDateTimeWithOffsetSchema,
       projectHint: TitleSchema.optional(),
       factIds: z.array(z.string()),
       entityNames: z.array(TitleSchema),
@@ -960,6 +1222,11 @@ export const SceneBuilderOutputSchema = z.object({
     })
   ),
 });
+
+export const SceneBuilderOutputSchema = z.preprocess(
+  normalizeSceneBuilderOutput,
+  SceneBuilderOutputCoreSchema
+);
 
 /**
  * L3 JudgeOutput：主动性判断模型输出
@@ -1006,8 +1273,165 @@ export const JudgeOutputSchema = z.object({
 
 /**
  * 日报输出 schema（来自 05 文档）
+ *
+ * 2026-07-07 修复：
+ * - 新增 z.preprocess 包装（normalizeDailyReportOutput），处理字段名变体和缺失数组兜底
+ * - 之前无 preprocess 兜底，LLM 漏掉 evidenceFactIds 或用 snake_case 时整张失败（6/0 成功）
+ * - 修复后对齐项目里其他 V2 schema 的设计约定
  */
-export const DailyReportOutputSchema = z.object({
+
+/**
+ * 日报 projectUpdates 元素归一化
+ */
+function normalizeReportProjectUpdates(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const projectName =
+      typeof obj.projectName === "string"
+        ? obj.projectName
+        : typeof obj.project === "string"
+        ? obj.project
+        : "";
+    if (!projectName.trim()) continue;
+    const summary = typeof obj.summary === "string" ? obj.summary : typeof obj.description === "string" ? obj.description : "";
+    const projectIdRaw = obj.projectId ?? obj.project_id;
+    result.push({
+      ...(typeof projectIdRaw === "string" ? { projectId: projectIdRaw } : {}),
+      projectName: projectName.slice(0, TEXT_LIMITS.title),
+      summary: summary.slice(0, TEXT_LIMITS.summary),
+      evidenceFactIds: normalizeStringArray(obj.evidenceFactIds ?? obj.factIds ?? obj.facts),
+      evidenceSceneIds: normalizeStringArray(obj.evidenceSceneIds ?? obj.sceneIds ?? obj.scenes),
+    });
+  }
+  return result;
+}
+
+/**
+ * 通用：归一化 "带 text/confidence/evidenceFactIds 的数组"
+ * 用于 completed / decisions / risks
+ */
+function normalizeTextConfidenceEvidenceArray(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const text =
+      typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.content === "string"
+        ? obj.content
+        : typeof obj.description === "string"
+        ? obj.description
+        : "";
+    if (!text.trim()) continue;
+    result.push({
+      text: text.slice(0, TEXT_LIMITS.factContent),
+      confidence: Math.max(0, Math.min(1, normalizeNumber(obj.confidence ?? obj.score, 0.5))),
+      evidenceFactIds: normalizeStringArray(obj.evidenceFactIds ?? obj.factIds ?? obj.facts),
+    });
+  }
+  return result;
+}
+
+/**
+ * 日报 openTasks 归一化
+ */
+function normalizeReportOpenTasks(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  const STATUS_NORMALIZE: Record<string, string> = {
+    open: "open",
+    in_progress: "in_progress",
+    inprogress: "in_progress",
+    "in-progress": "in_progress",
+    blocked: "blocked",
+    needs_confirmation: "needs_confirmation",
+    needsconfirmation: "needs_confirmation",
+    pending: "open",
+    active: "in_progress",
+  };
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const text =
+      typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.content === "string"
+        ? obj.content
+        : "";
+    if (!text.trim()) continue;
+    const rawStatus = typeof obj.status === "string" ? obj.status.toLowerCase() : "open";
+    const status = STATUS_NORMALIZE[rawStatus] ?? "open";
+    result.push({
+      text: text.slice(0, TEXT_LIMITS.factContent),
+      status,
+      confidence: Math.max(0, Math.min(1, normalizeNumber(obj.confidence ?? obj.score, 0.5))),
+      evidenceFactIds: normalizeStringArray(obj.evidenceFactIds ?? obj.factIds ?? obj.facts),
+    });
+  }
+  return result;
+}
+
+/**
+ * 日报 needsReview 归一化
+ */
+function normalizeReportNeedsReview(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const text =
+      typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.content === "string"
+        ? obj.content
+        : "";
+    if (!text.trim()) continue;
+    const reason = typeof obj.reason === "string" ? obj.reason : typeof obj.rationale === "string" ? obj.rationale : "";
+    result.push({
+      text: text.slice(0, TEXT_LIMITS.factContent),
+      reason: reason.slice(0, TEXT_LIMITS.reason),
+      sourceFactIds: normalizeStringArray(obj.sourceFactIds ?? obj.factIds ?? obj.facts),
+    });
+  }
+  return result;
+}
+
+/**
+ * DailyReportOutput 归一化函数
+ */
+function normalizeDailyReportOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // 顶层字符串字段兜底
+  if (typeof obj.date !== "string") result.date = "";
+  if (typeof obj.headline !== "string") result.headline = "";
+  if (typeof obj.overview !== "string") result.overview = "";
+
+  result.projectUpdates = normalizeReportProjectUpdates(obj.projectUpdates);
+  result.completed = normalizeTextConfidenceEvidenceArray(obj.completed);
+  result.openTasks = normalizeReportOpenTasks(obj.openTasks);
+  result.decisions = normalizeTextConfidenceEvidenceArray(obj.decisions);
+  result.risks = normalizeTextConfidenceEvidenceArray(obj.risks);
+  result.tomorrowSuggestions = normalizeStringArray(obj.tomorrowSuggestions ?? obj.suggestions);
+  result.needsReview = normalizeReportNeedsReview(obj.needsReview);
+
+  return result;
+}
+
+/**
+ * DailyReportOutput CoreSchema
+ *
+ * 注意：所有数组字段在 normalize 阶段已保证为数组，这里用 .default([]) 作为第二道防线
+ */
+const DailyReportOutputCoreSchema = z.object({
   date: z.string(),
   headline: z.string().max(200),
   overview: z.string().max(TEXT_LIMITS.reportOverview),
@@ -1059,6 +1483,61 @@ export const DailyReportOutputSchema = z.object({
   ),
 });
 
+export const DailyReportOutputSchema = z.preprocess(
+  normalizeDailyReportOutput,
+  DailyReportOutputCoreSchema
+);
+
+/**
+ * WeeklyReport 归一化函数
+ *
+ * 周报与日报结构类似，多 weekStart/weekEnd/progress 字段，少 openTasks/needsReview/tomorrowSuggestions
+ */
+function normalizeWeeklyReportOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // 顶层字符串字段兜底
+  if (typeof obj.weekStart !== "string") result.weekStart = "";
+  if (typeof obj.weekEnd !== "string") result.weekEnd = "";
+  if (typeof obj.headline !== "string") result.headline = "";
+  if (typeof obj.overview !== "string") result.overview = "";
+
+  // projectUpdates（周报多 progress 字段）
+  const projectUpdatesRaw = obj.projectUpdates;
+  result.projectUpdates = Array.isArray(projectUpdatesRaw)
+    ? projectUpdatesRaw.map((item) => {
+        if (!item || typeof item !== "object") return null;
+        const o = normalizeKeysToCamel(item) as Record<string, unknown>;
+        const projectName =
+          typeof o.projectName === "string" ? o.projectName : typeof o.project === "string" ? o.project : "";
+        const summary = typeof o.summary === "string" ? o.summary : "";
+        const progress = typeof o.progress === "string" ? o.progress : typeof o.status === "string" ? o.status : "";
+        const projectIdRaw = o.projectId ?? o.project_id;
+        return {
+          ...(typeof projectIdRaw === "string" ? { projectId: projectIdRaw } : {}),
+          projectName: projectName.slice(0, TEXT_LIMITS.title),
+          summary: summary.slice(0, TEXT_LIMITS.summary),
+          progress: progress.slice(0, TEXT_LIMITS.summary),
+          evidenceFactIds: normalizeStringArray(o.evidenceFactIds ?? o.factIds ?? o.facts),
+          evidenceSceneIds: normalizeStringArray(o.evidenceSceneIds ?? o.sceneIds ?? o.scenes),
+        };
+      }).filter((x) => {
+        if (x === null || typeof x !== "object") return false;
+        const pn = (x as Record<string, unknown>).projectName;
+        return typeof pn === "string" && pn.trim() !== "";
+      })
+    : [];
+
+  result.completed = normalizeTextConfidenceEvidenceArray(obj.completed);
+  result.decisions = normalizeTextConfidenceEvidenceArray(obj.decisions);
+  result.risks = normalizeTextConfidenceEvidenceArray(obj.risks);
+  result.nextWeekSuggestions = normalizeStringArray(obj.nextWeekSuggestions ?? obj.suggestions);
+
+  return result;
+}
+
 /**
  * 周报输出 schema（来自 02 文档 Flow 8）
  *
@@ -1077,7 +1556,7 @@ export const DailyReportOutputSchema = z.object({
  * - 不直接根据截图编写报告，必须基于 facts/scenes/reports
  * - 低置信内容应放入 risks 并降低 confidence
  */
-export const WeeklyReportOutputSchema = z.object({
+const WeeklyReportOutputCoreSchema = z.object({
   weekStart: z.string(),
   weekEnd: z.string(),
   headline: z.string().max(200),
@@ -1116,18 +1595,1375 @@ export const WeeklyReportOutputSchema = z.object({
   nextWeekSuggestions: z.array(z.string().max(TEXT_LIMITS.factContent)),
 });
 
+export const WeeklyReportOutputSchema = z.preprocess(
+  normalizeWeeklyReportOutput,
+  WeeklyReportOutputCoreSchema
+);
+
+// ============================================================================
+// Phase 2 新增 Schema（doc 19 / doc 20 / spec.md Phase 2）
+// ============================================================================
+// 体验升级引入 6 个新模型输出 schema：
+// - ObserverOutputV2Schema（视觉观察 V2，新增体验字段）
+// - ExtractorOutputV2Schema（事实提取 V2，新增 displayUse/reportable/privateRisk/userValue）
+// - TimelineBuilderOutputSchema（今日时间轴）
+// - PersonalReviewOutputSchema（自用复盘）
+// - WorkReportOutputSchema（工作日报）
+// - JudgeOutputV2Schema（待收尾判断 V2，新增 unfinishedThreads）
+//
+// 所有 schema 都用 z.preprocess 包装，处理模型字段名变体（snake_case / 复数 / 缺失 / 枚举变体）。
+// 即使 prompt 已明确字段定义，模型偶尔仍会返回变体，preprocess 作为安全网兜底。
+// ============================================================================
+
+/**
+ * Phase 2 reportableSignal 枚举变体归一化
+ *
+ * 模型可能返回：yes / maybe / no / true / false / work / personal / break / ambiguous
+ * spec 期望：yes / maybe / no
+ */
+const REPORTABLE_SIGNAL_NORMALIZE: Record<string, string> = {
+  yes: "yes",
+  y: "yes",
+  true: "yes",
+  work: "yes",
+  work_related: "yes",
+  workrelated: "yes",
+  "work-related": "yes",
+  maybe: "maybe",
+  uncertain: "maybe",
+  unclear: "maybe",
+  ambiguous: "maybe",
+  personal: "maybe",
+  break: "no",
+  no: "no",
+  n: "no",
+  false: "no",
+  private: "no",
+  irrelevant: "no",
+};
+
+/**
+ * Phase 2 privacyRisk 枚举变体归一化
+ *
+ * 模型可能返回：low / medium / high / normal / sensitive / private / public
+ * spec 期望：low / medium / high
+ */
+const PRIVACY_RISK_NORMALIZE: Record<string, string> = {
+  low: "low",
+  normal: "low",
+  public: "low",
+  medium: "medium",
+  moderate: "medium",
+  high: "high",
+  sensitive: "high",
+  private: "high",
+  critical: "high",
+};
+
+/**
+ * Phase 2 userValue 枚举变体归一化
+ *
+ * 模型可能返回：low / medium / high / 无价值 / 一般 / 重要
+ * spec 期望：low / medium / high
+ */
+const USER_VALUE_NORMALIZE: Record<string, string> = {
+  low: "low",
+  none: "low",
+  minimal: "low",
+  medium: "medium",
+  normal: "medium",
+  moderate: "medium",
+  high: "high",
+  important: "high",
+  critical: "high",
+};
+
+/**
+ * Phase 2 sensitivity 枚举变体归一化
+ *
+ * 模型可能返回：normal / possibly_sensitive / high_sensitive / sensitive / private
+ * spec 期望：normal / possibly_sensitive / high_sensitive
+ */
+const SENSITIVITY_NORMALIZE: Record<string, string> = {
+  normal: "normal",
+  public: "normal",
+  possibly_sensitive: "possibly_sensitive",
+  possiblysensitive: "possibly_sensitive",
+  "possibly-sensitive": "possibly_sensitive",
+  medium: "possibly_sensitive",
+  high_sensitive: "high_sensitive",
+  highsensitive: "high_sensitive",
+  "high-sensitive": "high_sensitive",
+  sensitive: "high_sensitive",
+  high: "high_sensitive",
+  private: "high_sensitive",
+};
+
+/**
+ * Phase 2 TimelineBlock category 枚举变体归一化
+ *
+ * 模型可能返回：focus_work / communication / research / writing / coding /
+ * design / meeting / admin / break / mixed / unknown / 其他变体
+ */
+const TIMELINE_BLOCK_CATEGORY_NORMALIZE: Record<string, string> = {
+  focus_work: "focus_work",
+  focuswork: "focus_work",
+  "focus-work": "focus_work",
+  focus: "focus_work",
+  work: "focus_work",
+  communication: "communication",
+  communications: "communication",
+  chat: "communication",
+  messaging: "communication",
+  research: "research",
+  researching: "research",
+  writing: "writing",
+  document: "writing",
+  coding: "coding",
+  code: "coding",
+  programming: "coding",
+  development: "coding",
+  design: "design",
+  designing: "design",
+  meeting: "meeting",
+  meetings: "meeting",
+  admin: "admin",
+  administrative: "admin",
+  break: "break",
+  breaks: "break",
+  rest: "break",
+  idle: "break",
+  mixed: "mixed",
+  unknown: "unknown",
+  other: "unknown",
+};
+
+/**
+ * Phase 2 fact displayUse 枚举归一化
+ *
+ * 模型可能返回：timeline / personal_review / work_report / memory / task_list
+ * 或：personal / review / work / report / long_term / task
+ */
+const DISPLAY_USE_NORMALIZE: Record<string, string> = {
+  timeline: "timeline",
+  personal_review: "personal_review",
+  personalreview: "personal_review",
+  "personal-review": "personal_review",
+  personal: "personal_review",
+  review: "personal_review",
+  work_report: "work_report",
+  workreport: "work_report",
+  "work-report": "work_report",
+  work: "work_report",
+  report: "work_report",
+  memory: "memory",
+  long_term: "memory",
+  longterm: "memory",
+  task_list: "task_list",
+  tasklist: "task_list",
+  "task-list": "task_list",
+  task: "task_list",
+};
+
+/**
+ * Phase 2 unfinishedThread priority 枚举归一化
+ *
+ * 模型可能返回：high / medium / low / 0/1/2 / 重要/一般/低
+ */
+const THREAD_PRIORITY_NORMALIZE: Record<string, string> = {
+  high: "high",
+  h: "high",
+  important: "high",
+  critical: "high",
+  urgent: "high",
+  "2": "high",
+  medium: "medium",
+  m: "medium",
+  normal: "medium",
+  moderate: "medium",
+  "1": "medium",
+  low: "low",
+  l: "low",
+  minor: "low",
+  "0": "low",
+};
+
+/**
+ * Phase 2 proactiveItem surface 枚举归一化
+ */
+const PROACTIVE_SURFACE_NORMALIZE: Record<string, string> = {
+  in_app: "in_app",
+  inapp: "in_app",
+  "in-app": "in_app",
+  app: "in_app",
+  daily_report: "daily_report",
+  dailyreport: "daily_report",
+  "daily-report": "daily_report",
+  report: "daily_report",
+  desktop_notification_candidate: "desktop_notification_candidate",
+  desktopnotificationcandidate: "desktop_notification_candidate",
+  notification: "desktop_notification_candidate",
+  desktop_notification: "desktop_notification_candidate",
+};
+
+/**
+ * Phase 2 proactiveItem type 枚举归一化
+ */
+const PROACTIVE_TYPE_V2_NORMALIZE: Record<string, string> = {
+  task_reminder: "task_reminder",
+  taskreminder: "task_reminder",
+  "task-reminder": "task_reminder",
+  reminder: "task_reminder",
+  risk_warning: "risk_warning",
+  riskwarning: "risk_warning",
+  "risk-warning": "risk_warning",
+  risk: "risk_warning",
+  warning: "risk_warning",
+  decision_review: "decision_review",
+  decisionreview: "decision_review",
+  "decision-review": "decision_review",
+  tomorrow_suggestion: "tomorrow_suggestion",
+  tomorrowsuggestion: "tomorrow_suggestion",
+  "tomorrow-suggestion": "tomorrow_suggestion",
+  suggestion: "tomorrow_suggestion",
+  needs_confirmation: "needs_confirmation",
+  needsconfirmation: "needs_confirmation",
+  "needs-confirmation": "needs_confirmation",
+  confirm: "needs_confirmation",
+};
+
+/**
+ * 通用：把 snake_case 字符串转为 camelCase
+ * 仅用于字段名归一化，不处理嵌套对象。
+ */
+function snakeToCamel(s: string): string {
+  if (!s.includes("_") && !s.includes("-")) return s;
+  return s.replace(/[-_]([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+/**
+ * 通用：把对象的所有 key 从 snake_case 转为 camelCase（递归一层，不深递归）
+ *
+ * 用于 LLM 输出归一化：模型偶尔返回 snake_case 字段名（private_risk 而非 privateRisk），
+ * 此函数统一转为 camelCase，避免 schema 校验失败。
+ *
+ * 注意：仅转 key，不修改 value。嵌套对象/数组内的 key 不处理（由各 normalize 函数单独处理）。
+ */
+function normalizeKeysToCamel(obj: unknown): Record<string, unknown> {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
+    return obj as Record<string, unknown>;
+  }
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[snakeToCamel(k)] = v;
+  }
+  return result;
+}
+
+/**
+ * 通用：从对象中按优先级取字段值
+ *
+ * 用于处理字段名变体：例如 privateRisk / private_risk / privacyRisk / privacy_risk 都映射到 privateRisk。
+ */
+function pickFirst(obj: Record<string, unknown>, keys: string[]): unknown {
+  for (const k of keys) {
+    if (obj[k] !== undefined) return obj[k];
+  }
+  return undefined;
+}
+
+/**
+ * ObserverOutputV2 归一化函数
+ *
+ * 处理：
+ * - snake_case → camelCase（scene_summary → sceneSummary 等）
+ * - 复用 normalizeDetectedEntities / normalizeTaskLikeItems 处理嵌套数组
+ * - reportableSignal / privacyRisk / sensitivity 枚举变体归一化
+ * - 缺失数组字段默认 []
+ */
+function normalizeObserverOutputV2(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // 嵌套数组归一化（复用 V1 逻辑）
+  if (obj.detectedEntities !== undefined) {
+    result.detectedEntities = normalizeDetectedEntities(obj.detectedEntities);
+  }
+  if (obj.possibleTasks !== undefined) {
+    result.possibleTasks = normalizeTaskLikeItems(obj.possibleTasks);
+  }
+  if (obj.possibleDecisions !== undefined) {
+    result.possibleDecisions = normalizeTaskLikeItems(obj.possibleDecisions);
+  }
+  if (obj.possibleProjectProgress !== undefined) {
+    result.possibleProjectProgress = normalizeTaskLikeItems(obj.possibleProjectProgress);
+  }
+  if (obj.visibleContent !== undefined) {
+    result.visibleContent = Array.isArray(obj.visibleContent)
+      ? (obj.visibleContent as unknown[]).map((item) =>
+          item && typeof item === "object"
+            ? normalizeKeysToCamel(item)
+            : item
+        )
+      : [];
+  }
+
+  // 字段名变体归一化
+  const sceneSummary = pickFirst(obj, ["sceneSummary", "scene_summary", "sceneTitle"]);
+  if (typeof sceneSummary === "string") result.sceneSummary = sceneSummary;
+
+  const userFacingSummary = pickFirst(obj, [
+    "userFacingSummary",
+    "user_facing_summary",
+    "userSummary",
+  ]);
+  if (typeof userFacingSummary === "string") result.userFacingSummary = userFacingSummary;
+
+  const likelyWorkPurpose = pickFirst(obj, [
+    "likelyWorkPurpose",
+    "likely_work_purpose",
+    "workPurpose",
+  ]);
+  if (typeof likelyWorkPurpose === "string") result.likelyWorkPurpose = likelyWorkPurpose;
+
+  const possibleUserIntent = pickFirst(obj, [
+    "possibleUserIntent",
+    "possible_user_intent",
+    "userIntent",
+  ]);
+  if (typeof possibleUserIntent === "string") result.possibleUserIntent = possibleUserIntent;
+
+  // 枚举归一化
+  const rawPrivacyRisk = pickFirst(obj, ["privacyRisk", "privacy_risk", "privateRisk"]);
+  if (typeof rawPrivacyRisk === "string") {
+    const norm = PRIVACY_RISK_NORMALIZE[rawPrivacyRisk.toLowerCase()];
+    if (norm) result.privacyRisk = norm;
+  }
+
+  const rawReportableSignal = pickFirst(obj, [
+    "reportableSignal",
+    "reportable_signal",
+    "reportable",
+  ]);
+  if (typeof rawReportableSignal === "string") {
+    const norm = REPORTABLE_SIGNAL_NORMALIZE[rawReportableSignal.toLowerCase()];
+    if (norm) result.reportableSignal = norm;
+  } else if (typeof rawReportableSignal === "boolean") {
+    result.reportableSignal = rawReportableSignal ? "yes" : "no";
+  }
+
+  const rawSensitivity = pickFirst(obj, ["sensitivity"]);
+  if (typeof rawSensitivity === "string") {
+    const norm = SENSITIVITY_NORMALIZE[rawSensitivity.toLowerCase()];
+    if (norm) result.sensitivity = norm;
+  }
+
+  // 缺失数组默认 []
+  if (!Array.isArray(result.uncertainties)) result.uncertainties = [];
+
+  return result;
+}
+
+/**
+ * ObserverOutputV2 CoreSchema（用于类型推导）
+ */
+const ObserverOutputV2CoreSchema = z.object({
+  sceneSummary: SummarySchema,
+  userFacingSummary: z.string().max(TEXT_LIMITS.summary),
+  likelyWorkPurpose: z.string().max(TEXT_LIMITS.title),
+  visibleContent: z.array(
+    z.object({
+      type: z.enum([
+        "webpage",
+        "document",
+        "chat",
+        "code",
+        "spreadsheet",
+        "design",
+        "email",
+        "terminal",
+        "unknown",
+      ]),
+      summary: SummarySchema,
+      keyTextSnippets: z.array(z.string().max(TEXT_LIMITS.evidenceText)),
+    })
+  ),
+  detectedEntities: z.array(
+    z.object({
+      name: TitleSchema,
+      type: z.enum([
+        "person",
+        "product",
+        "project",
+        "company",
+        "file",
+        "url",
+        "concept",
+        "other",
+      ]),
+      evidence: EvidenceTextSchema,
+      confidence: ConfidenceSchema,
+    })
+  ),
+  possibleUserIntent: z.string().max(TEXT_LIMITS.factContent),
+  possibleTasks: z.array(
+    z.object({
+      text: FactContentSchema,
+      confidence: ConfidenceSchema,
+      evidence: EvidenceTextSchema,
+    })
+  ),
+  possibleDecisions: z.array(
+    z.object({
+      text: FactContentSchema,
+      confidence: ConfidenceSchema,
+      evidence: EvidenceTextSchema,
+    })
+  ),
+  possibleProjectProgress: z.array(
+    z.object({
+      text: FactContentSchema,
+      projectHint: TitleSchema.optional(),
+      confidence: ConfidenceSchema,
+      evidence: EvidenceTextSchema,
+    })
+  ),
+  privacyRisk: z.enum(["low", "medium", "high"]),
+  privacyRiskReason: z.string().max(TEXT_LIMITS.reason),
+  reportableSignal: z.enum(["yes", "maybe", "no"]),
+  reportableReason: z.string().max(TEXT_LIMITS.reason),
+  sensitivity: z.enum(["normal", "possibly_sensitive", "high_sensitive"]),
+  confidence: ConfidenceSchema,
+  uncertainties: z.array(z.string().max(TEXT_LIMITS.factContent)),
+});
+
+/**
+ * 导出的 ObserverOutputV2 schema（已用 preprocess 包装，自动归一化模型输出）
+ */
+export const ObserverOutputV2Schema = z.preprocess(
+  normalizeObserverOutputV2,
+  ObserverOutputV2CoreSchema
+);
+
+/**
+ * ExtractorOutputV2 facts 归一化
+ *
+ * 在 normalizeFacts（V1）基础上新增 V2 字段：
+ * - displayUse：默认 []（缺失时给空数组）
+ * - reportable：默认 false
+ * - privateRisk：默认 "low"，枚举变体归一化
+ * - userValue：默认 "medium"，枚举变体归一化
+ */
+function normalizeFactsV2(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const camelObj = normalizeKeysToCamel(item);
+    const obj = camelObj as Record<string, unknown>;
+
+    // content 是核心字段，缺失则跳过
+    const content =
+      typeof obj.content === "string"
+        ? obj.content
+        : typeof obj.text === "string"
+        ? obj.text
+        : typeof obj.description === "string"
+        ? obj.description
+        : "";
+    if (!content.trim()) continue;
+
+    // type 归一化（复用 V1 映射）
+    const rawType = typeof obj.type === "string" ? obj.type.toLowerCase() : "note";
+    const normalizedType = FACT_TYPE_NORMALIZE[rawType] ?? "note";
+
+    // status 归一化
+    let normalizedStatus: string | undefined;
+    if (typeof obj.status === "string") {
+      normalizedStatus = FACT_STATUS_NORMALIZE[obj.status.toLowerCase()];
+    }
+
+    // importance/confidence 归一化
+    const importance = normalizeNumber(obj.importance, 0.5);
+    const confidence = normalizeNumber(obj.confidence, 0.5);
+
+    // inferred 归一化
+    let inferred: boolean;
+    if (typeof obj.inferred === "boolean") {
+      inferred = obj.inferred;
+    } else if (typeof obj.inferred === "string") {
+      inferred = obj.inferred.toLowerCase() === "true" || obj.inferred.toLowerCase() === "1";
+    } else {
+      inferred = false;
+    }
+
+    // 数组字段归一化
+    const peopleHints = normalizeStringArray(obj.peopleHints);
+    const sourceObservationIds = normalizeStringArray(obj.sourceObservationIds);
+    const tags = normalizeStringArray(obj.tags);
+
+    // evidenceText 归一化
+    const evidenceText =
+      typeof obj.evidenceText === "string"
+        ? obj.evidenceText
+        : typeof obj.evidence === "string"
+        ? obj.evidence
+        : typeof obj.reason === "string"
+        ? obj.reason
+        : "";
+
+    // V2 新增字段：displayUse
+    let displayUse: string[] = [];
+    const rawDisplayUse = obj.displayUse;
+    if (Array.isArray(rawDisplayUse)) {
+      displayUse = rawDisplayUse
+        .map((d) => {
+          if (typeof d !== "string") return "";
+          const norm = DISPLAY_USE_NORMALIZE[d.toLowerCase()];
+          return norm || "";
+        })
+        .filter((s) => s.length > 0);
+    } else if (typeof rawDisplayUse === "string") {
+      const norm = DISPLAY_USE_NORMALIZE[rawDisplayUse.toLowerCase()];
+      if (norm) displayUse = [norm];
+    }
+
+    // V2 新增字段：reportable
+    let reportable: boolean;
+    if (typeof obj.reportable === "boolean") {
+      reportable = obj.reportable;
+    } else if (typeof obj.reportable === "string") {
+      reportable =
+        obj.reportable.toLowerCase() === "true" ||
+        obj.reportable.toLowerCase() === "yes" ||
+        obj.reportable.toLowerCase() === "1";
+    } else {
+      reportable = false;
+    }
+
+    // V2 新增字段：privateRisk
+    let privateRisk = "low";
+    const rawPrivateRisk = obj.privateRisk;
+    if (typeof rawPrivateRisk === "string") {
+      const norm = PRIVACY_RISK_NORMALIZE[rawPrivateRisk.toLowerCase()];
+      if (norm) privateRisk = norm;
+    }
+
+    // V2 新增字段：userValue
+    let userValue = "medium";
+    const rawUserValue = obj.userValue;
+    if (typeof rawUserValue === "string") {
+      const norm = USER_VALUE_NORMALIZE[rawUserValue.toLowerCase()];
+      if (norm) userValue = norm;
+    }
+
+    const normalized: Record<string, unknown> = {
+      type: normalizedType,
+      content: content.slice(0, TEXT_LIMITS.factContent),
+      importance: Math.max(0, Math.min(1, importance)),
+      confidence: Math.max(0, Math.min(1, confidence)),
+      inferred,
+      evidenceText: evidenceText.slice(0, TEXT_LIMITS.evidenceText),
+      peopleHints: peopleHints.map((s) => s.slice(0, TEXT_LIMITS.title)),
+      sourceObservationIds,
+      tags: tags.map((s) => s.slice(0, TEXT_LIMITS.title)),
+      displayUse: displayUse as ["timeline" | "personal_review" | "work_report" | "memory" | "task_list"],
+      reportable,
+      privateRisk: privateRisk as "low" | "medium" | "high",
+      userValue: userValue as "low" | "medium" | "high",
+    };
+
+    if (normalizedStatus) {
+      normalized.status = normalizedStatus;
+    }
+    if (typeof obj.projectHint === "string" && obj.projectHint.trim()) {
+      normalized.projectHint = obj.projectHint.slice(0, TEXT_LIMITS.title);
+    } else if (typeof obj.project === "string" && obj.project.trim()) {
+      normalized.projectHint = obj.project.slice(0, TEXT_LIMITS.title);
+    }
+
+    result.push(normalized);
+  }
+  return result;
+}
+
+/**
+ * ExtractorOutputV2 归一化函数
+ *
+ * 2026-07-07 容错改造：
+ * - 新增裸数组兜底：LLM 偶尔输出 [{...}, {...}] 而非 {facts: [...]}
+ *   之前 normalizeKeysToCamel 对数组直接返回原数组，{...obj} 展开为 {0:{...},1:{...},length:2}
+ *   导致 schema fail。修复：检测到数组时包装为 {facts: data}
+ */
+function normalizeExtractorOutputV2(data: unknown): unknown {
+  // 裸数组兜底：LLM 偶尔直接输出 fact 数组而非 {facts: [...]}
+  if (Array.isArray(data)) {
+    return { facts: normalizeFactsV2(data), discardedNoise: [] };
+  }
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  if (obj.facts !== undefined) {
+    result.facts = normalizeFactsV2(obj.facts);
+  }
+  if (obj.discardedNoise !== undefined) {
+    result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
+  } else {
+    result.discardedNoise = [];
+  }
+
+  return result;
+}
+
+/**
+ * ExtractorOutputV2 CoreSchema
+ */
+const ExtractorOutputV2CoreSchema = z.object({
+  facts: z.array(
+    z.object({
+      type: z.enum([
+        "task",
+        "decision",
+        "project_progress",
+        "person",
+        "preference",
+        "knowledge",
+        "risk",
+        "question",
+        "note",
+      ]),
+      content: FactContentSchema,
+      status: z
+        .enum(["open", "in_progress", "likely_done", "done", "blocked", "unknown"])
+        .optional(),
+      projectHint: TitleSchema.optional(),
+      peopleHints: z.array(TitleSchema),
+      importance: ImportanceSchema,
+      confidence: ConfidenceSchema,
+      inferred: z.boolean(),
+      evidenceText: EvidenceTextSchema,
+      sourceObservationIds: z.array(z.string()),
+      tags: z.array(TitleSchema),
+      displayUse: z.array(
+        z.enum(["timeline", "personal_review", "work_report", "memory", "task_list"])
+      ),
+      reportable: z.boolean(),
+      privateRisk: z.enum(["low", "medium", "high"]),
+      userValue: z.enum(["low", "medium", "high"]),
+    })
+  ),
+  discardedNoise: z.array(
+    z.object({
+      reason: ReasonSchema,
+      text: FactContentSchema,
+    })
+  ),
+});
+
+/**
+ * 导出的 ExtractorOutputV2 schema
+ */
+export const ExtractorOutputV2Schema = z.preprocess(
+  normalizeExtractorOutputV2,
+  ExtractorOutputV2CoreSchema
+);
+
+/**
+ * TimelineBuilderOutput blocks 归一化
+ *
+ * 2026-07-07 容错改造：
+ * - 之前 startAt/endAt 缺失时填 ""，IsoDateTimeWithOffsetSchema 正则不匹配 ""，
+ *   导致单个 block 失败 → 整个 blocks 数组失败 → 整个 timeline_builder 任务失败（234/29）
+ * - 修复：startAt/endAt 缺失或非法时跳过该 block（与 title 缺失跳过一致），
+ *   保留合法 block，避免一个坏 block 拖垮整批
+ */
+function normalizeTimelineBlocks(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+
+    // title/summary 是核心字段，缺失则跳过
+    const title =
+      typeof obj.title === "string"
+        ? obj.title
+        : typeof obj.name === "string"
+        ? obj.name
+        : "";
+    if (!title.trim()) continue;
+
+    // startAt/endAt 是核心字段，缺失或非合法 ISO 时跳过该 block
+    // （避免单个坏 block 的空时间字段被 IsoDateTimeWithOffsetSchema 拒绝，拖垮整批）
+    const startAtRaw = typeof obj.startAt === "string" ? obj.startAt : "";
+    const endAtRaw = typeof obj.endAt === "string" ? obj.endAt : "";
+    if (!isValidIsoish(startAtRaw) || !isValidIsoish(endAtRaw)) continue;
+
+    const summary =
+      typeof obj.summary === "string"
+        ? obj.summary
+        : typeof obj.description === "string"
+        ? obj.description
+        : "";
+
+    // category 归一化
+    const rawCategory = typeof obj.category === "string" ? obj.category.toLowerCase() : "unknown";
+    const category = TIMELINE_BLOCK_CATEGORY_NORMALIZE[rawCategory] ?? "unknown";
+
+    // 数组字段归一化
+    const projectIds = normalizeStringArray(obj.projectIds);
+    const projectNames = normalizeStringArray(obj.projectNames);
+    const highlights = normalizeStringArray(obj.highlights);
+    const generatedTasks = normalizeStringArray(obj.generatedTasks);
+    const sourceSceneIds = normalizeStringArray(obj.sourceSceneIds);
+    const sourceFactIds = normalizeStringArray(obj.sourceFactIds);
+    const sourceObservationIds = normalizeStringArray(obj.sourceObservationIds);
+
+    // generatedDecisions 可能缺失
+    const generatedDecisions = normalizeStringArray(obj.generatedDecisions);
+
+    // reportable 归一化
+    let reportable: boolean;
+    if (typeof obj.reportable === "boolean") {
+      reportable = obj.reportable;
+    } else if (typeof obj.reportable === "string") {
+      reportable =
+        obj.reportable.toLowerCase() === "true" ||
+        obj.reportable.toLowerCase() === "yes" ||
+        obj.reportable.toLowerCase() === "1";
+    } else {
+      reportable = false;
+    }
+
+    // privateRisk 归一化
+    let privateRisk = "low";
+    const rawPrivateRisk = obj.privateRisk ?? obj.privacyRisk;
+    if (typeof rawPrivateRisk === "string") {
+      const norm = PRIVACY_RISK_NORMALIZE[rawPrivateRisk.toLowerCase()];
+      if (norm) privateRisk = norm;
+    }
+
+    const privateRiskReason =
+      typeof obj.privateRiskReason === "string"
+        ? obj.privateRiskReason
+        : typeof obj.privacyRiskReason === "string"
+        ? obj.privacyRiskReason
+        : "";
+
+    const confidence = normalizeNumber(obj.confidence, 0.5);
+
+    const normalized: Record<string, unknown> = {
+      startAt: startAtRaw,
+      endAt: endAtRaw,
+      title: title.slice(0, TEXT_LIMITS.title),
+      summary: summary.slice(0, TEXT_LIMITS.summary),
+      category,
+      projectIds,
+      projectNames,
+      highlights,
+      generatedTasks,
+      generatedDecisions,
+      reportable,
+      privateRisk,
+      privateRiskReason: privateRiskReason.slice(0, TEXT_LIMITS.reason),
+      sourceSceneIds,
+      sourceFactIds,
+      sourceObservationIds,
+      confidence: Math.max(0, Math.min(1, confidence)),
+    };
+
+    if (typeof obj.id === "string") {
+      normalized.id = obj.id;
+    }
+
+    result.push(normalized);
+  }
+  return result;
+}
+
+/**
+ * 判断字符串是否是"看起来合法"的 ISO 时间
+ *
+ * 用于 normalizeTimelineBlocks 跳过时间字段非法的 block。
+ * 判断标准：new Date() 能解析出有效时间。
+ * 这样能过滤掉 ""、"上午 9 点"、"08:30"（无日期）等非法值。
+ */
+function isValidIsoish(value: string): boolean {
+  if (!value || typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  // 必须包含日期部分（YYYY-MM-DD）
+  if (!/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return false;
+  const d = new Date(trimmed);
+  return !Number.isNaN(d.getTime());
+}
+
+/**
+ * TimelineBuilderOutput 归一化函数
+ *
+ * 2026-07-07 容错改造：
+ * - 顶层 dayStartSummary/dayMainThread 缺失时填空字符串（之前缺失会导致 schema fail）
+ * - 顶层字段做长度截断（之前 LLM 输出超 1000 字会 schema fail）
+ * - dateKey 缺失时填空字符串（worker 已知 dateKey，schema 不应因 LLM 漏填 dateKey 而整张失败）
+ */
+function normalizeTimelineBuilderOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  if (obj.blocks !== undefined) {
+    result.blocks = normalizeTimelineBlocks(obj.blocks);
+  } else {
+    result.blocks = [];
+  }
+
+  // dateKey 字段名变体 + 缺失兜底
+  const dateKey = pickFirst(obj, ["dateKey", "date_key", "date"]);
+  result.dateKey = typeof dateKey === "string" ? dateKey : "";
+
+  // dayStartSummary 字段名变体 + 缺失兜底 + 长度截断
+  const dayStartSummary = pickFirst(obj, [
+    "dayStartSummary",
+    "day_start_summary",
+    "daySummary",
+  ]);
+  result.dayStartSummary =
+    typeof dayStartSummary === "string" ? dayStartSummary.slice(0, TEXT_LIMITS.summary) : "";
+
+  // dayMainThread 字段名变体 + 缺失兜底 + 长度截断
+  const dayMainThread = pickFirst(obj, [
+    "dayMainThread",
+    "day_main_thread",
+    "mainThread",
+  ]);
+  result.dayMainThread =
+    typeof dayMainThread === "string" ? dayMainThread.slice(0, TEXT_LIMITS.summary) : "";
+
+  return result;
+}
+
+/**
+ * TimelineBuilderOutput CoreSchema
+ *
+ * - startAt/endAt 强约束必须带时区（IsoDateTimeWithOffsetSchema）
+ * - 修复：之前 z.string() 放过无时区字符串，渲染端 new Date() 解析为本地时间，导致错位
+ */
+const TimelineBuilderOutputCoreSchema = z.object({
+  dateKey: z.string(),
+  dayStartSummary: z.string().max(TEXT_LIMITS.summary),
+  dayMainThread: z.string().max(TEXT_LIMITS.summary),
+  blocks: z.array(
+    z.object({
+      id: z.string().optional(),
+      startAt: IsoDateTimeWithOffsetSchema,
+      endAt: IsoDateTimeWithOffsetSchema,
+      title: TitleSchema,
+      summary: SummarySchema,
+      category: z.enum([
+        "focus_work",
+        "communication",
+        "research",
+        "writing",
+        "coding",
+        "design",
+        "meeting",
+        "admin",
+        "break",
+        "mixed",
+        "unknown",
+      ]),
+      projectIds: z.array(z.string()),
+      projectNames: z.array(z.string()),
+      highlights: z.array(z.string()),
+      generatedTasks: z.array(z.string()),
+      generatedDecisions: z.array(z.string()),
+      reportable: z.boolean(),
+      privateRisk: z.enum(["low", "medium", "high"]),
+      privateRiskReason: z.string().max(TEXT_LIMITS.reason),
+      sourceSceneIds: z.array(z.string()),
+      sourceFactIds: z.array(z.string()),
+      sourceObservationIds: z.array(z.string()),
+      confidence: ConfidenceSchema,
+    })
+  ),
+});
+
+/**
+ * 导出的 TimelineBuilderOutput schema
+ */
+export const TimelineBuilderOutputSchema = z.preprocess(
+  normalizeTimelineBuilderOutput,
+  TimelineBuilderOutputCoreSchema
+);
+
+/**
+ * PersonalReviewOutput 归一化函数
+ *
+ * 处理：
+ * - snake_case → camelCase
+ * - mainThreads / meaningfulProgress / tomorrowStartHere：字符串数组归一化
+ * - unfinished：可能为对象数组或字符串数组（fallback 时包装为对象）
+ * - worthRemembering：可能为对象数组或字符串数组
+ */
+function normalizePersonalReviewOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // dateKey 字段名变体
+  const dateKey = pickFirst(obj, ["dateKey", "date_key", "date"]);
+  if (typeof dateKey === "string") result.dateKey = dateKey;
+
+  // 字符串数组字段
+  result.mainThreads = normalizeStringArray(obj.mainThreads);
+  result.meaningfulProgress = normalizeStringArray(obj.meaningfulProgress);
+  result.tomorrowStartHere = normalizeStringArray(obj.tomorrowStartHere);
+
+  // unfinished 归一化（对象数组或字符串数组）
+  const unfinishedRaw = obj.unfinished;
+  if (Array.isArray(unfinishedRaw)) {
+    result.unfinished = unfinishedRaw
+      .map((item) => {
+        if (typeof item === "string") {
+          return {
+            text: item.slice(0, TEXT_LIMITS.factContent),
+            suggestedNextAction: "",
+            sourceTimelineBlockIds: [],
+            sourceFactIds: [],
+          };
+        }
+        if (!item || typeof item !== "object") return null;
+        const it = normalizeKeysToCamel(item) as Record<string, unknown>;
+        const text =
+          typeof it.text === "string"
+            ? it.text
+            : typeof it.content === "string"
+            ? it.content
+            : typeof it.title === "string"
+            ? it.title
+            : "";
+        if (!text.trim()) return null;
+        return {
+          text: text.slice(0, TEXT_LIMITS.factContent),
+          suggestedNextAction:
+            (typeof it.suggestedNextAction === "string"
+              ? it.suggestedNextAction
+              : typeof it.nextAction === "string"
+              ? it.nextAction
+              : ""
+            ).slice(0, TEXT_LIMITS.reason),
+          sourceTimelineBlockIds: normalizeStringArray(it.sourceTimelineBlockIds),
+          sourceFactIds: normalizeStringArray(it.sourceFactIds),
+        };
+      })
+      .filter((x) => x !== null);
+  } else {
+    result.unfinished = [];
+  }
+
+  // worthRemembering 归一化（对象数组或字符串数组）
+  const worthRaw = obj.worthRemembering;
+  if (Array.isArray(worthRaw)) {
+    result.worthRemembering = worthRaw
+      .map((item) => {
+        if (typeof item === "string") {
+          return {
+            text: item.slice(0, TEXT_LIMITS.factContent),
+            reason: "",
+            sourceFactIds: [],
+          };
+        }
+        if (!item || typeof item !== "object") return null;
+        const it = normalizeKeysToCamel(item) as Record<string, unknown>;
+        const text =
+          typeof it.text === "string"
+            ? it.text
+            : typeof it.content === "string"
+            ? it.content
+            : "";
+        if (!text.trim()) return null;
+        return {
+          text: text.slice(0, TEXT_LIMITS.factContent),
+          reason:
+            (typeof it.reason === "string" ? it.reason : "").slice(0, TEXT_LIMITS.reason),
+          sourceFactIds: normalizeStringArray(it.sourceFactIds),
+        };
+      })
+      .filter((x) => x !== null);
+  } else {
+    result.worthRemembering = [];
+  }
+
+  return result;
+}
+
+/**
+ * PersonalReviewOutput CoreSchema
+ */
+const PersonalReviewOutputCoreSchema = z.object({
+  dateKey: z.string(),
+  title: TitleSchema,
+  overview: z.string().max(TEXT_LIMITS.reportOverview),
+  mainThreads: z.array(z.string()),
+  meaningfulProgress: z.array(z.string()),
+  unfinished: z.array(
+    z.object({
+      text: FactContentSchema,
+      suggestedNextAction: z.string().max(TEXT_LIMITS.reason),
+      sourceTimelineBlockIds: z.array(z.string()),
+      sourceFactIds: z.array(z.string()),
+    })
+  ),
+  worthRemembering: z.array(
+    z.object({
+      text: FactContentSchema,
+      reason: z.string().max(TEXT_LIMITS.reason),
+      sourceFactIds: z.array(z.string()),
+    })
+  ),
+  tomorrowStartHere: z.array(z.string()),
+});
+
+/**
+ * 导出的 PersonalReviewOutput schema
+ */
+export const PersonalReviewOutputSchema = z.preprocess(
+  normalizePersonalReviewOutput,
+  PersonalReviewOutputCoreSchema
+);
+
+/**
+ * WorkReportOutput sections 归一化
+ *
+ * 模型可能返回 sections 为对象 {completed, projectProgress, risks, tomorrowPlan}
+ * 或其他变体字段名。本函数统一字段名。
+ */
+function normalizeWorkReportSections(raw: unknown): Record<string, string[]> {
+  if (!raw || typeof raw !== "object") {
+    return {
+      completed: [],
+      projectProgress: [],
+      risks: [],
+      tomorrowPlan: [],
+    };
+  }
+  const obj = normalizeKeysToCamel(raw) as Record<string, unknown>;
+  return {
+    completed: normalizeStringArray(
+      pickFirst(obj, ["completed", "completion", "done", "finished"])
+    ),
+    projectProgress: normalizeStringArray(
+      pickFirst(obj, ["projectProgress", "project_progress", "progress", "projects"])
+    ),
+    risks: normalizeStringArray(pickFirst(obj, ["risks", "risk", "problems", "issues"])),
+    tomorrowPlan: normalizeStringArray(
+      pickFirst(obj, ["tomorrowPlan", "tomorrow_plan", "nextPlan", "next_plan", "tomorrow"])
+    ),
+  };
+}
+
+/**
+ * WorkReportOutput 归一化函数
+ */
+function normalizeWorkReportOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // dateKey 字段名变体
+  const dateKey = pickFirst(obj, ["dateKey", "date_key", "date"]);
+  if (typeof dateKey === "string") result.dateKey = dateKey;
+
+  // title 字段名变体
+  const title = pickFirst(obj, ["title", "headline"]);
+  if (typeof title === "string") result.title = title;
+
+  // plainText 字段名变体
+  const plainText = pickFirst(obj, ["plainText", "plain_text", "text", "content"]);
+  if (typeof plainText === "string") result.plainText = plainText;
+
+  // sections 归一化
+  result.sections = normalizeWorkReportSections(obj.sections);
+
+  // 数组字段归一化
+  result.sourceTimelineBlockIds = normalizeStringArray(
+    pickFirst(obj, ["sourceTimelineBlockIds", "source_timeline_block_ids"])
+  );
+  result.sourceFactIds = normalizeStringArray(
+    pickFirst(obj, ["sourceFactIds", "source_fact_ids"])
+  );
+  result.warnings = normalizeStringArray(obj.warnings);
+
+  // omittedForPrivacy 数值归一化
+  const omittedRaw = pickFirst(obj, ["omittedForPrivacy", "omitted_for_privacy", "omitted"]);
+  result.omittedForPrivacy = normalizeNumber(omittedRaw, 0);
+
+  return result;
+}
+
+/**
+ * WorkReportOutput CoreSchema
+ */
+const WorkReportOutputCoreSchema = z.object({
+  dateKey: z.string(),
+  title: TitleSchema,
+  plainText: z.string(),
+  sections: z.object({
+    completed: z.array(z.string()),
+    projectProgress: z.array(z.string()),
+    risks: z.array(z.string()),
+    tomorrowPlan: z.array(z.string()),
+  }),
+  sourceTimelineBlockIds: z.array(z.string()),
+  sourceFactIds: z.array(z.string()),
+  omittedForPrivacy: z.number().int().min(0),
+  warnings: z.array(z.string()),
+});
+
+/**
+ * 导出的 WorkReportOutput schema
+ */
+export const WorkReportOutputSchema = z.preprocess(
+  normalizeWorkReportOutput,
+  WorkReportOutputCoreSchema
+);
+
+/**
+ * JudgeOutputV2 unfinishedThreads 归一化
+ */
+function normalizeUnfinishedThreads(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+
+    const title =
+      typeof obj.title === "string"
+        ? obj.title
+        : typeof obj.text === "string"
+        ? obj.text
+        : "";
+    if (!title.trim()) continue;
+
+    const reason =
+      typeof obj.reason === "string"
+        ? obj.reason
+        : typeof obj.why === "string"
+        ? obj.why
+        : "";
+    const suggestedNextAction =
+      typeof obj.suggestedNextAction === "string"
+        ? obj.suggestedNextAction
+        : typeof obj.nextAction === "string"
+        ? obj.nextAction
+        : typeof obj.suggestion === "string"
+        ? obj.suggestion
+        : "";
+
+    // priority 归一化（枚举变体）
+    let priority = "medium";
+    const rawPriority = obj.priority;
+    if (typeof rawPriority === "string") {
+      const norm = THREAD_PRIORITY_NORMALIZE[rawPriority.toLowerCase()];
+      if (norm) priority = norm;
+    } else if (typeof rawPriority === "number") {
+      // 数值映射：0 → low, 1 → medium, 2 → high
+      if (rawPriority >= 2) priority = "high";
+      else if (rawPriority >= 1) priority = "medium";
+      else priority = "low";
+    }
+
+    const confidence = normalizeNumber(obj.confidence, 0.5);
+
+    result.push({
+      title: title.slice(0, TEXT_LIMITS.title),
+      reason: reason.slice(0, TEXT_LIMITS.reason),
+      suggestedNextAction: suggestedNextAction.slice(0, TEXT_LIMITS.reason),
+      priority,
+      sourceFactIds: normalizeStringArray(obj.sourceFactIds),
+      sourceTimelineBlockIds: normalizeStringArray(obj.sourceTimelineBlockIds),
+      confidence: Math.max(0, Math.min(1, confidence)),
+    });
+  }
+  return result;
+}
+
+/**
+ * JudgeOutputV2 proactiveItems 归一化
+ *
+ * proactiveItems.priority 是 number（[0,1]），与 unfinishedThreads.priority（enum）不同
+ */
+function normalizeProactiveItemsV2(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+
+    const title =
+      typeof obj.title === "string"
+        ? obj.title
+        : typeof obj.text === "string"
+        ? obj.text
+        : "";
+    if (!title.trim()) continue;
+
+    const body =
+      typeof obj.body === "string"
+        ? obj.body
+        : typeof obj.content === "string"
+        ? obj.content
+        : typeof obj.summary === "string"
+        ? obj.summary
+        : "";
+    const reason =
+      typeof obj.reason === "string"
+        ? obj.reason
+        : typeof obj.why === "string"
+        ? obj.why
+        : "";
+
+    // type 归一化
+    const rawType = typeof obj.type === "string" ? obj.type.toLowerCase() : "task_reminder";
+    const type = PROACTIVE_TYPE_V2_NORMALIZE[rawType] ?? "task_reminder";
+
+    // priority 归一化（数值）
+    const priority = normalizeNumber(obj.priority, 0.5);
+
+    // surface 归一化
+    const rawSurface = typeof obj.surface === "string" ? obj.surface.toLowerCase() : "in_app";
+    const surface = PROACTIVE_SURFACE_NORMALIZE[rawSurface] ?? "in_app";
+
+    // requiresUserConfirmation 归一化
+    let requiresUserConfirmation: boolean;
+    if (typeof obj.requiresUserConfirmation === "boolean") {
+      requiresUserConfirmation = obj.requiresUserConfirmation;
+    } else if (typeof obj.requiresUserConfirmation === "string") {
+      requiresUserConfirmation =
+        obj.requiresUserConfirmation.toLowerCase() === "true" ||
+        obj.requiresUserConfirmation.toLowerCase() === "yes";
+    } else {
+      requiresUserConfirmation = false;
+    }
+
+    result.push({
+      type,
+      title: title.slice(0, TEXT_LIMITS.title),
+      body: body.slice(0, TEXT_LIMITS.summary),
+      reason: reason.slice(0, TEXT_LIMITS.reason),
+      priority: Math.max(0, Math.min(1, priority)),
+      surface,
+      requiresUserConfirmation,
+      sourceFactIds: normalizeStringArray(obj.sourceFactIds),
+      sourceSceneIds: normalizeStringArray(obj.sourceSceneIds),
+    });
+  }
+  return result;
+}
+
+/**
+ * JudgeOutputV2 归一化函数
+ *
+ * 2026-07-07 容错改造：
+ * - 新增裸数组兜底：LLM 偶尔输出 [{...}] 而非 {unfinishedThreads: [...]}
+ *   修复：检测到数组时包装为 {unfinishedThreads: data, proactiveItems: []}
+ */
+function normalizeJudgeOutputV2(data: unknown): unknown {
+  // 裸数组兜底：LLM 偶尔直接输出 threads 数组
+  if (Array.isArray(data)) {
+    return {
+      unfinishedThreads: normalizeUnfinishedThreads(data),
+      proactiveItems: [],
+    };
+  }
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const result: Record<string, unknown> = { ...obj };
+
+  // 字段名变体：unfinishedThreads 可能叫 threads / unfinished
+  const threadsRaw =
+    obj.unfinishedThreads ?? obj.threads ?? obj.unfinished ?? obj.unfinishedThreadsList;
+  result.unfinishedThreads = normalizeUnfinishedThreads(threadsRaw);
+
+  // 字段名变体：proactiveItems 可能叫 items / proactive / reminders
+  const itemsRaw =
+    obj.proactiveItems ?? obj.items ?? obj.proactive ?? obj.reminders ?? obj.proactiveItemsList;
+  result.proactiveItems = normalizeProactiveItemsV2(itemsRaw);
+
+  return result;
+}
+
+/**
+ * JudgeOutputV2 CoreSchema
+ */
+const JudgeOutputV2CoreSchema = z.object({
+  unfinishedThreads: z.array(
+    z.object({
+      title: TitleSchema,
+      reason: ReasonSchema,
+      suggestedNextAction: z.string().max(TEXT_LIMITS.reason),
+      priority: z.enum(["low", "medium", "high"]),
+      sourceFactIds: z.array(z.string()),
+      sourceTimelineBlockIds: z.array(z.string()),
+      confidence: ConfidenceSchema,
+    })
+  ),
+  proactiveItems: z.array(
+    z.object({
+      type: z.enum([
+        "task_reminder",
+        "risk_warning",
+        "decision_review",
+        "tomorrow_suggestion",
+        "needs_confirmation",
+      ]),
+      title: TitleSchema,
+      body: SummarySchema,
+      reason: ReasonSchema,
+      priority: PrioritySchema,
+      surface: z.enum(["in_app", "daily_report", "desktop_notification_candidate"]),
+      requiresUserConfirmation: z.boolean(),
+      sourceFactIds: z.array(z.string()),
+      sourceSceneIds: z.array(z.string()),
+    })
+  ),
+});
+
+/**
+ * 导出的 JudgeOutputV2 schema
+ */
+export const JudgeOutputV2Schema = z.preprocess(
+  normalizeJudgeOutputV2,
+  JudgeOutputV2CoreSchema
+);
+
 /**
  * 全部模型输出 schema 注册表
  * 用于 JSON repair prompt 生成与运行时校验
+ *
+ * Phase 2 新增：
+ * - observer_v2 / extractor_v2 / timeline_builder / personal_review / work_report / judge_v2
  */
 export const MODEL_OUTPUT_SCHEMAS = {
   vision_observation: VisionObservationOutputSchema,
+  /** @deprecated 使用 extractor_v2（ExtractorOutputV2Schema） */
   extractor: ExtractorOutputSchema,
   linker: LinkerOutputSchema,
   scene_builder: SceneBuilderOutputSchema,
+  /** @deprecated 使用 judge_v2（JudgeOutputV2Schema） */
   judge: JudgeOutputSchema,
   daily_report: DailyReportOutputSchema,
   weekly_report: WeeklyReportOutputSchema,
+  // Phase 2 新增
+  observer_v2: ObserverOutputV2Schema,
+  extractor_v2: ExtractorOutputV2Schema,
+  timeline_builder: TimelineBuilderOutputSchema,
+  personal_review: PersonalReviewOutputSchema,
+  work_report: WorkReportOutputSchema,
+  judge_v2: JudgeOutputV2Schema,
 } as const;
 
 export type ModelOutputSchemaName = keyof typeof MODEL_OUTPUT_SCHEMAS;
@@ -1147,8 +2983,135 @@ export type VisionObservationOutput = z.infer<typeof VisionObservationOutputCore
  * 避免 TypeScript 推导出 unknown 中间类型。
  */
 export type ExtractorOutput = z.infer<typeof ExtractorOutputCoreSchema>;
-export type LinkerOutput = z.infer<typeof LinkerOutputSchema>;
+export type LinkerOutput = z.infer<typeof LinkerOutputCoreSchema>;
 export type SceneBuilderOutput = z.infer<typeof SceneBuilderOutputSchema>;
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
 export type DailyReportOutput = z.infer<typeof DailyReportOutputSchema>;
 export type WeeklyReportOutput = z.infer<typeof WeeklyReportOutputSchema>;
+
+/**
+ * Phase 2 类型说明
+ *
+ * Phase 2 的输出类型（ObserverOutputV2 / ExtractorOutputV2 / TimelineBuilderOutput /
+ * PersonalReviewOutput / WorkReportOutput / JudgeOutputV2）在 src/main/models/types.ts
+ * 中以 interface 形式定义，作为 main 端的规范类型。
+ *
+ * 这里不重复导出 z.infer 类型，避免与 types.ts 的 interface 同名冲突。
+ * 如需校验后的类型，可从 types.ts 引入对应 interface；如需运行时校验，使用上面对应的 Schema。
+ *
+ * CoreSchema 仍保留为内部常量，用于 preprocess 包装和未来潜在的类型推导需求。
+ */
+
+// ============================================================================
+// 多模态统一架构改造：合并 schema
+// ============================================================================
+
+/**
+ * ObserverExtractor 合并输出 CoreSchema
+ *
+ * 合并 ObserverOutputV2 + ExtractorOutputV2，一次多模态调用同时产出 L0 Observation 和 L1 Facts。
+ * 输出格式：{ observation: {...}, facts: [...], discardedNoise: [...] }
+ */
+const ObserverExtractorOutputCoreSchema = z.object({
+  observation: ObserverOutputV2CoreSchema,
+  facts: ExtractorOutputV2CoreSchema.shape.facts,
+  discardedNoise: ExtractorOutputV2CoreSchema.shape.discardedNoise,
+});
+
+/**
+ * ObserverExtractor 合并输出归一化
+ */
+function normalizeObserverExtractorOutput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const obj = input as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...obj };
+  if (obj.observation) {
+    result.observation = normalizeObserverOutputV2(obj.observation);
+  }
+  if (obj.facts !== undefined) {
+    result.facts = normalizeFactsV2(obj.facts);
+  }
+  if (obj.discardedNoise !== undefined) {
+    result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
+  }
+  return result;
+}
+
+/**
+ * 导出的 ObserverExtractor 合并 schema
+ */
+export const ObserverExtractorOutputSchema = z.preprocess(
+  normalizeObserverExtractorOutput,
+  ObserverExtractorOutputCoreSchema
+);
+
+/**
+ * ObserverExtractor 合并输出类型
+ */
+export type ObserverExtractorOutput = z.infer<typeof ObserverExtractorOutputCoreSchema>;
+
+/**
+ * LinkerSceneJudge 合并输出 CoreSchema
+ *
+ * 合并 LinkerOutput + SceneBuilderOutput + JudgeOutputV2，一次多模态调用同时产出
+ * 关联结果 + Scenes（条件触发）+ proactiveItems + unfinishedThreads。
+ *
+ * 字段重命名（与合并 prompt 对齐）：
+ * - LinkerOutput.links → linkedFacts
+ * - LinkerOutput.mergeSuggestions → mergedObjects
+ */
+const LinkerSceneJudgeOutputCoreSchema = z.object({
+  linkedFacts: LinkerOutputCoreSchema.shape.links,
+  newObjects: LinkerOutputCoreSchema.shape.newObjects,
+  mergedObjects: LinkerOutputCoreSchema.shape.mergeSuggestions,
+  scenes: SceneBuilderOutputCoreSchema.shape.scenes,
+  unfinishedThreads: JudgeOutputV2CoreSchema.shape.unfinishedThreads,
+  proactiveItems: JudgeOutputV2CoreSchema.shape.proactiveItems,
+});
+
+/**
+ * LinkerSceneJudge 合并输出归一化
+ */
+function normalizeLinkerSceneJudgeOutput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const obj = input as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...obj };
+  if (obj.links !== undefined && obj.linkedFacts === undefined) {
+    result.linkedFacts = obj.links;
+  }
+  if (obj.mergeSuggestions !== undefined && obj.mergedObjects === undefined) {
+    result.mergedObjects = obj.mergeSuggestions;
+  }
+  if (obj.linkedFacts !== undefined) {
+    result.linkedFacts = normalizeLinkerLinks(obj.linkedFacts);
+  }
+  if (obj.newObjects !== undefined) {
+    result.newObjects = normalizeLinkerNewObjects(obj.newObjects);
+  }
+  if (obj.mergedObjects !== undefined) {
+    result.mergedObjects = normalizeLinkerMergeSuggestions(obj.mergedObjects);
+  }
+  if (obj.scenes !== undefined) {
+    result.scenes = normalizeSceneBuilderScenes(obj.scenes);
+  }
+  if (obj.unfinishedThreads !== undefined) {
+    result.unfinishedThreads = normalizeUnfinishedThreads(obj.unfinishedThreads);
+  }
+  if (obj.proactiveItems !== undefined) {
+    result.proactiveItems = normalizeProactiveItemsV2(obj.proactiveItems);
+  }
+  return result;
+}
+
+/**
+ * 导出的 LinkerSceneJudge 合并 schema
+ */
+export const LinkerSceneJudgeOutputSchema = z.preprocess(
+  normalizeLinkerSceneJudgeOutput,
+  LinkerSceneJudgeOutputCoreSchema
+);
+
+/**
+ * LinkerSceneJudge 合并输出类型
+ */
+export type LinkerSceneJudgeOutput = z.infer<typeof LinkerSceneJudgeOutputCoreSchema>;

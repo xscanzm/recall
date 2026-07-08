@@ -1,11 +1,19 @@
 {
   "name": "recall",
   "version": "0.1.0",
-  "description": "回声 Recall - 桌面上下文记忆系统",
+  "description": "回声 Recall - 主动型桌面上下文记忆助理",
   "main": "dist/main/app.js",
-  "author": "Recall Team",
-  "license": "UNLICENSED",
-  "private": true,
+  "author": "Recall Contributors",
+  "license": "BUSL-1.1",
+  "private": false,
+  "homepage": "https://github.com/xscanzm/recall#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xscanzm/recall.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xscanzm/recall/issues"
+  },
   "scripts": {
     "dev": "concurrently -k -n main,renderer -c blue,green \"npm:dev:main\" \"npm:dev:renderer\"",
     "dev:renderer": "vite",
@@ -15,12 +23,14 @@
     "build": "npm run build:main && npm run build:renderer",
     "package": "npm run build && electron-builder --win",
     "typecheck:main": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.node.json --noEmit",
-    "typecheck:renderer": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.web.json --noEmit"
+    "typecheck:renderer": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.web.json --noEmit",
+    "backfill:memory": "python scripts/backfill_memory_objects.py"
   },
   "dependencies": {
     "active-win": "^8.2.1",
     "better-sqlite3": "^11.3.0",
     "keytar": "^7.9.0",
+    "lucide-react": "^1.23.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sharp": "^0.35.3",
@@ -37,6 +47,7 @@
     "cross-env": "^7.0.3",
     "electron": "^32.1.2",
     "electron-builder": "^25.0.5",
+    "to-ico": "^1.1.5",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "wait-on": "^8.0.1"
@@ -63,6 +74,7 @@
         ]
       }
     ],
+    "icon": "resources/icons/icon.ico",
     "win": {
       "target": [
         {
@@ -72,6 +84,7 @@
           ]
         }
       ],
+      "icon": "resources/icons/icon.ico",
       "artifactName": "Recall-${version}-setup.${ext}"
     },
     "nsis": {

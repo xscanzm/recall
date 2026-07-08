@@ -339,7 +339,6 @@ export function ReportEditor(props: ReportEditorProps) {
                     <div key={`done-${idx}`} className="report-entry">
                       <div className="report-entry__header">
                         <span className="report-entry__text">{c.text}</span>
-                        <ConfidenceTag confidence={c.confidence} />
                       </div>
                       <EvidenceList factIds={c.evidenceFactIds} />
                       <DeleteEntryButton
@@ -362,7 +361,6 @@ export function ReportEditor(props: ReportEditorProps) {
                       <div className="report-entry__header">
                         <span className="report-entry__text">{t.text}</span>
                         <span className="report-entry__status">{taskStatusLabel(t.status)}</span>
-                        <ConfidenceTag confidence={t.confidence} />
                       </div>
                       <EvidenceList factIds={t.evidenceFactIds} />
                       <DeleteEntryButton
@@ -384,7 +382,6 @@ export function ReportEditor(props: ReportEditorProps) {
                     <div key={`dec-${idx}`} className="report-entry">
                       <div className="report-entry__header">
                         <span className="report-entry__text">{d.text}</span>
-                        <ConfidenceTag confidence={d.confidence} />
                       </div>
                       <EvidenceList factIds={d.evidenceFactIds} />
                       <DeleteEntryButton
@@ -406,7 +403,6 @@ export function ReportEditor(props: ReportEditorProps) {
                     <div key={`risk-${idx}`} className="report-entry">
                       <div className="report-entry__header">
                         <span className="report-entry__text">{r.text}</span>
-                        <ConfidenceTag confidence={r.confidence} />
                       </div>
                       <EvidenceList factIds={r.evidenceFactIds} />
                       <DeleteEntryButton
@@ -446,7 +442,7 @@ export function ReportEditor(props: ReportEditorProps) {
               <section className="report-section report-section--warning">
                 <h4 className="report-section__title">待确认</h4>
                 <p className="report-section__hint">
-                  以下内容置信度较低，已从正式条目中分离。请确认是否准确。
+                  以下内容已从正式条目中分离。请确认是否准确。
                 </p>
                 <div className="report-section__list">
                   {(content as DailyReportContent).needsReview.map((n, idx) => (
@@ -486,59 +482,19 @@ export function ReportEditor(props: ReportEditorProps) {
               </div>
             </div>
 
-            {sourceFactIds.length > 0 && (
-              <div className="report-side__group">
-                <h6 className="report-side__group-title">事实 ID</h6>
-                <ul className="report-side__id-list">
-                  {sourceFactIds.slice(0, 20).map((id) => (
-                    <li key={id} className="report-side__id-item">
-                      <span className="report-side__id-type">{NAMING.fact}</span>
-                      <button
-                        type="button"
-                        className="report-side__id-btn"
-                        onClick={() => handleJumpToFact(id)}
-                        title={`跳转到${NAMING.fact}：${id}`}
-                      >
-                        {id}
-                      </button>
-                    </li>
-                  ))}
-                  {sourceFactIds.length > 20 && (
-                    <li className="report-side__id-more">...共 {sourceFactIds.length} 条</li>
-                  )}
-                </ul>
-              </div>
-            )}
-
-            {sourceSceneIds.length > 0 && (
-              <div className="report-side__group">
-                <h6 className="report-side__group-title">场景 ID</h6>
-                <ul className="report-side__id-list">
-                  {sourceSceneIds.slice(0, 20).map((id) => (
-                    <li key={id} className="report-side__id-item">
-                      <span className="report-side__id-type">{NAMING.scene}</span>
-                      <button
-                        type="button"
-                        className="report-side__id-btn"
-                        onClick={() => handleJumpToScene(id)}
-                        title={`跳转到${NAMING.scene}：${id}`}
-                      >
-                        {id}
-                      </button>
-                    </li>
-                  ))}
-                  {sourceSceneIds.length > 20 && (
-                    <li className="report-side__id-more">...共 {sourceSceneIds.length} 条</li>
-                  )}
-                </ul>
-              </div>
-            )}
+            <button
+              type="button"
+              className="report-side__view-source-btn"
+              title="点击查看来源详情"
+            >
+              查看来源
+            </button>
 
             {!isWeekly && (content as DailyReportContent).needsReview.length > 0 && (
               <div className="report-side__group report-side__group--warning">
                 <h6 className="report-side__group-title">待确认条目</h6>
                 <p className="report-side__group-hint">
-                  {(content as DailyReportContent).needsReview.length} 条内容置信度较低，需要您确认。
+                  {(content as DailyReportContent).needsReview.length} 条内容需要您确认。
                 </p>
               </div>
             )}
@@ -589,22 +545,22 @@ export function ReportEditor(props: ReportEditorProps) {
           display: inline-block;
           align-self: flex-start;
           padding: 2px 8px;
-          background-color: var(--bg);
-          border: 1px solid var(--border);
+          background-color: var(--recall-bg);
+          border: 1px solid var(--recall-border);
           border-radius: var(--radius-pill);
           font-size: 11px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin-bottom: 2px;
         }
         .report-editor__title {
           font-size: 18px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin: 0;
         }
         .report-editor__date {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .report-editor__actions {
           display: flex;
@@ -622,9 +578,9 @@ export function ReportEditor(props: ReportEditorProps) {
           }
         }
         .report-editor__content {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 16px;
           min-height: 320px;
           display: flex;
@@ -632,24 +588,24 @@ export function ReportEditor(props: ReportEditorProps) {
           gap: 16px;
         }
         .report-editor__side {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 16px;
           align-self: start;
         }
         .report-editor__error {
           background-color: #fbeeeb;
-          border: 1px solid var(--danger);
-          border-radius: var(--radius-card);
+          border: 1px solid var(--recall-danger);
+          border-radius: var(--radius-md);
           padding: 12px 16px;
-          color: var(--danger);
+          color: var(--recall-danger);
           font-size: 13px;
         }
         .report-editor__stale-banner {
           background-color: rgba(217, 145, 43, 0.08);
-          border: 1px solid #D9912B;
-          border-radius: var(--radius-card);
+          border: 1px solid var(--recall-amber);
+          border-radius: var(--radius-md);
           padding: 12px 16px;
           display: flex;
           justify-content: space-between;
@@ -667,16 +623,16 @@ export function ReportEditor(props: ReportEditorProps) {
         .report-editor__stale-banner-title {
           font-size: 13px;
           font-weight: 600;
-          color: #D9912B;
+          color: var(--recall-amber);
         }
         .report-editor__stale-banner-hint {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .report-editor__stale-banner-btn {
           padding: 6px 14px;
-          background-color: #D9912B;
-          border: 1px solid #D9912B;
+          background-color: var(--recall-amber);
+          border: 1px solid var(--recall-amber);
           border-radius: var(--radius-pill);
           color: #fff;
           font-size: 12px;
@@ -697,7 +653,7 @@ export function ReportEditor(props: ReportEditorProps) {
         }
         .report-editor__edit-hint {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0;
         }
         .report-editor__textarea {
@@ -706,10 +662,10 @@ export function ReportEditor(props: ReportEditorProps) {
           font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
           font-size: 12px;
           padding: 12px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
-          background-color: var(--surface);
-          color: var(--text-primary);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
+          background-color: var(--recall-surface);
+          color: var(--recall-text);
           resize: vertical;
         }
 
@@ -720,26 +676,26 @@ export function ReportEditor(props: ReportEditorProps) {
         }
         .report-section--warning {
           background-color: #fff8e8;
-          border: 1px solid #D9912B;
-          border-radius: var(--radius-card);
+          border: 1px solid var(--recall-amber);
+          border-radius: var(--radius-md);
           padding: 12px;
         }
         .report-section__title {
           font-size: 13px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin: 0;
         }
         .report-section__text {
           margin: 0;
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
           white-space: pre-wrap;
         }
         .report-section__hint {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0;
         }
         .report-section__list {
@@ -751,13 +707,13 @@ export function ReportEditor(props: ReportEditorProps) {
           margin: 0;
           padding-left: 20px;
           font-size: 13px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
         }
 
         .report-entry {
           padding: 8px 0;
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid var(--recall-border);
           display: flex;
           flex-direction: column;
           gap: 4px;
@@ -768,7 +724,7 @@ export function ReportEditor(props: ReportEditorProps) {
         .report-entry--warning {
           background-color: rgba(217, 145, 43, 0.05);
           padding: 8px;
-          border-radius: var(--radius-card);
+          border-radius: var(--radius-md);
           border: 1px solid rgba(217, 145, 43, 0.2);
         }
         .report-entry__header {
@@ -780,35 +736,35 @@ export function ReportEditor(props: ReportEditorProps) {
         .report-entry__title {
           font-size: 14px;
           font-weight: 500;
-          color: var(--text-primary);
+          color: var(--recall-text);
         }
         .report-entry__text {
           font-size: 13px;
-          color: var(--text-primary);
+          color: var(--recall-text);
           flex: 1;
         }
         .report-entry__meta {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0;
         }
         .report-entry__evidence-count {
           font-size: 11px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           padding: 1px 6px;
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
           border-radius: var(--radius-pill);
         }
         .report-entry__status {
           font-size: 11px;
           padding: 1px 6px;
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
           border-radius: var(--radius-pill);
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .report-entry__evidence {
           font-size: 11px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0;
         }
         .report-entry__delete {
@@ -816,20 +772,20 @@ export function ReportEditor(props: ReportEditorProps) {
           font-size: 11px;
           padding: 2px 8px;
           background-color: transparent;
-          border: 1px solid var(--border);
-          color: var(--text-secondary);
+          border: 1px solid var(--recall-border);
+          color: var(--recall-text-muted);
           border-radius: var(--radius-pill);
           cursor: pointer;
         }
         .report-entry__delete:hover {
-          color: var(--danger);
-          border-color: var(--danger);
+          color: var(--recall-danger);
+          border-color: var(--recall-danger);
         }
 
         .report-side__title {
           margin: 0 0 12px 0;
           font-size: 13px;
-          color: var(--text-primary);
+          color: var(--recall-text);
         }
         .report-side__stats {
           display: flex;
@@ -839,21 +795,21 @@ export function ReportEditor(props: ReportEditorProps) {
         .report-side__stat {
           flex: 1;
           padding: 8px;
-          background-color: var(--bg);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-bg);
+          border-radius: var(--radius-md);
           text-align: center;
         }
         .report-side__stat-label {
           display: block;
           font-size: 10px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin-bottom: 2px;
         }
         .report-side__stat-value {
           display: block;
           font-size: 16px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--recall-text);
         }
         .report-side__group {
           margin-bottom: 12px;
@@ -861,70 +817,21 @@ export function ReportEditor(props: ReportEditorProps) {
         .report-side__group--warning {
           padding: 8px;
           background-color: rgba(217, 145, 43, 0.1);
-          border-radius: var(--radius-card);
+          border-radius: var(--radius-md);
         }
         .report-side__group-title {
           margin: 0 0 4px 0;
           font-size: 12px;
-          color: var(--text-primary);
+          color: var(--recall-text);
         }
         .report-side__group-hint {
           margin: 0;
           font-size: 11px;
-          color: var(--text-secondary);
-        }
-        .report-side__id-list {
-          list-style: none;
-          padding: 0;
-          margin: 0;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .report-side__id-item {
-          font-size: 11px;
-          padding: 1px 4px;
-          background-color: var(--bg);
-          border-radius: 2px;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .report-side__id-type {
-          font-size: 10px;
-          padding: 1px 6px;
-          border-radius: var(--radius-pill);
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          color: var(--text-secondary);
-          flex-shrink: 0;
-          white-space: nowrap;
-        }
-        .report-side__id-btn {
-          font-family: ui-monospace, monospace;
-          font-size: 11px;
-          color: var(--text-secondary);
-          padding: 1px 4px;
-          background-color: transparent;
-          border: none;
-          border-radius: 2px;
-          text-align: left;
-          cursor: pointer;
-          min-width: 0;
-          word-break: break-all;
-        }
-        .report-side__id-btn:hover {
-          color: #2F8F83;
-          background-color: rgba(47, 143, 131, 0.08);
-        }
-        .report-side__id-more {
-          font-size: 11px;
-          color: var(--text-secondary);
-          padding: 2px 4px;
+          color: var(--recall-text-muted);
         }
         .report-side__empty {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           margin: 0;
         }
       `}</style>
@@ -935,19 +842,6 @@ export function ReportEditor(props: ReportEditorProps) {
 // ============================================================================
 // 子组件
 // ============================================================================
-
-function ConfidenceTag({ confidence }: { confidence: number }) {
-  const label = confidence >= 0.8 ? "高" : confidence >= 0.5 ? "中" : "低";
-  const color = confidence >= 0.8 ? "var(--accent-green)" : confidence >= 0.5 ? "#D9912B" : "var(--danger)";
-  return (
-    <span
-      className="report-entry__evidence-count"
-      style={{ color, borderColor: color }}
-    >
-      置信度：{label}
-    </span>
-  );
-}
 
 function EvidenceList({ factIds, sceneIds }: { factIds: string[]; sceneIds?: string[] }) {
   if (factIds.length === 0 && (!sceneIds || sceneIds.length === 0)) return null;

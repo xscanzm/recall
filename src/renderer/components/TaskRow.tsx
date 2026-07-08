@@ -62,13 +62,13 @@ export interface TaskRowProps {
  * - 未完成：neutral
  */
 const STATUS_COLORS: Record<TaskStatus, string> = {
-  open: "#66706d",
-  in_progress: "#2f8f83",
-  likely_done: "#d9912b",
-  done: "#2f8f83",
-  blocked: "#c74d3c",
-  needs_confirmation: "#d9912b",
-  unknown: "#66706d",
+  open: "var(--recall-text-muted)",
+  in_progress: "var(--recall-accent)",
+  likely_done: "var(--recall-amber)",
+  done: "var(--recall-accent)",
+  blocked: "var(--recall-danger)",
+  needs_confirmation: "var(--recall-amber)",
+  unknown: "var(--recall-text-muted)",
 };
 
 /**
@@ -84,9 +84,9 @@ function priorityLabel(p: number): string {
  * 优先级颜色
  */
 function priorityColor(p: number): string {
-  if (p >= 0.7) return "#c74d3c"; // 高 -> danger
-  if (p >= 0.4) return "#d9912b"; // 中 -> amber
-  return "#66706d"; // 低 -> neutral
+  if (p >= 0.7) return "var(--recall-danger)"; // 高 -> danger
+  if (p >= 0.4) return "var(--recall-amber)"; // 中 -> amber
+  return "var(--recall-text-muted)"; // 低 -> neutral
 }
 
 export function TaskRow(props: TaskRowProps) {
@@ -197,14 +197,14 @@ export function TaskRow(props: TaskRowProps) {
           justify-content: space-between;
           align-items: flex-start;
           padding: 12px 16px;
-          border-bottom: 1px solid var(--border);
+          border-bottom: 1px solid var(--recall-border);
           gap: 12px;
         }
         .task-row:hover {
           background-color: #f0eee7;
         }
         .task-row[data-status="done"] .task-row__title {
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           text-decoration: line-through;
         }
         .task-row__main {
@@ -213,7 +213,7 @@ export function TaskRow(props: TaskRowProps) {
         }
         .task-row__title {
           font-weight: 500;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin-bottom: 4px;
           font-size: 13px;
           line-height: 1.5;
@@ -222,13 +222,13 @@ export function TaskRow(props: TaskRowProps) {
           display: flex;
           gap: 12px;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           flex-wrap: wrap;
           align-items: center;
         }
         .task-row__project {
           background-color: #eef3f1;
-          color: var(--accent-green);
+          color: var(--recall-accent);
           padding: 2px 8px;
           border-radius: var(--radius-pill);
           font-size: 11px;
@@ -242,10 +242,10 @@ export function TaskRow(props: TaskRowProps) {
         .task-row__orphan-chip {
           padding: 2px 8px;
           background-color: rgba(217, 145, 43, 0.12);
-          border: 1px solid #d9912b;
+          border: 1px solid var(--recall-amber);
           border-radius: var(--radius-pill);
           font-size: 11px;
-          color: #d9912b;
+          color: var(--recall-amber);
           font-weight: 500;
         }
         .task-row__time {
@@ -255,15 +255,15 @@ export function TaskRow(props: TaskRowProps) {
         .task-row__evidence {
           margin-top: 6px;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
         }
         .task-row__evidence-label {
           font-weight: 500;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .task-row__evidence-text {
-          color: var(--text-primary);
+          color: var(--recall-text);
           opacity: 0.85;
         }
         .task-row__actions {
@@ -277,15 +277,15 @@ export function TaskRow(props: TaskRowProps) {
         .task-row__actions button {
           font-size: 11px;
           padding: 4px 8px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
         }
         .task-row__actions button:hover {
           background-color: #f0eee7;
         }
         .task-row__delete-btn {
-          color: var(--danger) !important;
-          border-color: var(--danger) !important;
+          color: var(--recall-danger) !important;
+          border-color: var(--recall-danger) !important;
         }
         .task-row__delete-btn:hover {
           background-color: #fbeeeb !important;

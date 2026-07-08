@@ -46,7 +46,7 @@ export interface PrivacyRule {
  */
 export interface ModelConfig {
   id: string;
-  kind: "vision" | "language";
+  kind: "vision" | "language" | "multimodal";
   providerName: string;
   endpoint: string;
   model: string;
@@ -67,3 +67,175 @@ export type StatusListener = (status: AppStatus) => void;
 export type IpcResult<T> =
   | { ok: true; data: T }
   | { ok: false; error: string; code?: string };
+
+// ============================================================================
+// Phase 2 前端共享类型（doc 19 / doc 20 / spec.md Phase 2）
+// ============================================================================
+// 这些类型同时被 main 进程和 renderer 进程引用：
+// - main 端通过 src/main/models/types.ts re-export 引用
+// - renderer 端直接从 src/shared/types 引用
+//
+// 重要：本文件不得引入 Node-only 或 DOM-only API，保持纯类型导出。
+// 持久化字段（createdAt / updatedAt）设为可选，便于 renderer 接收部分字段。
+// ============================================================================
+
+/**
+ * TimelineBlock category 枚举（doc 20 第 5 节 / spec.md 行 728-739）
+ */
+export type TimelineBlockCategory =
+  | "focus_work"
+  | "communication"
+  | "research"
+  | "writing"
+  | "coding"
+  | "design"
+  | "meeting"
+  | "admin"
+  | "break"
+  | "mixed"
+  | "unknown";
+
+/**
+ * TimelineBlock：今日时间轴片段（doc 19 第 12.1 节 / doc 20 第 5 节）
+ *
+ * 持久化在 timeline_blocks 表（003 迁移）。
+ * 同一 dateKey 重复生成时由应用层先删除旧 blocks 再写入新 blocks。
+ *
+ * createdAt / updatedAt 设为可选：renderer 接收时可能未填充（例如 LLM 刚输出还未落库）。
+ */
+export interface TimelineBlock {
+  id: string;
+  dateKey: string;
+  startAt: string;
+  endAt: string;
+  title: string;
+  summary: string;
+  category: TimelineBlockCategory;
+  projectIds: string[];
+  projectNames: string[];
+  highlights: string[];
+  generatedTasks: string[];
+  generatedDecisions: string[];
+  reportable: boolean;
+  privateRisk: "low" | "medium" | "high";
+  /**
+   * 隐私风险原因说明（LLM 输出，持久化时可选保留）
+   * 注意：timeline_blocks 表未单独建列，可序列化到 highlights 或忽略。
+   */
+  privateRiskReason?: string;
+  sourceSceneIds: string[];
+  sourceFactIds: string[];
+  sourceObservationIds: string[];
+  /**
+   * LLM 输出的置信度，持久化时可选保留
+   */
+  confidence?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * UnfinishedThread：未收尾事项（doc 20 第 6 节 / spec.md 行 813-821）
+ *
+ * 由 Judge worker 输出，持久化在应用层（可复用 proactive_items 表或新增表）。
+ * 每个待收尾必须有来源（sourceFactIds / sourceTimelineBlockIds）。
+ */
+export interface UnfinishedThread {
+  id: string;
+  title: string;
+  reason: string;
+  suggestedNextAction: string;
+  priority: "high" | "medium" | "low";
+  projectName?: string;
+  lastSeenAt?: string;
+  sourceFactIds: string[];
+  sourceTimelineBlockIds: string[];
+  confidence: number;
+  status: "open" | "done" | "snoozed" | "ignored";
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * PersonalReview：自用复盘持久化实体（doc 20 第 7 节 / spec.md 行 909-927）
+ *
+ * 与 main 端 PersonalReviewOutput 区别：
+ * - PersonalReviewOutput 是 LLM 输出结构（含 dateKey / title，无 id / createdAt）
+ * - PersonalReview 是持久化后的实体（含 id / createdAt / updatedAt）
+ *
+ * renderer 通过 IPC 拿到 PersonalReview（已落库），main 端 LLM 输出 PersonalReviewOutput 后落库。
+ */
+export interface PersonalReview {
+  id: string;
+  dateKey: string;
+  title: string;
+  overview: string;
+  mainThreads: string[];
+  meaningfulProgress: string[];
+  unfinished: Array<{
+    text: string;
+    suggestedNextAction: string;
+    sourceTimelineBlockIds: string[];
+    sourceFactIds: string[];
+  }>;
+  worthRemembering: Array<{
+    text: string;
+    reason: string;
+    sourceFactIds: string[];
+  }>;
+  tomorrowStartHere: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * WorkReport：工作日报持久化实体（doc 20 第 8 节 / spec.md 行 1012-1026）
+ *
+ * 与 main 端 WorkReportOutput 区别：
+ * - WorkReportOutput 是 LLM 输出结构（含 dateKey / title，无 id / createdAt）
+ * - WorkReport 是持久化后的实体（含 id / createdAt / updatedAt）
+ */
+export interface WorkReport {
+  id: string;
+  dateKey: string;
+  title: string;
+  plainText: string;
+  sections: {
+    completed: string[];
+    projectProgress: string[];
+    risks: string[];
+    tomorrowPlan: string[];
+  };
+  sourceTimelineBlockIds: string[];
+  sourceFactIds: string[];
+  omittedForPrivacy: number;
+  warnings: string[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/**
+ * TodayPageData：今日页一次性加载所需的数据（doc 21 Phase 3）
+ *
+ * Phase 2 预先定义此类型，Phase 3 今日页 IPC 直接返回此结构。
+ * 包含：
+ * - 当日时间轴 blocks
+ * - 未收尾事项（unfinishedThreads）
+ * - 高亮事项（highlights，来自 facts 中 importance 高的）
+ * - 当日决策（decisions）
+ * - 个人复盘（personalReview，可选，未生成时为 undefined）
+ * - 工作日报（workReport，可选，未生成时为 undefined）
+ * - 明日起点（tomorrowStartHere，来自 personalReview 或 LLM 单独生成）
+ */
+export interface TodayPageData {
+  dateKey: string;
+  appStatus: AppStatus;
+  dayMainThread: string;
+  timelineBlocks: TimelineBlock[];
+  unfinishedThreads: UnfinishedThread[];
+  highlights: Array<{ id: string; content: string }>;
+  decisions: Array<{ id: string; content: string }>;
+  personalReview?: PersonalReview;
+  workReport?: WorkReport;
+  tomorrowStartHere: string[];
+}

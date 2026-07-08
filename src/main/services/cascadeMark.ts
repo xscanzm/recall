@@ -22,6 +22,7 @@ import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRepository";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
+import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
 import type { Fact, Scene } from "../models/types";
 
 /**
@@ -35,6 +36,7 @@ export interface CascadeMarkDeps {
   memoryObjectRepo?: MemoryObjectRepository;
   proactiveItemRepo?: ProactiveItemRepository;
   reportRepo?: ReportRepository;
+  objectMergeRepo?: ObjectMergeRepository; // 012 新增：合并审计
   db?: DB;
 }
 
@@ -264,112 +266,215 @@ export function hardDeleteByType(
  * - 把 fromId 对象的 sourceFactIds 合并到 toId 对象
  * - soft delete fromId 对象
  *
+ * 012 增强：彻底合并（用户选择方案）
+ * 1. 把 from.name 追加到 to.aliases（去重，不重复 to.name）
+ * 2. 改写 facts.projectHint / projectId（项目类型合并）
+ * 3. 改写 facts.people_hints_json（人物类型合并）
+ * 4. 改写 scenes.entityNames（项目 / 人物类型合并）
+ * 5. 写一条 object_merges 审计记录（含 rewritten_facts_count / rewritten_scenes_count）
+ * 6. 人物合并：若 from.organization 有值而 to.organization 为空，把 from.organization 复制给 to
+ *
  * 合并策略：
  * 1. 读取 fromId 和 toId 对象
  * 2. 把 fromId 的 sourceFactIds 中 toId 没有的部分追加到 toId
  * 3. soft delete fromId 对象
- * 4. 返回合并后的 toId 对象
+ * 4. 返回合并后的 toId 对象 + 审计详情
  */
 export function mergeObjects(
   deps: CascadeMarkDeps,
   objectType: "project" | "task" | "person" | "decision",
   fromId: string,
-  toId: string
-): { ok: true; fromId: string; toId: string; objectType: string } {
+  toId: string,
+  options: {
+    source?: "user_manual" | "linker_suggestion";
+    reason?: string;
+  } = {}
+): {
+  ok: true;
+  fromId: string;
+  toId: string;
+  objectType: string;
+  rewrittenFactsCount: number;
+  rewrittenScenesCount: number;
+  mergedAliases: string[];
+} {
   if (!deps.memoryObjectRepo) {
     fail("not_ready", "MemoryObjectRepository 未初始化");
   }
-
-  // 1. 读取两个对象
-  let fromSourceFactIds: string[] = [];
-  let toObject: { id: string; sourceFactIds: string[] } | null = null;
-
-  switch (objectType) {
-    case "project": {
-      const from = deps.memoryObjectRepo.getProjectByIdActive(fromId);
-      const to = deps.memoryObjectRepo.getProjectByIdActive(toId);
-      if (!from || !to) {
-        fail("not_found", `项目合并失败：from ${fromId} 或 to ${toId} 未找到`);
-      }
-      fromSourceFactIds = from!.sourceFactIds;
-      toObject = to;
-      // 合并 sourceFactIds（去重）
-      const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...fromSourceFactIds]));
-      // 同时合并 sourceSceneIds
-      const mergedSceneIds = Array.from(
-        new Set([...to!.sourceSceneIds, ...from!.sourceSceneIds])
-      );
-      deps.memoryObjectRepo.updateProject(toId, {
-        sourceFactIds: mergedFactIds,
-        sourceSceneIds: mergedSceneIds,
-      });
-      // soft delete from（archive）
-      deps.memoryObjectRepo.archiveProject(fromId);
-      break;
-    }
-    case "task": {
-      const from = deps.memoryObjectRepo.getTaskByIdActive(fromId);
-      const to = deps.memoryObjectRepo.getTaskByIdActive(toId);
-      if (!from || !to) {
-        fail("not_found", `任务合并失败：from ${fromId} 或 to ${toId} 未找到`);
-      }
-      fromSourceFactIds = from!.sourceFactIds;
-      toObject = to;
-      // 合并 sourceFactIds
-      const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...fromSourceFactIds]));
-      deps.memoryObjectRepo.updateTask(toId, { sourceFactIds: mergedFactIds });
-      // soft delete from
-      deps.memoryObjectRepo.softDeleteTask(fromId);
-      break;
-    }
-    case "person": {
-      const from = deps.memoryObjectRepo.getPersonByIdActive(fromId);
-      const to = deps.memoryObjectRepo.getPersonByIdActive(toId);
-      if (!from || !to) {
-        fail("not_found", `人物合并失败：from ${fromId} 或 to ${toId} 未找到`);
-      }
-      fromSourceFactIds = from!.sourceFactIds;
-      toObject = to;
-      // 合并 sourceFactIds 和 relatedProjectIds
-      const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...fromSourceFactIds]));
-      const mergedRelatedProjectIds = Array.from(
-        new Set([...to!.relatedProjectIds, ...from!.relatedProjectIds])
-      );
-      deps.memoryObjectRepo.updatePerson(toId, {
-        sourceFactIds: mergedFactIds,
-        relatedProjectIds: mergedRelatedProjectIds,
-      });
-      // soft delete from
-      deps.memoryObjectRepo.softDeletePerson(fromId);
-      break;
-    }
-    case "decision": {
-      const from = deps.memoryObjectRepo.getDecisionByIdActive(fromId);
-      const to = deps.memoryObjectRepo.getDecisionByIdActive(toId);
-      if (!from || !to) {
-        fail("not_found", `决策合并失败：from ${fromId} 或 to ${toId} 未找到`);
-      }
-      fromSourceFactIds = from!.sourceFactIds;
-      toObject = to;
-      // 合并 sourceFactIds
-      const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...fromSourceFactIds]));
-      deps.memoryObjectRepo.updateDecision(toId, { sourceFactIds: mergedFactIds });
-      // soft delete from
-      deps.memoryObjectRepo.softDeleteDecision(fromId);
-      break;
-    }
-    default:
-      fail("schema_invalid", `不支持的对象类型: ${objectType}`);
+  if (fromId === toId) {
+    fail("invalid_input", "fromId 和 toId 不能相同");
   }
 
-  // 触发 toObject 已使用，避免 lint 警告（保留以备后续扩展）
-  void toObject;
+  const source = options.source ?? "user_manual";
+  let fromName = "";
+  let toName = "";
+  let rewrittenFactsCount = 0;
+  let rewrittenScenesCount = 0;
+  let mergedAliases: string[] = [];
+
+  // 事务包装：要么全部成功，要么全部回滚
+  const runMerge = () => {
+    switch (objectType) {
+      case "project": {
+        const from = deps.memoryObjectRepo!.getProjectByIdActive(fromId);
+        const to = deps.memoryObjectRepo!.getProjectByIdActive(toId);
+        if (!from || !to) {
+          fail("not_found", `项目合并失败：from ${fromId} 或 to ${toId} 未找到`);
+        }
+        fromName = from!.name;
+        toName = to!.name;
+
+        // 1. 合并 sourceFactIds / sourceSceneIds（去重）
+        const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...from!.sourceFactIds]));
+        const mergedSceneIds = Array.from(
+          new Set([...to!.sourceSceneIds, ...from!.sourceSceneIds])
+        );
+
+        // 2. 合并 aliases：to.aliases + [from.name] - 去重 - 去掉 to.name 自身
+        const aliasSet = new Set<string>(to!.aliases ?? []);
+        if (fromName && fromName !== toName) aliasSet.add(fromName);
+        mergedAliases = Array.from(aliasSet).filter((a) => a && a !== toName);
+
+        deps.memoryObjectRepo!.updateProject(toId, {
+          sourceFactIds: mergedFactIds,
+          sourceSceneIds: mergedSceneIds,
+          aliases: mergedAliases,
+        });
+
+        // 3. 改写 facts.project_hint + projectId
+        if (deps.factRepo) {
+          rewrittenFactsCount = deps.factRepo.rewriteProjectHintBatch({
+            fromHint: fromName,
+            toHint: toName,
+            fromId: fromId,
+            toId: toId,
+          });
+        }
+
+        // 4. 改写 scenes.entityNames
+        if (deps.sceneRepo) {
+          rewrittenScenesCount = deps.sceneRepo.rewriteEntityNameBatch(fromName, toName);
+        }
+
+        // 5. soft delete from（archive）
+        deps.memoryObjectRepo!.archiveProject(fromId);
+        break;
+      }
+      case "task": {
+        const from = deps.memoryObjectRepo!.getTaskByIdActive(fromId);
+        const to = deps.memoryObjectRepo!.getTaskByIdActive(toId);
+        if (!from || !to) {
+          fail("not_found", `任务合并失败：from ${fromId} 或 to ${toId} 未找到`);
+        }
+        fromName = from!.title;
+        toName = to!.title;
+        // 合并 sourceFactIds
+        const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...from!.sourceFactIds]));
+        deps.memoryObjectRepo!.updateTask(toId, { sourceFactIds: mergedFactIds });
+        // soft delete from
+        deps.memoryObjectRepo!.softDeleteTask(fromId);
+        break;
+      }
+      case "person": {
+        const from = deps.memoryObjectRepo!.getPersonByIdActive(fromId);
+        const to = deps.memoryObjectRepo!.getPersonByIdActive(toId);
+        if (!from || !to) {
+          fail("not_found", `人物合并失败：from ${fromId} 或 to ${toId} 未找到`);
+        }
+        fromName = from!.name;
+        toName = to!.name;
+
+        // 1. 合并 sourceFactIds / relatedProjectIds
+        const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...from!.sourceFactIds]));
+        const mergedRelatedProjectIds = Array.from(
+          new Set([...to!.relatedProjectIds, ...from!.relatedProjectIds])
+        );
+
+        // 2. 合并 aliases
+        const aliasSet = new Set<string>(to!.aliases ?? []);
+        if (fromName && fromName !== toName) aliasSet.add(fromName);
+        mergedAliases = Array.from(aliasSet).filter((a) => a && a !== toName);
+
+        // 3. 若 to.organization 为空且 from.organization 有值，复用 from 的组织信息
+        const organizationPatch = !to!.organization && from!.organization
+          ? { organization: from!.organization }
+          : {};
+
+        deps.memoryObjectRepo!.updatePerson(toId, {
+          sourceFactIds: mergedFactIds,
+          relatedProjectIds: mergedRelatedProjectIds,
+          aliases: mergedAliases,
+          ...organizationPatch,
+        });
+
+        // 4. 改写 facts.people_hints_json
+        if (deps.factRepo) {
+          rewrittenFactsCount = deps.factRepo.rewritePeopleHintBatch(fromName, toName);
+        }
+
+        // 5. 改写 scenes.entityNames
+        if (deps.sceneRepo) {
+          rewrittenScenesCount = deps.sceneRepo.rewriteEntityNameBatch(fromName, toName);
+        }
+
+        // 6. soft delete from
+        deps.memoryObjectRepo!.softDeletePerson(fromId);
+        break;
+      }
+      case "decision": {
+        const from = deps.memoryObjectRepo!.getDecisionByIdActive(fromId);
+        const to = deps.memoryObjectRepo!.getDecisionByIdActive(toId);
+        if (!from || !to) {
+          fail("not_found", `决策合并失败：from ${fromId} 或 to ${toId} 未找到`);
+        }
+        fromName = from!.title;
+        toName = to!.title;
+        const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...from!.sourceFactIds]));
+        deps.memoryObjectRepo!.updateDecision(toId, { sourceFactIds: mergedFactIds });
+        deps.memoryObjectRepo!.softDeleteDecision(fromId);
+        break;
+      }
+      default:
+        fail("schema_invalid", `不支持的对象类型: ${objectType}`);
+    }
+
+    // 6. 写 object_merges 审计
+    if (deps.objectMergeRepo) {
+      try {
+        deps.objectMergeRepo.create({
+          objectType,
+          fromId,
+          fromName,
+          toId,
+          toName,
+          source,
+          reason: options.reason ?? null,
+          rewrittenFactsCount,
+          rewrittenScenesCount,
+        });
+      } catch (e) {
+        // 审计失败不阻塞合并流程，但记录
+        // eslint-disable-next-line no-console
+        console.warn("[mergeObjects] object_merges 审计失败:", e);
+      }
+    }
+  };
+
+  // 事务包装：若 db 可用则用事务，否则直接执行
+  if (deps.db) {
+    deps.db.transaction(runMerge)();
+  } else {
+    runMerge();
+  }
 
   return {
     ok: true,
     fromId,
     toId,
     objectType,
+    rewrittenFactsCount,
+    rewrittenScenesCount,
+    mergedAliases,
   };
 }
 

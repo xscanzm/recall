@@ -27,6 +27,10 @@ import { SceneRepository } from "./db/repositories/SceneRepository";
 import { MemoryObjectRepository } from "./db/repositories/MemoryObjectRepository";
 import { ProactiveItemRepository } from "./db/repositories/ProactiveItemRepository";
 import { ReportRepository } from "./db/repositories/ReportRepository";
+import { TimelineBlockRepository } from "./db/repositories/TimelineBlockRepository";
+import { ReportSelectionRepository } from "./db/repositories/ReportSelectionRepository";
+import { UnfinishedThreadRepository } from "./db/repositories/UnfinishedThreadRepository";
+import { createObjectMergeRepository } from "./db/repositories/ObjectMergeRepository";
 import { SecretService } from "./services/SecretService";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
@@ -35,20 +39,21 @@ import { CaptureService } from "./services/CaptureService";
 import { PrivacyGuard } from "./services/PrivacyGuard";
 import { ScreenshotCache } from "./services/ScreenshotCache";
 import { getModelJobQueue } from "./services/ModelJobQueue";
-import { ObserverWorker } from "./services/ObserverWorker";
+import { ObserverExtractorWorker } from "./services/ObserverExtractorWorker";
 import { ObservationNormalizer } from "./services/ObservationNormalizer";
-import { ExtractorWorker } from "./services/ExtractorWorker";
-import { LinkerWorker } from "./services/LinkerWorker";
-import { SceneBuilderWorker } from "./services/SceneBuilderWorker";
-import { JudgeWorker } from "./services/JudgeWorker";
+import { LinkerSceneJudgeWorker } from "./services/LinkerSceneJudgeWorker";
 import { ReporterWorker } from "./services/ReporterWorker";
 import { ReportScheduler } from "./services/ReportScheduler";
+import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
+import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
+import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
 import { SceneScheduler } from "./services/SceneScheduler";
 import { CAPTURE_CANDIDATE_EVENT } from "./services/ActivityService";
 import { MemoryPipeline, setMemoryPipeline } from "./services/MemoryPipeline";
 import { logger } from "./services/Logger";
 import { trayService } from "./services/TrayService";
 import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./services/ScreenshotCacheScheduler";
+import { formatLocalDateKey } from "./utils/dateKey";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
 
@@ -121,6 +126,8 @@ let memoryPipeline: MemoryPipeline | null = null;
 let reportScheduler: ReportScheduler | null = null;
 // 长会话场景调度器（C-3 修复：触发 long_session capture bundle）
 let sceneScheduler: SceneScheduler | null = null;
+// Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
+let timelineBuilderTimer: NodeJS.Timeout | null = null;
 
 function isDev(): boolean {
   return process.env.NODE_ENV === "development" || !!process.env.VITE_DEV_SERVER_URL;
@@ -352,61 +359,46 @@ app.whenReady().then(async () => {
   const sceneRepo = new SceneRepository(db);
   const memoryObjectRepo = new MemoryObjectRepository(db);
   const proactiveItemRepo = new ProactiveItemRepository(db);
+  // Phase 2 新增：TimelineBlock / ReportSelection / UnfinishedThread Repositories
+  const timelineBlockRepo = new TimelineBlockRepository(db);
+  const reportSelectionRepo = new ReportSelectionRepository(db);
+  const unfinishedThreadRepo = new UnfinishedThreadRepository(db);
+  // 012 新增：ObjectMerge 审计 Repository
+  const objectMergeRepo = createObjectMergeRepository(db);
 
-  // 2. ModelJobQueue 单例（视觉任务并发 1-2，LLM 串行）
+  // 2. ModelJobQueue 单例（多模态统一并发 3）
   const modelJobQueue = getModelJobQueue(modelJobRepo);
 
-  // 3. 创建 5 个 Worker + ObservationNormalizer
-  const observerWorker = new ObserverWorker({
+  // 3. 创建 2 个合并 Worker + ObservationNormalizer
+  const observerExtractorWorker = new ObserverExtractorWorker({
     modelGateway,
     modelJobQueue,
+    factRepo,
+    observationRepo: obsRepo,
+    memoryObjectRepo,
+    settingsService,
   });
   const normalizer = new ObservationNormalizer({
     observationRepo: obsRepo,
     privacyGuard,
   });
-  const extractorWorker = new ExtractorWorker({
+  const linkerSceneJudgeWorker = new LinkerSceneJudgeWorker({
     modelGateway,
     modelJobQueue,
     factRepo,
-    observationRepo: obsRepo,
-    memoryObjectRepo,
-    settingsService,
-  });
-  const linkerWorker = new LinkerWorker({
-    modelGateway,
-    modelJobQueue,
-    memoryObjectRepo,
     sceneRepo,
+    memoryObjectRepo,
     proactiveItemRepo,
-    factRepo,
-    settingsService,
-  });
-  const sceneBuilderWorker = new SceneBuilderWorker({
-    modelGateway,
-    modelJobQueue,
-    sceneRepo,
-    factRepo,
-    memoryObjectRepo,
-  });
-  const judgeWorker = new JudgeWorker({
-    modelGateway,
-    modelJobQueue,
-    proactiveItemRepo,
-    sceneRepo,
-    memoryObjectRepo,
-    factRepo,
+    unfinishedThreadRepo,
+    timelineBlockRepo,
     settingsService,
   });
 
   // 4. 创建 MemoryPipeline 协调器
   memoryPipeline = new MemoryPipeline({
-    observerWorker,
+    observerExtractorWorker,
     normalizer,
-    extractorWorker,
-    linkerWorker,
-    sceneBuilderWorker,
-    judgeWorker,
+    linkerSceneJudgeWorker,
     modelJobQueue,
     sceneRepo,
     factRepo,
@@ -433,9 +425,88 @@ app.whenReady().then(async () => {
     settingsService,
   });
 
-  // ReportScheduler：定时调度日报/周报生成
+  // -------- Phase 2 新增 Workers --------
+  // TimelineBuilderWorker：今日时间轴整理员
+  // 职责：把当天 observations/facts/scenes 聚合为用户可读的 TimelineBlock
+  const timelineBuilderWorker = new TimelineBuilderWorker({
+    modelGateway,
+    modelJobQueue,
+    observationRepo: obsRepo,
+    factRepo,
+    sceneRepo,
+    timelineBlockRepo,
+    settingsService,
+  });
+
+  // PersonalReviewWriterWorker：个人复盘撰写员
+  // 职责：基于当天 TimelineBlock + UnfinishedThread + decisions 生成个人复盘
+  // Phase 2 B1：注入 timelineBuilderWorker，报告生成前调用 buildTimeline 确保 timeline 最新
+  const personalReviewWriterWorker = new PersonalReviewWriterWorker({
+    modelGateway,
+    modelJobQueue,
+    timelineBlockRepo,
+    unfinishedThreadRepo,
+    factRepo,
+    reportRepo,
+    settingsService,
+    timelineBuilderWorker,
+  });
+
+  // WorkReportWriterWorker：工作日报撰写员
+  // 职责：基于用户选中的 TimelineBlock 生成工作日报（严格过滤 privateRisk=high）
+  // Phase 2 B1：注入 timelineBuilderWorker，报告生成前调用 buildTimeline 确保 timeline 最新
+  const workReportWriterWorker = new WorkReportWriterWorker({
+    modelGateway,
+    modelJobQueue,
+    timelineBlockRepo,
+    reportSelectionRepo,
+    factRepo,
+    reportRepo,
+    settingsService,
+    timelineBuilderWorker,
+  });
+
+  // Phase 2 B2：TimelineBuilder 自动调度（每 10 分钟增量落盘当天时间轴）
+  // 2026-07-07 变更：从全量替换改为增量追加，历史 blocks 永不改动
+  // - 失败不阻断应用，仅记录日志（catch 内吞错）
+  // - 在 before-quit 中 clearInterval 避免退出时悬挂引用
+  // - 修复：用本地日期工具（与 TimelineBuilderWorker.getLocalTodayStartIsoFromDateKey 保持一致），
+  //   避免本地 0:00-8:00 期间被 UTC 切日误判为昨天
+  timelineBuilderTimer = setInterval(() => {
+    try {
+      const today = formatLocalDateKey(new Date());
+      void timelineBuilderWorker.buildTimeline(today).then((result) => {
+        if (!result.ok) {
+          logger.warn({
+            jobType: "timeline_builder",
+            status: "failed",
+            errorCode: result.errorCode,
+            message: result.errorMessage ?? "scheduled timeline build failed",
+          });
+        }
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn({
+          jobType: "timeline_builder",
+          status: "failed",
+          errorCode: "unknown_error",
+          message: `scheduled timeline build threw: ${message.slice(0, 160)}`,
+        });
+      });
+    } catch {
+      // 同步异常兜底（理论上不会进入）
+    }
+  }, 10 * 60 * 1000);
+
+  // ReportScheduler：定时调度日报/周报/个人复盘生成
+  // - personalReviewWriterWorker：用于个人复盘（personal_daily_review）调度
+  // - reportRepo：用于补跑时检查 DB 是否已有 type+dateKey 记录（避免 LLM 重复跑）
+  // - 启动后立即跑 checkMissedSchedules()（修复：之前应用重启就丢 lastRunDate）
   reportScheduler = new ReportScheduler({
     reporterWorker,
+    personalReviewWriterWorker,
+    timelineBuilderWorker,
+    reportRepo,
     settingsService,
   });
   reportScheduler.start();
@@ -512,6 +583,15 @@ app.whenReady().then(async () => {
     pauseObserving,
     // M8 新增：DB 实例用于 data:clearAll 等批量操作
     db,
+    // Phase 2 新增：TimelineBuilder / PersonalReviewWriter / WorkReportWriter + 相关 Repos
+    timelineBuilderWorker,
+    personalReviewWriterWorker,
+    workReportWriterWorker,
+    timelineBlockRepo,
+    reportSelectionRepo,
+    unfinishedThreadRepo,
+    // 012 新增：ObjectMerge 审计
+    objectMergeRepo: objectMergeRepo,
   });
 
   // AppStatus 变化时主动推送给 renderer，并刷新托盘菜单
@@ -525,9 +605,11 @@ app.whenReady().then(async () => {
 
   // 监听系统锁屏/解锁事件，更新 AppStatus（不采集锁屏期间内容）
   powerMonitor.on("lock-screen", () => {
+    captureService?.setLocked(true);
     setStatus({ pipelineState: "idle" });
   });
   powerMonitor.on("unlock-screen", () => {
+    captureService?.setLocked(false);
     // 解锁后不自动启动观察，等待用户操作
   });
 
@@ -546,6 +628,11 @@ app.on("before-quit", () => {
   logger.info({ message: "Recall app quitting" });
   // 停止截图缓存定时清理
   stopScreenshotCacheScheduler();
+  // Phase 2 B2：停止 TimelineBuilder 自动调度
+  if (timelineBuilderTimer) {
+    clearInterval(timelineBuilderTimer);
+    timelineBuilderTimer = null;
+  }
   // 停止 M3 服务
   try {
     activityService?.stop();

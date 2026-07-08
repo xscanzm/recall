@@ -243,6 +243,14 @@ export class ActivityService extends EventEmitter {
   }
 
   /**
+   * 获取当前 idle 阈值（秒）
+   * - 供 CaptureService 兜底检查使用
+   */
+  getIdleThresholdSeconds(): number {
+    return this.config.idleThresholdSeconds;
+  }
+
+  /**
    * 外部触发：daily preflight
    * - 由 ReportScheduler 在生成日报前调用
    * - 不依赖当前窗口状态，直接发出 reason=daily_preflight
@@ -293,8 +301,11 @@ export class ActivityService extends EventEmitter {
       return;
     }
 
+    // 更新当前 idle 秒数（供 checkWindowChanges 内 signals 使用）
+    this.lastIdleSeconds = idleSeconds;
+
     // 检测窗口切换和标题变化（触发条件 1、2）
-    this.checkWindowChanges(window, now);
+    this.checkWindowChanges(window, now, idleSeconds);
 
     // 触发条件 3：用户输入活跃 + 窗口稳定 30 秒
     // 触发条件 4：内容变化（间隔 >= 60 秒）
@@ -308,8 +319,6 @@ export class ActivityService extends EventEmitter {
       // 标题变化但同窗口：更新 title 但保持稳定时间
       this.currentWindow = window;
     }
-
-    this.lastIdleSeconds = idleSeconds;
   }
 
   /**
@@ -359,11 +368,17 @@ export class ActivityService extends EventEmitter {
    * 项目切换判定：active-win 不直接返回 projectId，使用 appName 作为项目代理。
    * 不同应用通常对应不同工作上下文（如 VSCode -> 浏览器），适合触发 SceneBuilder。
    */
-  private checkWindowChanges(window: ActivityWindowInfo, now: number): void {
+  private checkWindowChanges(window: ActivityWindowInfo, now: number, idleSeconds: number): void {
     const prev = this.currentWindow;
 
     if (!prev) {
       // 首次获取，不触发（避免启动时立即采集）
+      return;
+    }
+
+    // 用户已 idle 时跳过窗口切换/标题变化触发
+    // （scene_boundary 由 checkIdleTransitions 独立处理，不在此处）
+    if (idleSeconds >= this.config.idleThresholdSeconds) {
       return;
     }
 
@@ -377,9 +392,9 @@ export class ActivityService extends EventEmitter {
         reason: projectChanged ? "project_switch" : "window_focus_changed",
         window,
         signals: {
-          keyboardActive: this.lastIdleSeconds < 5,
-          mouseActive: this.lastIdleSeconds < 5,
-          idleSeconds: this.lastIdleSeconds,
+          keyboardActive: idleSeconds < 5,
+          mouseActive: idleSeconds < 5,
+          idleSeconds,
           activeWindowStableSeconds: 0,
         },
         triggeredAt: new Date(now).toISOString(),
@@ -393,9 +408,9 @@ export class ActivityService extends EventEmitter {
         reason: "window_title_changed",
         window,
         signals: {
-          keyboardActive: this.lastIdleSeconds < 5,
-          mouseActive: this.lastIdleSeconds < 5,
-          idleSeconds: this.lastIdleSeconds,
+          keyboardActive: idleSeconds < 5,
+          mouseActive: idleSeconds < 5,
+          idleSeconds,
           activeWindowStableSeconds: Math.floor((now - this.currentWindowSince) / 1000),
         },
         triggeredAt: new Date(now).toISOString(),
@@ -460,8 +475,12 @@ export class ActivityService extends EventEmitter {
 
     // 长会话：每 longSessionIntervalMinutes 分钟，无论窗口是否变化，发出 content_changed
     // 用于"长工作会话：每 2-5 分钟采集一组关键帧"
+    // 注意：用户已 idle（>= idleThresholdSeconds）时不触发，避免离开后仍截图
     const lastContentTrigger = this.lastTriggerTimeByReason.get("content_changed") ?? 0;
-    if (now - lastContentTrigger >= this.config.longSessionIntervalMinutes * 60 * 1000) {
+    if (
+      idleSeconds < this.config.idleThresholdSeconds &&
+      now - lastContentTrigger >= this.config.longSessionIntervalMinutes * 60 * 1000
+    ) {
       this.emitCaptureCandidate({
         reason: "content_changed",
         window: this.currentWindow,

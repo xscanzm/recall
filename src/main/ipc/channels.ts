@@ -41,17 +41,35 @@ export type IpcChannel =
   | "memory:createUserFeedback"
   | "memory:getProjectDetail"
   | "memory:mergeObjects"
+  // 012/013 新增：合并建议
+  | "memory:listMergeSuggestions"
+  | "memory:rejectMergeSuggestion"
+  | "memory:listAllAliases"
+  | "memory:listPeople"
+  | "memory:listProjects"
   | "reminders:list"
   | "reminders:updateStatus"
   | "reports:list"
   | "reports:get"
   | "reports:generate"
   | "reports:update"
+  | "reports:delete"
   | "capture:forgetRecent"
+  | "screenshot:clear"
   // M8 新增：数据导出/清空 + 缓存大小查询
   | "data:export"
   | "data:clearAll"
-  | "data:getCacheSize";
+  | "data:getCacheSize"
+  // Phase 2 新增：时间轴 / 个人复盘 / 工作日报 / 待收尾
+  | "timeline:build"
+  | "timeline:get"
+  | "personalReview:generate"
+  | "personalReview:get"
+  | "workReport:generate"
+  | "workReport:get"
+  | "workReport:saveSelection"
+  | "unfinishedThreads:list"
+  | "unfinishedThreads:updateStatus";
 
 /**
  * 主进程主动推送到 renderer 的 channel（不是 invoke 通道，是 send 通道）
@@ -86,16 +104,34 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "memory:createUserFeedback",
   "memory:getProjectDetail",
   "memory:mergeObjects",
+  // 012/013 新增
+  "memory:listMergeSuggestions",
+  "memory:rejectMergeSuggestion",
+  "memory:listAllAliases",
+  "memory:listPeople",
+  "memory:listProjects",
   "reminders:list",
   "reminders:updateStatus",
   "reports:list",
   "reports:get",
   "reports:generate",
   "reports:update",
+  "reports:delete",
   "capture:forgetRecent",
+  "screenshot:clear",
   "data:export",
   "data:clearAll",
   "data:getCacheSize",
+  // Phase 2 新增
+  "timeline:build",
+  "timeline:get",
+  "personalReview:generate",
+  "personalReview:get",
+  "workReport:generate",
+  "workReport:get",
+  "workReport:saveSelection",
+  "unfinishedThreads:list",
+  "unfinishedThreads:updateStatus",
 ] as const;
 
 /**

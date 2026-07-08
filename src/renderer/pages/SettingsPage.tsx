@@ -1,55 +1,56 @@
 // src/renderer/pages/SettingsPage.tsx
-// 设置页（来自 08 文档）
+// 设置页（Phase 7 重构，spec 行 2300-2401）
 //
-// 设置模块：
-// 1. 模型配置（视觉 + 语言，完整 CRUD + 测试连接）
-// 2. 观察设置（活动窗口稳定阈值/内容变化间隔/长会话采集间隔/idle 阈值）
-// 3. 截图保留（单选：立即删除/1h/6h/当天/3天/7天，显示缓存大小，清空按钮）
-// 4. 通知设置（应用内提醒/桌面通知/日报时间/周报时间）
-// 5. 黑名单与隐私规则（完整 CRUD）
-// 6. 忘掉最近（15/30/60 分钟/今天）
-// 7. 数据导出 / 清空（JSON 导出 + 清空所有数据 + 清空截图缓存）
+// 6 分区布局：
+// 1. 模型配置（视觉 + 语言分开，使用 ModelConfigForm）
+// 2. 观察设置（开启/暂停、开机自动恢复、只观察活动窗口）
+// 3. 截图保留（6 个保留策略 + 缓存大小 + 清空按钮）
+// 4. 黑名单应用（使用 PrivacyRuleList，含默认建议提示）
+// 5. 通知（应用内提醒默认开 / 桌面通知默认关 / 日报时间 / 周报时间）
+// 6. 数据管理（导出 / 清空截图 / 忘掉15分钟 / 忘掉30分钟 / 删除今天 / 清空所有）
 //
 // 重要约束：
-// - API Key 不显示完整（测试失败时不显示 key）
-// - API Key 输入框 type=password
-// - 删除模型配置时同时删除 SecretService 中对应 key（后端处理）
-// - 桌面通知默认关闭
-// - 应用内提醒默认开启
+// - API Key 输入框 type=password（在 ModelConfigForm 中实现）
+// - API Key 通过 SecretService 安全存储，不写入 SQLite
+// - 危险操作（清空所有 / 删除今天 / 忘掉最近）必须二次确认
+// - 二次确认对话框使用 store 中的 showConfirmDialog / requestConfirm / executeConfirm
 
 import { useEffect, useState } from "react";
 import { ModelConfigForm } from "../components/ModelConfigForm";
 import { PrivacyRuleList } from "../components/PrivacyRuleList";
 import { useAppStore, type ScreenshotRetentionPolicy } from "../state/store";
+import { getIpc } from "../state/ipc";
 
 /**
- * 忘掉最近时长选项（来自 spec.md "忘掉最近"）
- */
-const FORGET_RECENT_OPTIONS: Array<{
-  value: "15m" | "30m" | "1h" | "today";
-  label: string;
-  description: string;
-}> = [
-  { value: "15m", label: "15 分钟", description: "硬删除最近 15 分钟内的截图缓存与观察" },
-  { value: "30m", label: "30 分钟", description: "硬删除最近 30 分钟内的截图缓存与观察" },
-  { value: "1h", label: "1 小时", description: "硬删除最近 1 小时内的截图缓存与观察" },
-  { value: "today", label: "今天", description: "硬删除今天全部截图缓存与观察" },
-];
-
-/**
- * 截图保留策略选项
+ * 截图保留策略选项（spec 行 2344-2352）
  */
 const RETENTION_OPTIONS: Array<{
   value: ScreenshotRetentionPolicy;
   label: string;
   description: string;
 }> = [
-  { value: "delete_immediately", label: "立即删除", description: "采集后立即删除截图，仅用于实时分析" },
+  { value: "delete_immediately", label: "立即删除", description: "采集后立即删除，仅用于实时分析" },
   { value: "1h", label: "1 小时", description: "保留 1 小时" },
   { value: "6h", label: "6 小时", description: "保留 6 小时" },
-  { value: "today", label: "当天", description: "默认。次日启动时清理前一天截图" },
+  { value: "today", label: "当天", description: "次日启动时清理前一天截图（默认）" },
   { value: "3d", label: "3 天", description: "保留 3 天" },
   { value: "7d", label: "7 天", description: "保留 7 天" },
+];
+
+/**
+ * 黑名单默认建议（spec 行 2371-2374）
+ * 仅作为新增规则时的快捷预设，不会自动添加
+ */
+const BLACKLIST_PRESETS: Array<{
+  type: "app_name" | "window_title_keyword" | "domain_keyword";
+  pattern: string;
+  label: string;
+}> = [
+  { type: "app_name", pattern: "1Password", label: "密码管理器（1Password）" },
+  { type: "app_name", pattern: "银行", label: "银行支付类应用" },
+  { type: "window_title_keyword", pattern: "password", label: "窗口标题含 password" },
+  { type: "window_title_keyword", pattern: "医疗", label: "窗口标题含医疗" },
+  { type: "domain_keyword", pattern: "bank.com", label: "域名含 bank.com" },
 ];
 
 /**
@@ -59,12 +60,12 @@ function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 }
 
 export function SettingsPage() {
-  // 从 store 获取状态和动作
+  // 模型配置
   const modelConfigs = useAppStore((s) => s.modelConfigs);
   const modelConfigsLoading = useAppStore((s) => s.modelConfigsLoading);
   const modelConfigsError = useAppStore((s) => s.modelConfigsError);
@@ -73,6 +74,7 @@ export function SettingsPage() {
   const deleteModelConfig = useAppStore((s) => s.deleteModelConfig);
   const testModelConnection = useAppStore((s) => s.testModelConnection);
 
+  // 隐私规则
   const privacyRules = useAppStore((s) => s.privacyRules);
   const privacyRulesLoading = useAppStore((s) => s.privacyRulesLoading);
   const privacyRulesError = useAppStore((s) => s.privacyRulesError);
@@ -81,60 +83,56 @@ export function SettingsPage() {
   const updatePrivacyRule = useAppStore((s) => s.updatePrivacyRule);
   const deletePrivacyRule = useAppStore((s) => s.deletePrivacyRule);
 
+  // 应用设置
   const settings = useAppStore((s) => s.settings);
   const settingsLoading = useAppStore((s) => s.settingsLoading);
   const loadSettings = useAppStore((s) => s.loadSettings);
   const updateSettings = useAppStore((s) => s.updateSettings);
 
+  // 应用状态（用于观察开启/暂停）
+  const appStatus = useAppStore((s) => s.appStatus);
+
+  // 数据操作
   const forgetRecent = useAppStore((s) => s.forgetRecent);
   const exportData = useAppStore((s) => s.exportData);
   const clearAllData = useAppStore((s) => s.clearAllData);
+  const clearScreenshotsOnly = useAppStore((s) => s.clearScreenshotsOnly);
   const getCacheSize = useAppStore((s) => s.getCacheSize);
 
-  // 忘掉最近状态
-  const [forgetLoading, setForgetLoading] = useState(false);
-  const [forgetError, setForgetError] = useState<string | null>(null);
-  const [forgetResult, setForgetResult] = useState<{
-    deletedObservations: number;
-    deletedScreenshots: number;
-  } | null>(null);
-  const [pendingForget, setPendingForget] = useState<
-    "15m" | "30m" | "1h" | "today" | null
-  >(null);
+  // 二次确认对话框
+  const showConfirmDialog = useAppStore((s) => s.showConfirmDialog);
+  const confirmDialogTitle = useAppStore((s) => s.confirmDialogTitle);
+  const confirmDialogMessage = useAppStore((s) => s.confirmDialogMessage);
+  const confirmDialogConfirmText = useAppStore((s) => s.confirmDialogConfirmText);
+  const requestConfirm = useAppStore((s) => s.requestConfirm);
+  const closeConfirmDialog = useAppStore((s) => s.closeConfirmDialog);
+  const executeConfirm = useAppStore((s) => s.executeConfirm);
+  const clearingData = useAppStore((s) => s.clearingData);
+  const setClearingData = useAppStore((s) => s.setClearingData);
 
-  // 数据导出 / 清空状态
-  const [exportLoading, setExportLoading] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
-  const [exportResult, setExportResult] = useState<string | null>(null);
-  const [includeScreenshots, setIncludeScreenshots] = useState(false);
-
-  const [clearAllLoading, setClearAllLoading] = useState(false);
-  const [clearAllError, setClearAllError] = useState<string | null>(null);
-  const [clearAllResult, setClearAllResult] = useState<string | null>(null);
-  const [pendingClearAll, setPendingClearAll] = useState(false);
-
-  // 截图缓存大小
-  const [cacheSize, setCacheSize] = useState<{ bytes: number; fileCount: number } | null>(null);
-  const [clearCacheLoading, setClearCacheLoading] = useState(false);
-  const [clearCacheResult, setClearCacheResult] = useState<string | null>(null);
-
-  // 截图保留策略本地状态（保存时同步到 store）
+  // 本地 UI 状态
   const [retentionPolicy, setRetentionPolicy] = useState<ScreenshotRetentionPolicy>("today");
   const [retentionSaving, setRetentionSaving] = useState(false);
 
-  // 通知设置本地状态
   const [inAppReminders, setInAppReminders] = useState(true);
   const [desktopNotifications, setDesktopNotifications] = useState(false);
   const [dailyReportTime, setDailyReportTime] = useState("18:30");
   const [weeklyReportTime, setWeeklyReportTime] = useState("20:00");
   const [notificationSaving, setNotificationSaving] = useState(false);
 
-  // 观察设置本地状态
-  const [activeWindowStableSeconds, setActiveWindowStableSeconds] = useState(30);
-  const [contentChangeMinIntervalSeconds, setContentChangeMinIntervalSeconds] = useState(60);
-  const [longSessionIntervalMinutes, setLongSessionIntervalMinutes] = useState(5);
-  const [idleThresholdSeconds, setIdleThresholdSeconds] = useState(120);
-  const [observationSaving, setObservationSaving] = useState(false);
+  // 观察状态切换 loading
+  const [observationToggling, setObservationToggling] = useState(false);
+
+  // 截图缓存
+  const [cacheSize, setCacheSize] = useState<{ bytes: number; fileCount: number } | null>(null);
+
+  // 数据导出
+  const [includeScreenshots, setIncludeScreenshots] = useState(false);
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportMessage, setExportMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // 操作结果消息（忘掉最近 / 清空截图 / 清空所有）
+  const [actionMessage, setActionMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   // 初始化加载
   useEffect(() => {
@@ -145,7 +143,7 @@ export function SettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 设置加载完成后同步本地状态
+  // settings 加载完成后同步本地状态
   useEffect(() => {
     if (settings) {
       setRetentionPolicy(settings.screenshot.retentionPolicy);
@@ -153,10 +151,6 @@ export function SettingsPage() {
       setDesktopNotifications(settings.notification.desktopNotifications);
       setDailyReportTime(settings.notification.dailyReportTime);
       setWeeklyReportTime(settings.notification.weeklyReportTime);
-      setActiveWindowStableSeconds(settings.observation.activeWindowStableSeconds);
-      setContentChangeMinIntervalSeconds(settings.observation.contentChangeMinIntervalSeconds);
-      setLongSessionIntervalMinutes(settings.observation.longSessionIntervalMinutes);
-      setIdleThresholdSeconds(settings.observation.idleThresholdSeconds);
     }
   }, [settings]);
 
@@ -168,17 +162,69 @@ export function SettingsPage() {
     setCacheSize({ bytes: result.bytes, fileCount: result.fileCount });
   };
 
+  // ============================================================================
+  // 观察设置 handlers
+  // ============================================================================
+
   /**
-   * 保存截图保留策略
+   * 开启 / 暂停观察
+   * 调用 app:startObserving / app:pauseObserving IPC
    */
+  const handleToggleObservation = async () => {
+    setObservationToggling(true);
+    setActionMessage(null);
+    try {
+      if (appStatus.paused || !appStatus.observing) {
+        await getIpc().app.startObserving();
+      } else {
+        await getIpc().app.pauseObserving();
+      }
+    } catch (err) {
+      setActionMessage({
+        kind: "err",
+        text: err instanceof Error ? err.message : "切换观察状态失败",
+      });
+    } finally {
+      setObservationToggling(false);
+    }
+  };
+
+  /**
+   * 切换"开机后自动恢复观察"
+   * 持久化到 settings.observation.enabled 字段
+   * 语义：true = 用户希望观察启用，开机后自动恢复；false = 开机后不自动开始
+   */
+  const handleAutoResumeChange = async (checked: boolean) => {
+    const current = settings?.observation ?? {
+      enabled: false,
+      activeWindowStableSeconds: 30,
+      contentChangeMinIntervalSeconds: 60,
+      longSessionIntervalMinutes: 5,
+      idleThresholdSeconds: 120,
+    };
+    const result = await updateSettings({
+      observation: { ...current, enabled: checked },
+    });
+    if (!result.ok) {
+      setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+    }
+  };
+
+  // ============================================================================
+  // 截图保留 handlers
+  // ============================================================================
+
   const handleSaveRetention = async () => {
     setRetentionSaving(true);
+    setActionMessage(null);
     try {
       const result = await updateSettings({
         screenshot: { retentionPolicy },
       });
       if (!result.ok) {
-        window.alert(result.error ?? "保存失败");
+        setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+      } else {
+        setActionMessage({ kind: "ok", text: "截图保留策略已保存" });
       }
     } finally {
       setRetentionSaving(false);
@@ -186,10 +232,53 @@ export function SettingsPage() {
   };
 
   /**
-   * 保存通知设置
+   * 清空截图缓存（数据管理分区也复用此函数）
+   * 不是危险操作（截图硬删除但结构化记忆不受影响），但仍弹确认
    */
+  const handleClearScreenshots = () => {
+    requestConfirm({
+      title: "清空截图缓存",
+      message:
+        "仅删除截图文件，结构化记忆（观察、线索、工作片段等）会保留。" +
+        "如需同时清理观察记录，请使用「忘掉最近」或「删除今天数据」。",
+      confirmText: "确认清空截图",
+      onConfirm: async () => {
+        setClearingData(true);
+        setActionMessage(null);
+        try {
+          // 仅删除截图文件，不删除结构化记忆
+          const result = await clearScreenshotsOnly();
+          if (result.ok) {
+            setActionMessage({
+              kind: "ok",
+              text: `已清空截图缓存：删除截图 ${result.deletedScreenshots ?? 0} 个`,
+            });
+          } else {
+            setActionMessage({
+              kind: "err",
+              text: result.error ?? "清空失败",
+            });
+          }
+          await refreshCacheSize();
+        } catch (err) {
+          setActionMessage({
+            kind: "err",
+            text: err instanceof Error ? err.message : "清空失败",
+          });
+        } finally {
+          setClearingData(false);
+        }
+      },
+    });
+  };
+
+  // ============================================================================
+  // 通知 handlers
+  // ============================================================================
+
   const handleSaveNotification = async () => {
     setNotificationSaving(true);
+    setActionMessage(null);
     try {
       const result = await updateSettings({
         notification: {
@@ -200,99 +289,29 @@ export function SettingsPage() {
         },
       });
       if (!result.ok) {
-        window.alert(result.error ?? "保存失败");
+        setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+      } else {
+        setActionMessage({ kind: "ok", text: "通知设置已保存" });
       }
     } finally {
       setNotificationSaving(false);
     }
   };
 
-  /**
-   * 保存观察设置
-   */
-  const handleSaveObservation = async () => {
-    setObservationSaving(true);
-    try {
-      const result = await updateSettings({
-        observation: {
-          enabled: settings?.observation.enabled ?? false,
-          activeWindowStableSeconds,
-          contentChangeMinIntervalSeconds,
-          longSessionIntervalMinutes,
-          idleThresholdSeconds,
-        },
-      });
-      if (!result.ok) {
-        window.alert(result.error ?? "保存失败");
-      }
-    } finally {
-      setObservationSaving(false);
-    }
-  };
+  // ============================================================================
+  // 数据管理 handlers
+  // ============================================================================
 
   /**
-   * 清空所有截图缓存（调用 forgetRecent today）
-   */
-  const handleClearScreenshots = async () => {
-    const confirmed = window.confirm(
-      "确认清空所有截图缓存？\n\n截图文件会被硬删除，无法恢复。结构化记忆不受影响。"
-    );
-    if (!confirmed) return;
-    setClearCacheLoading(true);
-    setClearCacheResult(null);
-    try {
-      // 使用 forgetRecent today 清空截图
-      const result = await forgetRecent("today");
-      setClearCacheResult(
-        `已清空：删除截图 ${result.deletedScreenshots} 个，删除观察 ${result.deletedObservations} 条`
-      );
-      await refreshCacheSize();
-    } catch (err) {
-      setClearCacheResult(err instanceof Error ? err.message : "清空失败");
-    } finally {
-      setClearCacheLoading(false);
-    }
-  };
-
-  // 忘掉最近处理
-  const handleForgetClick = (duration: "15m" | "30m" | "1h" | "today") => {
-    setPendingForget(duration);
-    setForgetError(null);
-    setForgetResult(null);
-  };
-
-  const handleForgetConfirm = async () => {
-    if (!pendingForget) return;
-    setForgetLoading(true);
-    setForgetError(null);
-    try {
-      const result = await forgetRecent(pendingForget);
-      setForgetResult(result);
-      setPendingForget(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setForgetError(message);
-    } finally {
-      setForgetLoading(false);
-    }
-  };
-
-  const handleForgetCancel = () => {
-    setPendingForget(null);
-    setForgetError(null);
-  };
-
-  /**
-   * 数据导出
+   * 导出数据为 JSON 文件
+   * 非危险操作，不弹确认
    */
   const handleExport = async () => {
     setExportLoading(true);
-    setExportError(null);
-    setExportResult(null);
+    setExportMessage(null);
     try {
       const result = await exportData({ includeScreenshots });
       if (result.ok && result.data) {
-        // 触发浏览器下载
         const json = JSON.stringify(result.data, null, 2);
         const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
@@ -305,193 +324,278 @@ export function SettingsPage() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
         const meta = result.data.meta;
-        setExportResult(
-          `已导出：${meta.exportedAt}，观察 ${result.data.observations.length} 条，` +
-          `线索 ${result.data.facts.length} 条，工作片段 ${result.data.scenes.length} 条，` +
-          `任务 ${result.data.tasks.length} 条，项目 ${result.data.projects.length} 个，` +
-          `报告 ${result.data.reports.length} 篇。` +
-          `${meta.includeScreenshots ? "（含截图路径）" : "（不含截图）"}`
-        );
+        setExportMessage({
+          kind: "ok",
+          text:
+            `已导出（${meta.exportedAt}）：观察 ${result.data.observations.length} 条，` +
+            `线索 ${result.data.facts.length} 条，工作片段 ${result.data.scenes.length} 条，` +
+            `任务 ${result.data.tasks.length} 条，项目 ${result.data.projects.length} 个，` +
+            `报告 ${result.data.reports.length} 篇。` +
+            `${meta.includeScreenshots ? "（含截图路径）" : "（不含截图）"}`,
+        });
       } else {
-        setExportError(result.error ?? "导出失败");
+        setExportMessage({ kind: "err", text: result.error ?? "导出失败" });
       }
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : "导出失败");
+      setExportMessage({ kind: "err", text: err instanceof Error ? err.message : "导出失败" });
     } finally {
       setExportLoading(false);
     }
   };
 
   /**
-   * 清空所有数据
+   * 忘掉最近 N 分钟（危险操作，二次确认）
    */
-  const handleClearAllClick = () => {
-    setPendingClearAll(true);
-    setClearAllError(null);
-    setClearAllResult(null);
+  const handleForgetRecent = (minutes: 15 | 30) => {
+    requestConfirm({
+      title: `忘掉最近 ${minutes} 分钟`,
+      message:
+        ` Recall 会硬删除最近 ${minutes} 分钟内的截图缓存和观察记录，` +
+        "关联的线索/工作片段会被软删除（数据库中可恢复，但 UI 不再展示）。" +
+        "引用这些线索的日报会被标记为需要重新生成。此操作不可撤销。",
+      confirmText: `确认忘掉最近 ${minutes} 分钟`,
+      onConfirm: async () => {
+        setClearingData(true);
+        setActionMessage(null);
+        try {
+          const result = await forgetRecent(minutes === 15 ? "15m" : "30m");
+          setActionMessage({
+            kind: "ok",
+            text: `已忘掉最近 ${minutes} 分钟：删除观察 ${result.deletedObservations} 条，截图 ${result.deletedScreenshots} 个`,
+          });
+          await refreshCacheSize();
+        } catch (err) {
+          setActionMessage({
+            kind: "err",
+            text: err instanceof Error ? err.message : "忘掉最近失败",
+          });
+        } finally {
+          setClearingData(false);
+        }
+      },
+    });
   };
 
-  const handleClearAllConfirm = async () => {
-    setPendingClearAll(false);
-    setClearAllLoading(true);
-    setClearAllError(null);
-    try {
-      const result = await clearAllData();
-      if (result.ok) {
-        setClearAllResult(
-          `已清空所有结构化记忆数据。删除截图 ${result.deletedScreenshots ?? 0} 个。` +
-          "设置、模型配置、隐私规则已保留。"
-        );
-        await refreshCacheSize();
-      } else {
-        setClearAllError(result.error ?? "清空失败");
-      }
-    } catch (err) {
-      setClearAllError(err instanceof Error ? err.message : "清空失败");
-    } finally {
-      setClearAllLoading(false);
-    }
+  /**
+   * 删除今天数据（危险操作，二次确认）
+   * 复用 forgetRecent("today")
+   */
+  const handleDeleteToday = () => {
+    requestConfirm({
+      title: "删除今天数据",
+      message:
+        "Recall 会硬删除今天全部截图缓存和观察记录，" +
+        "关联的线索/工作片段会被软删除。此操作不可撤销。" +
+        "如需保留部分内容，请先导出。",
+      confirmText: "确认删除今天",
+      onConfirm: async () => {
+        setClearingData(true);
+        setActionMessage(null);
+        try {
+          const result = await forgetRecent("today");
+          setActionMessage({
+            kind: "ok",
+            text: `已删除今天数据：观察 ${result.deletedObservations} 条，截图 ${result.deletedScreenshots} 个`,
+          });
+          await refreshCacheSize();
+        } catch (err) {
+          setActionMessage({
+            kind: "err",
+            text: err instanceof Error ? err.message : "删除今天失败",
+          });
+        } finally {
+          setClearingData(false);
+        }
+      },
+    });
   };
 
-  const handleClearAllCancel = () => {
-    setPendingClearAll(false);
+  /**
+   * 清空所有数据（危险操作，二次确认）
+   */
+  const handleClearAll = () => {
+    requestConfirm({
+      title: "清空所有数据",
+      message:
+        "此操作会清空所有结构化记忆数据（观察、线索、工作片段、任务、项目、决策、人物、报告）" +
+        "和全部截图缓存。保留：设置、模型配置、隐私规则、用户反馈。\n\n" +
+        "此操作不可恢复。如需保留数据，请先导出。",
+      confirmText: "确认清空所有数据",
+      onConfirm: async () => {
+        setClearingData(true);
+        setActionMessage(null);
+        try {
+          const result = await clearAllData();
+          if (result.ok) {
+            setActionMessage({
+              kind: "ok",
+              text:
+                `已清空所有结构化记忆数据。删除截图 ${result.deletedScreenshots ?? 0} 个。` +
+                "设置、模型配置、隐私规则已保留。",
+            });
+            await refreshCacheSize();
+          } else {
+            setActionMessage({ kind: "err", text: result.error ?? "清空失败" });
+          }
+        } catch (err) {
+          setActionMessage({
+            kind: "err",
+            text: err instanceof Error ? err.message : "清空失败",
+          });
+        } finally {
+          setClearingData(false);
+        }
+      },
+    });
   };
 
   // 按模型类型分组
   const visionConfigs = modelConfigs.filter((c) => c.kind === "vision");
   const languageConfigs = modelConfigs.filter((c) => c.kind === "language");
+  const multimodalConfigs = modelConfigs.filter((c) => c.kind === "multimodal");
+
+  // 观察状态描述
+  const isObserving = appStatus.observing && !appStatus.paused;
+  const observationStateLabel = isObserving ? "观察中" : "已暂停";
+  const observationToggleLabel = isObserving ? "暂停观察" : "恢复观察";
 
   return (
     <div className="settings-page">
       <header className="page-header">
         <h2>设置</h2>
         <p className="page-header__sub">
-          视觉模型和语言模型分开配置。API Key 保存在系统安全存储，不会进入数据库或日志。
+          支持分开配置视觉模型与语言模型，或只配置一个多模态模型。API Key 保存在系统安全存储，不会进入数据库或日志。
         </p>
       </header>
 
-      {/* 模型配置 - 视觉 */}
-      <section className="card">
-        <div className="card__body">
-          <ModelConfigForm
-            kind="vision"
-            configs={visionConfigs}
-            loading={modelConfigsLoading}
-            error={modelConfigsError}
-            onSave={saveModelConfig}
-            onDelete={deleteModelConfig}
-            onTest={testModelConnection}
-          />
-        </div>
-      </section>
-
-      {/* 模型配置 - 语言 */}
-      <section className="card">
-        <div className="card__body">
-          <ModelConfigForm
-            kind="language"
-            configs={languageConfigs}
-            loading={modelConfigsLoading}
-            error={modelConfigsError}
-            onSave={saveModelConfig}
-            onDelete={deleteModelConfig}
-            onTest={testModelConnection}
-          />
-        </div>
-      </section>
-
-      {/* 观察设置 */}
-      <section className="card">
-        <h3 className="card__title">观察设置</h3>
-        <div className="card__body">
+      {/* ============ Section 1: 模型配置 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">1. 模型配置</h3>
           <p className="settings-section__hint">
-            调整 Recall 采集观察的触发阈值。值越小越敏感，越频繁触发采集。
+            视觉模型用于分析截图，语言模型用于整理记忆和生成报告。也可只配置一个多模态模型（如 gpt-4o）替代两者。API Key 通过系统安全存储（Electron safeStorage）保存，不写入数据库、不进日志。
           </p>
-          {settingsLoading ? (
-            <p className="settings-section__hint">加载中...</p>
-          ) : (
-            <div className="settings-form">
-              <div className="settings-form__field">
-                <label>活动窗口稳定时间阈值（秒）</label>
-                <input
-                  type="number"
-                  min={5}
-                  max={300}
-                  value={activeWindowStableSeconds}
-                  onChange={(e) => setActiveWindowStableSeconds(Number(e.target.value))}
-                />
-                <p className="settings-form__hint">
-                  用户输入活跃且窗口稳定超过此阈值时触发采集（默认 30 秒）
-                </p>
-              </div>
+        </header>
+        <div className="settings-section__content">
+          <div className="settings-section__block">
+            <h4 className="settings-section__subtitle">多模态模型（可选）</h4>
+            <p className="settings-section__hint">
+              同时支持视觉和语言任务，可替代下方分开配置的视觉模型与语言模型。配置后无需再单独配置视觉/语言模型。
+            </p>
+            <ModelConfigForm
+              kind="multimodal"
+              configs={multimodalConfigs}
+              loading={modelConfigsLoading}
+              error={modelConfigsError}
+              onSave={saveModelConfig}
+              onDelete={deleteModelConfig}
+              onTest={testModelConnection}
+            />
+          </div>
 
-              <div className="settings-form__field">
-                <label>内容变化最小间隔（秒）</label>
-                <input
-                  type="number"
-                  min={30}
-                  max={600}
-                  value={contentChangeMinIntervalSeconds}
-                  onChange={(e) => setContentChangeMinIntervalSeconds(Number(e.target.value))}
-                />
-                <p className="settings-form__hint">
-                  内容差异触发采集的最小间隔（默认 60 秒）
-                </p>
-              </div>
+          <div className="settings-section__block">
+            <h4 className="settings-section__subtitle">视觉模型</h4>
+            <p className="settings-section__hint">
+              用于分析屏幕截图，识别窗口内容、实体和可能意图。
+            </p>
+            <ModelConfigForm
+              kind="vision"
+              configs={visionConfigs}
+              loading={modelConfigsLoading}
+              error={modelConfigsError}
+              onSave={saveModelConfig}
+              onDelete={deleteModelConfig}
+              onTest={testModelConnection}
+            />
+          </div>
 
-              <div className="settings-form__field">
-                <label>长会话采集间隔（分钟）</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={longSessionIntervalMinutes}
-                  onChange={(e) => setLongSessionIntervalMinutes(Number(e.target.value))}
-                />
-                <p className="settings-form__hint">
-                  同一窗口长时间活跃时，定期触发采集的间隔（默认 5 分钟）
-                </p>
-              </div>
+          <div className="settings-section__block">
+            <h4 className="settings-section__subtitle">语言模型</h4>
+            <p className="settings-section__hint">
+              用于提取线索、构建场景、生成报告和回答用户问题。
+            </p>
+            <ModelConfigForm
+              kind="language"
+              configs={languageConfigs}
+              loading={modelConfigsLoading}
+              error={modelConfigsError}
+              onSave={saveModelConfig}
+              onDelete={deleteModelConfig}
+              onTest={testModelConnection}
+            />
+          </div>
+        </div>
+      </section>
 
-              <div className="settings-form__field">
-                <label>空闲判定阈值（秒）</label>
-                <input
-                  type="number"
-                  min={30}
-                  max={600}
-                  value={idleThresholdSeconds}
-                  onChange={(e) => setIdleThresholdSeconds(Number(e.target.value))}
-                />
-                <p className="settings-form__hint">
-                  超过此阈值无键盘鼠标活动则判定为 idle（默认 120 秒）
-                </p>
-              </div>
-
-              <div className="settings-form__actions">
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={handleSaveObservation}
-                  disabled={observationSaving}
-                >
-                  {observationSaving ? "保存中..." : "保存观察设置"}
-                </button>
-              </div>
+      {/* ============ Section 2: 观察设置 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">2. 观察设置</h3>
+          <p className="settings-section__hint">
+            Recall 只整理当前活动窗口的上下文，不做全屏录屏。
+          </p>
+        </header>
+        <div className="settings-section__content">
+          <div className="settings-section__row">
+            <div className="settings-section__row-main">
+              <span className="settings-section__row-label">当前观察状态</span>
+              <span
+                className={`settings-section__state-pill ${
+                  isObserving ? "is-active" : "is-paused"
+                }`}
+              >
+                {observationStateLabel}
+              </span>
             </div>
-          )}
+            <button
+              type="button"
+              className={isObserving ? "btn btn-secondary" : "btn btn-primary"}
+              onClick={handleToggleObservation}
+              disabled={observationToggling}
+            >
+              {observationToggling ? "切换中..." : observationToggleLabel}
+            </button>
+          </div>
+
+          <label className="settings-section__toggle">
+            <input
+              type="checkbox"
+              checked={settings?.observation.enabled ?? false}
+              onChange={(e) => handleAutoResumeChange(e.target.checked)}
+              disabled={settingsLoading}
+            />
+            <div className="settings-section__toggle-text">
+              <span className="settings-section__toggle-label">开机后自动恢复观察</span>
+              <p className="settings-section__hint">
+                关闭后，每次启动 Recall 都需要手动点击恢复观察。
+              </p>
+            </div>
+          </label>
+
+          <div className="settings-section__note">
+            <span className="settings-section__note-icon" aria-hidden>✓</span>
+            <span>只观察活动窗口（已默认启用）。Recall 不会录制全屏，也不会在你不操作时持续采集。</span>
+          </div>
         </div>
       </section>
 
-      {/* 截图保留 */}
-      <section className="card">
-        <h3 className="card__title">截图保留</h3>
-        <div className="card__body">
+      {/* ============ Section 3: 截图保留 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">3. 截图保留</h3>
           <p className="settings-section__hint">
-            截图仅本地短期保留，作为视觉模型输入。过期截图硬删除，结构化记忆不受影响。
+            截图用于模型理解，会按你的设置保存在本机。删除截图不会删除已经整理好的文字记忆。
           </p>
-          <div className="retention-options">
+        </header>
+        <div className="settings-section__content">
+          <div className="retention-options" role="radiogroup" aria-label="截图保留策略">
             {RETENTION_OPTIONS.map((opt) => (
-              <label key={opt.value} className="retention-options__item">
+              <label
+                key={opt.value}
+                className={`retention-options__item ${
+                  retentionPolicy === opt.value ? "is-selected" : ""
+                }`}
+              >
                 <input
                   type="radio"
                   name="retention"
@@ -507,107 +611,67 @@ export function SettingsPage() {
             ))}
           </div>
 
-          <div className="settings-form__actions">
+          <div className="settings-section__actions">
             <button
               type="button"
-              className="primary"
+              className="btn btn-primary"
               onClick={handleSaveRetention}
-              disabled={retentionSaving}
+              disabled={retentionSaving || settingsLoading}
             >
               {retentionSaving ? "保存中..." : "保存保留策略"}
             </button>
           </div>
 
           <div className="cache-info">
-            <p className="cache-info__text">
-              当前缓存：{cacheSize ? `${formatBytes(cacheSize.bytes)} / ${cacheSize.fileCount} 个文件` : "加载中..."}
-            </p>
+            <div className="cache-info__text">
+              <span className="cache-info__label">当前缓存</span>
+              <span className="cache-info__value">
+                {cacheSize ? `${formatBytes(cacheSize.bytes)} / ${cacheSize.fileCount} 个文件` : "加载中..."}
+              </span>
+            </div>
             <button
               type="button"
-              className="cache-info__clear-btn"
+              className="btn btn-secondary cache-info__clear-btn"
               onClick={handleClearScreenshots}
-              disabled={clearCacheLoading}
+              disabled={clearingData}
             >
-              {clearCacheLoading ? "清空中..." : "清空截图缓存"}
+              {clearingData ? "清空中..." : "清空截图缓存"}
             </button>
           </div>
-          {clearCacheResult && <p className="cache-info__result">{clearCacheResult}</p>}
         </div>
       </section>
 
-      {/* 通知设置 */}
-      <section className="card">
-        <h3 className="card__title">通知设置</h3>
-        <div className="card__body">
-          {settingsLoading ? (
-            <p className="settings-section__hint">加载中...</p>
-          ) : (
-            <div className="settings-form">
-              <label className="settings-form__toggle">
-                <input
-                  type="checkbox"
-                  checked={inAppReminders}
-                  onChange={(e) => setInAppReminders(e.target.checked)}
-                />
-                <div>
-                  <span className="settings-form__toggle-label">应用内提醒</span>
-                  <p className="settings-form__hint">默认开启。在应用内显示提醒，不建议关闭。</p>
-                </div>
-              </label>
-
-              <label className="settings-form__toggle">
-                <input
-                  type="checkbox"
-                  checked={desktopNotifications}
-                  onChange={(e) => setDesktopNotifications(e.target.checked)}
-                />
-                <div>
-                  <span className="settings-form__toggle-label">桌面通知</span>
-                  <p className="settings-form__hint">
-                    默认关闭。开启后只对候选高优先级提醒生效，低优先级提醒只在应用内显示。
-                  </p>
-                </div>
-              </label>
-
-              <div className="settings-form__field">
-                <label>日报时间</label>
-                <input
-                  type="time"
-                  value={dailyReportTime}
-                  onChange={(e) => setDailyReportTime(e.target.value)}
-                />
-                <p className="settings-form__hint">每天此时间触发日报生成（默认 18:30）</p>
-              </div>
-
-              <div className="settings-form__field">
-                <label>周报时间</label>
-                <input
-                  type="time"
-                  value={weeklyReportTime}
-                  onChange={(e) => setWeeklyReportTime(e.target.value)}
-                />
-                <p className="settings-form__hint">每周日此时间触发周报生成（默认 20:00）</p>
-              </div>
-
-              <div className="settings-form__actions">
+      {/* ============ Section 4: 黑名单应用 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">4. 黑名单应用</h3>
+          <p className="settings-section__hint">
+            匹配黑名单的应用、窗口标题或域名不会被采集、不会调用模型、不会保存任何数据。
+          </p>
+        </header>
+        <div className="settings-section__content">
+          <div className="settings-section__presets">
+            <span className="settings-section__presets-label">默认建议（点击快速添加）：</span>
+            <div className="settings-section__presets-list">
+              {BLACKLIST_PRESETS.map((preset) => (
                 <button
+                  key={`${preset.type}:${preset.pattern}`}
                   type="button"
-                  className="primary"
-                  onClick={handleSaveNotification}
-                  disabled={notificationSaving}
+                  className="btn btn-secondary btn-sm settings-section__preset-btn"
+                  onClick={() =>
+                    addPrivacyRule({
+                      type: preset.type,
+                      pattern: preset.pattern,
+                      action: "exclude",
+                    })
+                  }
                 >
-                  {notificationSaving ? "保存中..." : "保存通知设置"}
+                  + {preset.label}
                 </button>
-              </div>
+              ))}
             </div>
-          )}
-        </div>
-      </section>
+          </div>
 
-      {/* 黑名单与隐私规则 */}
-      <section className="card">
-        <h3 className="card__title">黑名单与隐私规则</h3>
-        <div className="card__body">
           <PrivacyRuleList
             rules={privacyRules}
             loading={privacyRulesLoading}
@@ -615,96 +679,105 @@ export function SettingsPage() {
             onAdd={addPrivacyRule}
             onUpdate={updatePrivacyRule}
             onDelete={deletePrivacyRule}
+            emptyHint="暂无黑名单规则。建议至少添加密码管理器、银行支付和医疗证件类规则。"
           />
         </div>
       </section>
 
-      {/* 忘掉最近（来自 spec.md "忘掉最近"章节，M7 已实现） */}
-      <section className="card">
-        <h3 className="card__title">忘掉最近</h3>
-        <div className="card__body">
-          <p className="forget-recent__hint">
-            点击后 Recall 会硬删除对应时间范围内的截图缓存和观察，并 soft delete 关联线索/工作片段。引用这些线索的日报会被标记为需要重新生成。
+      {/* ============ Section 5: 通知 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">5. 通知</h3>
+          <p className="settings-section__hint">
+            桌面通知默认关闭。你可以只在应用内查看提醒。
           </p>
-          <div className="forget-recent__buttons">
-            {FORGET_RECENT_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                className="forget-recent__btn"
-                onClick={() => handleForgetClick(opt.value)}
-                disabled={forgetLoading}
-                title={opt.description}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+        </header>
+        <div className="settings-section__content">
+          {settingsLoading ? (
+            <p className="settings-section__hint">加载中...</p>
+          ) : (
+            <>
+              <label className="settings-section__toggle">
+                <input
+                  type="checkbox"
+                  checked={inAppReminders}
+                  onChange={(e) => setInAppReminders(e.target.checked)}
+                />
+                <div className="settings-section__toggle-text">
+                  <span className="settings-section__toggle-label">应用内提醒</span>
+                  <p className="settings-section__hint">默认开启。在应用内显示提醒，不建议关闭。</p>
+                </div>
+              </label>
 
-          {forgetError && <p className="forget-recent__error">{forgetError}</p>}
+              <label className="settings-section__toggle">
+                <input
+                  type="checkbox"
+                  checked={desktopNotifications}
+                  onChange={(e) => setDesktopNotifications(e.target.checked)}
+                />
+                <div className="settings-section__toggle-text">
+                  <span className="settings-section__toggle-label">桌面通知</span>
+                  <p className="settings-section__hint">
+                    默认关闭。开启后只对候选高优先级提醒生效，低优先级提醒只在应用内显示。
+                  </p>
+                </div>
+              </label>
 
-          {forgetResult && (
-            <div className="forget-recent__result">
-              <p>已忘掉：</p>
-              <ul>
-                <li>删除观察 {forgetResult.deletedObservations} 条</li>
-                <li>删除截图缓存 {forgetResult.deletedScreenshots} 个</li>
-              </ul>
-              <p className="forget-recent__result-hint">
-                关联线索/工作片段已 soft delete，引用这些内容的日报已标记需要重新生成。
-              </p>
-            </div>
-          )}
+              <div className="settings-form__row">
+                <div className="settings-form__field">
+                  <label>日报时间</label>
+                  <input
+                    type="time"
+                    value={dailyReportTime}
+                    onChange={(e) => setDailyReportTime(e.target.value)}
+                  />
+                  <p className="settings-form__hint">每天此时间触发日报生成（默认 18:30）</p>
+                </div>
 
-          {pendingForget && (
-            <div className="forget-recent__confirm-overlay" onClick={handleForgetCancel}>
-              <div
-                className="forget-recent__confirm-modal"
-                onClick={(e) => e.stopPropagation()}
-                role="dialog"
-                aria-modal="true"
-              >
-                <h4>确认忘掉最近</h4>
-                <p>
-                  你即将忘掉最近
-                  <strong>
-                    {FORGET_RECENT_OPTIONS.find((o) => o.value === pendingForget)?.label}
-                  </strong>
-                  的内容。
-                </p>
-                <p className="forget-recent__confirm-hint">
-                  对应截图缓存会被硬删除，无法恢复；关联线索/工作片段会被 soft delete（可在数据库中恢复，但 UI 不再展示）。
-                </p>
-                <div className="forget-recent__confirm-actions">
-                  <button type="button" onClick={handleForgetCancel} disabled={forgetLoading}>
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    className="primary forget-recent__confirm-btn"
-                    onClick={handleForgetConfirm}
-                    disabled={forgetLoading}
-                  >
-                    {forgetLoading ? "执行中..." : "确认忘掉"}
-                  </button>
+                <div className="settings-form__field">
+                  <label>周报时间</label>
+                  <input
+                    type="time"
+                    value={weeklyReportTime}
+                    onChange={(e) => setWeeklyReportTime(e.target.value)}
+                  />
+                  <p className="settings-form__hint">每周日此时间触发周报生成（默认 20:00）</p>
                 </div>
               </div>
-            </div>
+
+              <div className="settings-section__actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveNotification}
+                  disabled={notificationSaving}
+                >
+                  {notificationSaving ? "保存中..." : "保存通知设置"}
+                </button>
+              </div>
+            </>
           )}
         </div>
       </section>
 
-      {/* 数据导出 / 清空 */}
-      <section className="card">
-        <h3 className="card__title">数据导出 / 清空</h3>
-        <div className="card__body">
-          <div className="data-section">
-            <h4 className="data-section__title">导出全部记忆</h4>
-            <p className="data-section__hint">
-              导出为 JSON 文件，包含观察、线索、工作片段、任务、项目、决策、人物、报告，以及导出时间和版本。
-              默认不包含截图，除非下方明确勾选。
-            </p>
-            <label className="data-section__toggle">
+      {/* ============ Section 6: 数据管理 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">6. 数据管理</h3>
+          <p className="settings-section__hint">
+            导出、清空或忘掉最近的数据。危险操作需要二次确认。
+          </p>
+        </header>
+        <div className="settings-section__content">
+          {/* 导出数据 */}
+          <div className="data-block">
+            <div className="data-block__head">
+              <h4 className="data-block__title">导出数据</h4>
+              <p className="data-block__hint">
+                导出为 JSON 文件，包含观察、线索、工作片段、任务、项目、决策、人物、报告。默认不包含截图路径。
+              </p>
+            </div>
+            <label className="settings-section__toggle settings-section__toggle--inline">
               <input
                 type="checkbox"
                 checked={includeScreenshots}
@@ -712,393 +785,142 @@ export function SettingsPage() {
               />
               <span>包含截图路径（仅路径，不含文件本身）</span>
             </label>
-            <div className="data-section__actions">
+            <div className="data-block__actions">
               <button
                 type="button"
-                className="primary"
+                className="btn btn-primary"
                 onClick={handleExport}
-                disabled={exportLoading}
+                disabled={exportLoading || clearingData}
               >
                 {exportLoading ? "导出中..." : "导出 JSON"}
               </button>
             </div>
-            {exportError && <p className="data-section__error">{exportError}</p>}
-            {exportResult && <p className="data-section__result">{exportResult}</p>}
-          </div>
-
-          <div className="data-section data-section--danger">
-            <h4 className="data-section__title">清空所有数据</h4>
-            <p className="data-section__hint">
-              清空所有结构化记忆数据（观察、线索、工作片段、任务、项目、决策、人物、报告）和全部截图缓存。
-              保留：设置、模型配置、隐私规则、用户反馈。
-              此操作不可恢复。
-            </p>
-            <div className="data-section__actions">
-              <button
-                type="button"
-                className="data-section__danger-btn"
-                onClick={handleClearAllClick}
-                disabled={clearAllLoading}
+            {exportMessage && (
+              <p
+                className={`data-block__message ${
+                  exportMessage.kind === "ok" ? "is-ok" : "is-err"
+                }`}
               >
-                {clearAllLoading ? "清空中..." : "清空所有数据"}
-              </button>
-            </div>
-            {clearAllError && <p className="data-section__error">{clearAllError}</p>}
-            {clearAllResult && <p className="data-section__result">{clearAllResult}</p>}
-            {pendingClearAll && (
-              <div className="forget-recent__confirm-overlay" onClick={handleClearAllCancel}>
-                <div
-                  className="forget-recent__confirm-modal"
-                  onClick={(e) => e.stopPropagation()}
-                  role="dialog"
-                  aria-modal="true"
-                >
-                  <h4>确认清空所有数据</h4>
-                  <p>
-                    你即将清空<strong>所有结构化记忆数据</strong>和全部截图缓存。
-                  </p>
-                  <p className="forget-recent__confirm-hint">
-                    此操作不可恢复。设置、模型配置、隐私规则、用户反馈会保留。
-                  </p>
-                  <div className="forget-recent__confirm-actions">
-                    <button type="button" onClick={handleClearAllCancel} disabled={clearAllLoading}>
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      className="primary forget-recent__confirm-btn"
-                      onClick={handleClearAllConfirm}
-                      disabled={clearAllLoading}
-                    >
-                      {clearAllLoading ? "执行中..." : "确认清空"}
-                    </button>
-                  </div>
-                </div>
-              </div>
+                {exportMessage.text}
+              </p>
             )}
           </div>
+
+          {/* 清空截图缓存（非危险，但仍弹确认） */}
+          <div className="data-block">
+            <div className="data-block__head">
+              <h4 className="data-block__title">清空截图缓存</h4>
+              <p className="data-block__hint">
+                硬删除全部截图文件，结构化记忆不受影响。
+              </p>
+            </div>
+            <div className="data-block__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleClearScreenshots}
+                disabled={clearingData}
+              >
+                {clearingData ? "处理中..." : "清空截图缓存"}
+              </button>
+            </div>
+          </div>
+
+          {/* 危险操作分组 */}
+          <div className="data-block data-block--danger">
+            <div className="data-block__head">
+              <h4 className="data-block__title">危险操作</h4>
+              <p className="data-block__hint">
+                以下操作不可撤销。如需保留数据，请先导出。
+              </p>
+            </div>
+
+            <div className="data-block__danger-grid">
+              <button
+                type="button"
+                className="btn btn-danger data-block__danger-btn"
+                onClick={() => handleForgetRecent(15)}
+                disabled={clearingData}
+              >
+                忘掉最近 15 分钟
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger data-block__danger-btn"
+                onClick={() => handleForgetRecent(30)}
+                disabled={clearingData}
+              >
+                忘掉最近 30 分钟
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger data-block__danger-btn"
+                onClick={handleDeleteToday}
+                disabled={clearingData}
+              >
+                删除今天数据
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger data-block__danger-btn"
+                onClick={handleClearAll}
+                disabled={clearingData}
+              >
+                清空所有数据
+              </button>
+            </div>
+          </div>
+
+          {actionMessage && (
+            <p
+              className={`data-block__message ${
+                actionMessage.kind === "ok" ? "is-ok" : "is-err"
+              }`}
+            >
+              {actionMessage.text}
+            </p>
+          )}
         </div>
       </section>
 
-      <style>{`
-        .settings-section__hint {
-          font-size: 12px;
-          color: var(--text-secondary);
-          line-height: 1.6;
-          margin: 0 0 12px 0;
-        }
-        .settings-form {
-          display: flex;
-          flex-direction: column;
-          gap: 14px;
-        }
-        .settings-form__field {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-        .settings-form__field label {
-          font-size: 12px;
-          color: var(--text-secondary);
-        }
-        .settings-form__field input[type="number"],
-        .settings-form__field input[type="time"] {
-          padding: 6px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
-          font-family: inherit;
-          font-size: 13px;
-          width: 200px;
-        }
-        .settings-form__hint {
-          margin: 0;
-          font-size: 11px;
-          color: var(--text-secondary);
-          line-height: 1.5;
-        }
-        .settings-form__toggle {
-          display: flex;
-          gap: 10px;
-          align-items: flex-start;
-          cursor: pointer;
-        }
-        .settings-form__toggle input[type="checkbox"] {
-          margin-top: 2px;
-        }
-        .settings-form__toggle-label {
-          font-size: 13px;
-          font-weight: 500;
-          display: block;
-        }
-        .settings-form__actions {
-          display: flex;
-          gap: 8px;
-          margin-top: 4px;
-        }
-        .settings-form__actions button {
-          padding: 6px 14px;
-          font-size: 13px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
-          cursor: pointer;
-          font-family: inherit;
-        }
-        .settings-form__actions button.primary {
-          background-color: var(--accent-green);
-          color: white;
-          border-color: var(--accent-green);
-        }
-        .settings-form__actions button:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-        .retention-options {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          margin-bottom: 12px;
-        }
-        .retention-options__item {
-          display: flex;
-          gap: 10px;
-          align-items: flex-start;
-          padding: 8px 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
-          cursor: pointer;
-        }
-        .retention-options__label {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .retention-options__name {
-          font-size: 13px;
-          font-weight: 500;
-        }
-        .retention-options__desc {
-          font-size: 11px;
-          color: var(--text-secondary);
-        }
-        .cache-info {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 10px 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
-          margin-top: 12px;
-        }
-        .cache-info__text {
-          margin: 0;
-          font-size: 12px;
-          color: var(--text-secondary);
-          flex: 1;
-        }
-        .cache-info__clear-btn {
-          padding: 4px 12px;
-          font-size: 12px;
-          border: 1px solid var(--danger);
-          color: var(--danger);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
-          cursor: pointer;
-          font-family: inherit;
-        }
-        .cache-info__clear-btn:hover:not(:disabled) {
-          background-color: #fbeeeb;
-        }
-        .cache-info__clear-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-        .cache-info__result {
-          margin: 8px 0 0 0;
-          font-size: 12px;
-          color: var(--accent-green);
-        }
-        .data-section {
-          padding: 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
-          margin-bottom: 12px;
-        }
-        .data-section--danger {
-          border-color: var(--danger);
-        }
-        .data-section__title {
-          font-size: 13px;
-          font-weight: 600;
-          margin: 0 0 6px 0;
-        }
-        .data-section__hint {
-          margin: 0 0 10px 0;
-          font-size: 12px;
-          color: var(--text-secondary);
-          line-height: 1.6;
-        }
-        .data-section__toggle {
-          display: flex;
-          gap: 8px;
-          align-items: center;
-          margin-bottom: 10px;
-          cursor: pointer;
-          font-size: 12px;
-        }
-        .data-section__actions {
-          display: flex;
-          gap: 8px;
-        }
-        .data-section__actions button {
-          padding: 6px 14px;
-          font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
-          cursor: pointer;
-          font-family: inherit;
-        }
-        .data-section__actions button.primary {
-          background-color: var(--accent-green);
-          color: white;
-          border-color: var(--accent-green);
-        }
-        .data-section__danger-btn {
-          color: var(--danger) !important;
-          border-color: var(--danger) !important;
-        }
-        .data-section__actions button:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-        .data-section__error {
-          margin: 8px 0 0 0;
-          font-size: 12px;
-          color: var(--danger);
-        }
-        .data-section__result {
-          margin: 8px 0 0 0;
-          font-size: 12px;
-          color: var(--accent-green);
-        }
-        .forget-recent__hint {
-          font-size: 12px;
-          color: var(--text-secondary);
-          line-height: 1.6;
-          margin: 0 0 10px 0;
-        }
-        .forget-recent__buttons {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-        .forget-recent__btn {
-          padding: 8px 16px;
-          border: 1px solid var(--danger);
-          color: var(--danger);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
-          cursor: pointer;
-          font-size: 13px;
-          font-family: inherit;
-        }
-        .forget-recent__btn:hover:not(:disabled) {
-          background-color: #fbeeeb;
-        }
-        .forget-recent__btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-        .forget-recent__error {
-          color: var(--danger);
-          font-size: 12px;
-          margin: 8px 0 0 0;
-        }
-        .forget-recent__result {
-          margin-top: 12px;
-          padding: 10px 12px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
-          background-color: var(--bg);
-          font-size: 12px;
-        }
-        .forget-recent__result p {
-          margin: 0 0 4px 0;
-          font-weight: 500;
-        }
-        .forget-recent__result ul {
-          margin: 0 0 6px 0;
-          padding-left: 18px;
-          color: var(--text-secondary);
-        }
-        .forget-recent__result-hint {
-          font-size: 11px !important;
-          color: var(--text-secondary);
-          font-weight: 400 !important;
-          font-style: italic;
-        }
-        .forget-recent__confirm-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          background-color: rgba(30, 36, 35, 0.4);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 1000;
-        }
-        .forget-recent__confirm-modal {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
-          box-shadow: 0 4px 24px rgba(30, 36, 35, 0.12);
-          padding: 16px 20px;
-          width: 90%;
-          max-width: 440px;
-        }
-        .forget-recent__confirm-modal h4 {
-          font-size: 15px;
-          font-weight: 600;
-          margin: 0 0 8px 0;
-        }
-        .forget-recent__confirm-modal p {
-          font-size: 13px;
-          margin: 0 0 6px 0;
-          line-height: 1.6;
-          color: var(--text-primary);
-        }
-        .forget-recent__confirm-hint {
-          font-size: 12px !important;
-          color: var(--text-secondary) !important;
-        }
-        .forget-recent__confirm-actions {
-          display: flex;
-          justify-content: flex-end;
-          gap: 8px;
-          margin-top: 12px;
-        }
-        .forget-recent__confirm-actions button {
-          padding: 6px 14px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          font-size: 12px;
-          font-family: inherit;
-          cursor: pointer;
-        }
-        .forget-recent__confirm-btn {
-          border-color: var(--danger) !important;
-          color: var(--danger) !important;
-        }
-        .forget-recent__confirm-btn:hover:not(:disabled) {
-          background-color: #fbeeeb !important;
-        }
-      `}</style>
+      {/* ============ 二次确认对话框（全局，由 store 控制） ============ */}
+      {showConfirmDialog && (
+        <div
+          className="confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-dialog-title"
+          onClick={closeConfirmDialog}
+        >
+          <div
+            className="confirm-dialog__box"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 id="confirm-dialog-title" className="confirm-dialog__title">
+              {confirmDialogTitle}
+            </h3>
+            <p className="confirm-dialog__message">{confirmDialogMessage}</p>
+            <div className="confirm-dialog__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={closeConfirmDialog}
+                disabled={clearingData}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={executeConfirm}
+                disabled={clearingData}
+              >
+                {clearingData ? "处理中..." : confirmDialogConfirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

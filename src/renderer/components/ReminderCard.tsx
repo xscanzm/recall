@@ -33,7 +33,6 @@ import {
   REMINDER_TYPE_LABELS,
   REMINDER_TYPE_COLORS,
   REMINDER_TYPE_ICONS,
-  confidenceLabel,
 } from "../app/naming";
 
 export type ReminderType =
@@ -101,7 +100,7 @@ export function ReminderCard(props: ReminderCardProps) {
     children,
   } = props;
 
-  const accent = REMINDER_TYPE_COLORS[type] ?? "#66706D";
+  const accent = REMINDER_TYPE_COLORS[type] ?? "var(--recall-text-muted)";
   const typeLabel = REMINDER_TYPE_LABELS[type] ?? "提醒";
   const typeIcon = REMINDER_TYPE_ICONS[type] ?? "提";
 
@@ -118,10 +117,7 @@ export function ReminderCard(props: ReminderCardProps) {
         <div className="reminder-card__type-group">
           <span
             className="reminder-card__icon"
-            style={{
-              backgroundColor: accent,
-              color: "#fff",
-            }}
+            style={{ backgroundColor: accent }}
             aria-hidden="true"
           >
             {typeIcon}
@@ -130,9 +126,6 @@ export function ReminderCard(props: ReminderCardProps) {
             {typeLabel}
           </span>
         </div>
-        <span className="reminder-card__confidence" style={{ color: accent }}>
-          置信度：{confidenceLabel(confidence)}
-        </span>
       </div>
 
       <h4 className="reminder-card__title">{title}</h4>
@@ -198,12 +191,12 @@ export function ReminderCard(props: ReminderCardProps) {
 
       <style>{`
         .reminder-card {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-left: 3px solid var(--accent-green);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-left: 3px solid var(--recall-accent);
+          border-radius: var(--radius-md);
           padding: 16px;
-          box-shadow: var(--shadow-sm);
+          box-shadow: 0 1px 2px rgba(30, 36, 35, 0.04);
           display: flex;
           flex-direction: column;
           gap: 8px;
@@ -229,28 +222,26 @@ export function ReminderCard(props: ReminderCardProps) {
           font-size: 11px;
           font-weight: 600;
           flex-shrink: 0;
+          color: #fff; /* TODO: token */
         }
         .reminder-card__type {
           font-weight: 500;
         }
-        .reminder-card__confidence {
-          font-size: 11px;
-        }
         .reminder-card__title {
           font-size: 15px;
           font-weight: 600;
-          color: var(--text-primary);
+          color: var(--recall-text);
           margin: 0;
         }
         .reminder-card__reason {
           margin: 0;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           font-size: 13px;
           line-height: 1.6;
         }
         .reminder-card__meta {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           display: flex;
           gap: 8px;
           flex-wrap: wrap;
@@ -262,9 +253,9 @@ export function ReminderCard(props: ReminderCardProps) {
           padding: 1px 8px;
           border-radius: var(--radius-pill);
           font-size: 11px;
-          background-color: var(--bg);
-          border: 1px solid var(--border);
-          color: var(--text-secondary);
+          background-color: var(--recall-bg);
+          border: 1px solid var(--recall-border);
+          color: var(--recall-text-muted);
         }
         .reminder-card__actions {
           display: flex;
@@ -290,20 +281,20 @@ export function ReminderCard(props: ReminderCardProps) {
           padding: 4px 10px;
         }
         .reminder-card__btn--snooze {
-          color: var(--accent-amber);
-          border-color: var(--accent-amber);
-          background-color: var(--surface);
+          color: var(--recall-amber);
+          border-color: var(--recall-amber);
+          background-color: var(--recall-surface);
         }
         .reminder-card__btn--snooze:hover {
-          background-color: color-mix(in srgb, var(--accent-amber) 12%, var(--surface));
+          background-color: color-mix(in srgb, var(--recall-amber) 12%, var(--recall-surface));
         }
         .reminder-card__btn--mute {
-          color: var(--danger);
-          border-color: var(--danger);
-          background-color: var(--surface);
+          color: var(--recall-danger);
+          border-color: var(--recall-danger);
+          background-color: var(--recall-surface);
         }
         .reminder-card__btn--mute:hover {
-          background-color: color-mix(in srgb, var(--danger) 12%, var(--surface));
+          background-color: color-mix(in srgb, var(--recall-danger) 12%, var(--recall-surface));
         }
       `}</style>
     </div>

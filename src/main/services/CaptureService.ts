@@ -34,7 +34,7 @@ import { desktopCapturer } from "electron";
 import sharp from "sharp";
 import { EventEmitter } from "node:events";
 import type { CaptureBundle, ScreenshotRetentionPolicy } from "../models/types";
-import type { ActivityService, CaptureCandidateEvent } from "./ActivityService";
+import type { ActivityService, CaptureCandidateEvent, CaptureTriggerReason } from "./ActivityService";
 import type { PrivacyGuard, PreCaptureCheckResult, PreCaptureReason } from "./PrivacyGuard";
 import type { ScreenshotCache } from "./ScreenshotCache";
 import type { SettingsService } from "./SettingsService";
@@ -130,6 +130,8 @@ export class CaptureService extends EventEmitter {
 
   // 暂停状态：由 app.ts 通过 setPaused 更新
   private isPaused = false;
+  // 锁屏状态：由 app.ts 通过 setLocked 更新
+  private isLocked = false;
 
   // 事件回调引用（用于 off）
   private captureCandidateHandler: ((event: CaptureCandidateEvent) => void) | null = null;
@@ -168,6 +170,15 @@ export class CaptureService extends EventEmitter {
    */
   setPaused(paused: boolean): void {
     this.isPaused = paused;
+  }
+
+  /**
+   * 设置/解除锁屏状态
+   * - 锁屏时不截图
+   * - 解锁后继续监听，不补采锁屏期间内容
+   */
+  setLocked(locked: boolean): void {
+    this.isLocked = locked;
   }
 
   /**
@@ -255,16 +266,42 @@ export class CaptureService extends EventEmitter {
       };
     }
 
-    if (!this.privacyGuard || !this.screenshotCache) {
+    // 2. 锁屏状态检查
+    if (this.isLocked) {
+      this.emitCaptureSkipped("locked");
+      return {
+        bundle: null,
+        privacyCheck: { allowed: false, reason: "locked" },
+      };
+    }
+
+    if (!this.privacyGuard || !this.screenshotCache || !this.activityService) {
       return null;
     }
 
-    // 2. PrivacyGuard 检查
+    // 3. idle 兜底检查
+    //    scene_boundary（idle/active 转换）、manual_capture（手动）、daily_preflight（预检）在 idle 时也允许
+    const IDLE_EXEMPT_REASONS: ReadonlySet<CaptureTriggerReason> = new Set([
+      "scene_boundary",
+      "manual_capture",
+      "daily_preflight",
+    ]);
+    if (!IDLE_EXEMPT_REASONS.has(event.reason)) {
+      const signals = this.activityService.getCurrentSignals();
+      const idleThresholdSeconds = this.activityService.getIdleThresholdSeconds();
+      if (signals.idleSeconds >= idleThresholdSeconds) {
+        this.emitCaptureSkipped("idle");
+        return { bundle: null, privacyCheck: { allowed: false, reason: "idle" } };
+      }
+    }
+
+    // 4. PrivacyGuard 检查
     const privacyCheck = this.privacyGuard.checkBeforeCapture({
       appName: event.window.appName,
       windowTitle: event.window.windowTitle,
       urlOrDomain: event.window.urlOrDomain,
       isPaused: this.isPaused,
+      isLocked: this.isLocked,
     });
 
     if (!privacyCheck.allowed) {
@@ -507,11 +544,12 @@ export class CaptureService extends EventEmitter {
     const totalWidth = scaledWidths.reduce((a, b) => a + b, 0);
 
     // 2. 为每帧添加顶部 30px 时间戳标签
+    // 时间格式：HH:mm:ssZ（UTC，后缀 Z），与 prompt 输入 JSON 里的 capturedAt 字段对齐。
+    // 这样 LLM 看到 stitch image 标签和 JSON 字段是同一时间制，避免把本地小时误当 UTC 写出
+    // （修复：之前用 toLocaleTimeString 渲染本地时间，导致 LLM 错位 +8h 写入 startAt/endAt）
     const labeledFrames = await Promise.all(
       frames.map(async (frame, i) => {
-        const time = frame.capturedAt.toLocaleTimeString("zh-CN", {
-          hour12: false,
-        });
+        const time = formatUtcTimeLabel(frame.capturedAt);
         const svgLabel = Buffer.from(
           `<svg width="${scaledWidths[i]}" height="${labelHeight}">` +
             `<rect width="100%" height="100%" fill="#000"/>` +
@@ -576,6 +614,18 @@ function generateCaptureId(): string {
   const timestamp = Date.now().toString(36);
   const random = Math.random().toString(36).slice(2, 10);
   return `cap_${timestamp}_${random}`;
+}
+
+/**
+ * 格式化 UTC 时间标签：HH:mm:ssZ
+ * - 用于 stitch image 顶部时间戳
+ * - 使用 UTC 而非本地时间，让视觉标签和 prompt 输入 JSON 里的 capturedAt
+ *   （ISO 8601 UTC 字符串，带 Z）保持一致，避免 LLM 误把本地小时当 UTC
+ * - 例：本地 16:01:08 (UTC+8) → "08:01:08Z"
+ */
+function formatUtcTimeLabel(d: Date): string {
+  const iso = d.toISOString(); // "2026-07-07T08:01:08.000Z"
+  return iso.slice(11, 19) + "Z"; // "08:01:08Z"
 }
 
 /**

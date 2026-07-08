@@ -374,18 +374,18 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         .privacy-rule-list__intro {
           margin: 0;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.6;
         }
         .privacy-rule-list__list-wrap {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 12px;
         }
         .privacy-rule-list__empty {
           margin: 0;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           font-size: 13px;
           text-align: center;
           padding: 16px 0;
@@ -403,9 +403,9 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
           justify-content: space-between;
           align-items: center;
           padding: 8px 12px;
-          background-color: var(--bg);
-          border-radius: var(--radius-button);
-          border: 1px solid var(--border);
+          background-color: var(--recall-bg);
+          border-radius: var(--radius-md);
+          border: 1px solid var(--recall-border);
           flex-wrap: wrap;
           gap: 8px;
         }
@@ -419,16 +419,16 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         }
         .privacy-rule-list__type {
           font-size: 11px;
-          color: var(--text-secondary);
-          background-color: var(--surface);
+          color: var(--recall-text-muted);
+          background-color: var(--recall-surface);
           padding: 2px 8px;
           border-radius: var(--radius-pill);
-          border: 1px solid var(--border);
+          border: 1px solid var(--recall-border);
           white-space: nowrap;
         }
         .privacy-rule-list__type--app_name {
-          color: var(--accent-amber);
-          border-color: var(--accent-amber);
+          color: var(--recall-amber);
+          border-color: var(--recall-amber);
         }
         .privacy-rule-list__pattern {
           font-weight: 500;
@@ -437,22 +437,22 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         }
         .privacy-rule-list__action {
           font-size: 11px;
-          color: var(--accent-amber);
+          color: var(--recall-amber);
           white-space: nowrap;
         }
         .privacy-rule-list__status {
           font-size: 11px;
           padding: 2px 8px;
           border-radius: var(--radius-pill);
-          border: 1px solid var(--border);
+          border: 1px solid var(--recall-border);
           white-space: nowrap;
         }
         .privacy-rule-list__status.is-enabled {
-          color: var(--accent-green);
-          border-color: var(--accent-green);
+          color: var(--recall-accent);
+          border-color: var(--recall-accent);
         }
         .privacy-rule-list__status.is-disabled {
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .privacy-rule-list__item-actions {
           display: flex;
@@ -464,24 +464,24 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
           align-items: center;
           gap: 4px;
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           cursor: pointer;
         }
         .privacy-rule-list__item-actions button {
           padding: 4px 10px;
           font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
         }
         .privacy-rule-list__item-actions button:hover:not(:disabled) {
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
         }
         .privacy-rule-list__delete-btn {
-          color: var(--danger) !important;
-          border-color: var(--danger) !important;
+          color: var(--recall-danger) !important;
+          border-color: var(--recall-danger) !important;
         }
         .privacy-rule-list__actions {
           display: flex;
@@ -494,12 +494,12 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         .privacy-rule-list__error {
           margin: 0;
           font-size: 12px;
-          color: var(--danger);
+          color: var(--recall-danger);
         }
         .privacy-rule-form {
-          background-color: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: var(--radius-card);
+          background-color: var(--recall-surface);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           padding: 16px;
           display: flex;
           flex-direction: column;
@@ -517,25 +517,25 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         }
         .privacy-rule-form__field label {
           font-size: 12px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
         }
         .privacy-rule-form__field input,
         .privacy-rule-form__field select {
           padding: 6px 10px;
-          border: 1px solid var(--border);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
           font-family: inherit;
           font-size: 13px;
-          background-color: var(--surface);
+          background-color: var(--recall-surface);
         }
         .privacy-rule-form__field select:disabled {
-          background-color: var(--bg);
+          background-color: var(--recall-bg);
           cursor: not-allowed;
         }
         .privacy-rule-form__hint {
           margin: 0;
           font-size: 11px;
-          color: var(--text-secondary);
+          color: var(--recall-text-muted);
           line-height: 1.5;
         }
         .privacy-rule-form__actions {
@@ -546,16 +546,16 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         .privacy-rule-form__actions button {
           padding: 6px 14px;
           font-size: 12px;
-          border: 1px solid var(--border);
-          background-color: var(--surface);
-          border-radius: var(--radius-button);
+          border: 1px solid var(--recall-border);
+          background-color: var(--recall-surface);
+          border-radius: var(--radius-md);
           cursor: pointer;
           font-family: inherit;
         }
         .privacy-rule-form__actions button.primary {
-          background-color: var(--accent-green);
+          background-color: var(--recall-accent);
           color: white;
-          border-color: var(--accent-green);
+          border-color: var(--recall-accent);
         }
         .privacy-rule-form__actions button:disabled {
           opacity: 0.5;
@@ -564,7 +564,7 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
         .privacy-rule-form__error {
           margin: 0;
           font-size: 12px;
-          color: var(--danger);
+          color: var(--recall-danger);
         }
       `}</style>
     </div>
