@@ -22,15 +22,18 @@ import type { CaptureBundle, BatchCaptureBundle, Fact, DebugEvent } from "../mod
 import type { ObserverExtractorWorker, ObserverExtractorWorkerResult, BatchObserverExtractorWorkerResult, BatchObserverWorkerResult } from "./ObserverExtractorWorker";
 import type { ObservationNormalizer, NormalizeResult, BatchNormalizeResult } from "./ObservationNormalizer";
 import type { LinkerSceneJudgeWorker, LinkerSceneJudgeResult } from "./LinkerSceneJudgeWorker";
+import type { EpisodeFactExtractorWorker, EpisodeFactExtractorResult } from "./EpisodeFactExtractorWorker";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
+import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { SettingsService } from "./SettingsService";
 import type { AppStatus } from "../../shared/types";
 import { CaptureBatcher } from "./CaptureBatcher";
 import { EpisodeBuilder } from "./EpisodeBuilder";
+import { SceneRelationProjector } from "./SceneRelationProjector";
 
 /**
  * Pipeline 处理结果
@@ -123,13 +126,16 @@ export class MemoryPipeline {
   private readonly observerExtractorWorker: ObserverExtractorWorker;
   private readonly normalizer: ObservationNormalizer;
   private readonly linkerSceneJudgeWorker: LinkerSceneJudgeWorker;
+  private readonly episodeFactExtractorWorker: EpisodeFactExtractorWorker;
   private readonly modelJobQueue: ModelJobQueue;
   private readonly sceneRepo: SceneRepository;
   private readonly factRepo: FactRepository;
+  private readonly memoryObjectRepo: MemoryObjectRepository;
   private readonly edgeRepo: MemoryEdgeRepository | null;
   private readonly settingsService: SettingsService | null;
   private readonly modelJobRepo: ModelJobRepository | null;
   private readonly episodeBuilder: EpisodeBuilder;
+  private readonly sceneRelationProjector: SceneRelationProjector;
   private config: MemoryPipelineConfig;
   private setStatus: ((patch: Partial<AppStatus>) => void) | null = null;
 
@@ -137,9 +143,11 @@ export class MemoryPipeline {
     observerExtractorWorker: ObserverExtractorWorker;
     normalizer: ObservationNormalizer;
     linkerSceneJudgeWorker: LinkerSceneJudgeWorker;
+    episodeFactExtractorWorker: EpisodeFactExtractorWorker;
     modelJobQueue: ModelJobQueue;
     sceneRepo: SceneRepository;
     factRepo: FactRepository;
+    memoryObjectRepo: MemoryObjectRepository;
     edgeRepo?: MemoryEdgeRepository;
     settingsService?: SettingsService;
     modelJobRepo?: ModelJobRepository;
@@ -148,14 +156,22 @@ export class MemoryPipeline {
     this.observerExtractorWorker = deps.observerExtractorWorker;
     this.normalizer = deps.normalizer;
     this.linkerSceneJudgeWorker = deps.linkerSceneJudgeWorker;
+    this.episodeFactExtractorWorker = deps.episodeFactExtractorWorker;
     this.modelJobQueue = deps.modelJobQueue;
     this.sceneRepo = deps.sceneRepo;
     this.factRepo = deps.factRepo;
+    this.memoryObjectRepo = deps.memoryObjectRepo;
     this.edgeRepo = deps.edgeRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
     this.modelJobRepo = deps.modelJobRepo ?? null;
     this.episodeBuilder = new EpisodeBuilder({
       sceneRepo: this.sceneRepo,
+      edgeRepo: this.edgeRepo ?? undefined,
+    });
+    this.sceneRelationProjector = new SceneRelationProjector({
+      sceneRepo: this.sceneRepo,
+      factRepo: this.factRepo,
+      memoryObjectRepo: this.memoryObjectRepo,
       edgeRepo: this.edgeRepo ?? undefined,
     });
     this.config = { ...DEFAULT_CONFIG, ...(deps.config ?? {}) };
@@ -303,6 +319,7 @@ export class MemoryPipeline {
         );
         result.written.proactiveItemIds =
           linkerSceneJudgeResult.data.proactiveItems.map((p) => p.id);
+        this.sceneRelationProjector.projectScenes(linkerSceneJudgeResult.data.scenes);
         // 调试模式：持久化 debugEvents 到 model_jobs
         this.persistDebugEvents(linkerSceneJudgeResult.data.modelJobId, debugEvents);
       }
@@ -419,14 +436,63 @@ export class MemoryPipeline {
     });
     result.written.sceneIds = writtenEpisodes.map((s) => s.id);
 
-    // ---------------- 步骤 4：L0-only 阶段不写 facts，不触发 LinkerSceneJudge ----------------
-    result.steps.factsWrite = { written: 0, skipped: 0 };
-    result.steps.linkerSceneJudge = true;
-    if (debugEvents) {
-      debugEvents.push({ layer: "L1", action: "skip", reason: "l0_to_episode_only_batch_pipeline" });
+    // ---------------- 步骤 4：从 Episode 提取 Facts（L2 atoms/claims，仍落 facts 表） ----------------
+    if (writtenEpisodes.length === 0) {
+      result.steps.factsWrite = { written: 0, skipped: 0 };
+      result.steps.linkerSceneJudge = true;
+      if (debugEvents) {
+        debugEvents.push({ layer: "L2", action: "skip", reason: "no_episode_written_for_fact_extraction" });
+      }
+    } else {
+      this.updatePipelineState("extracting");
+      const episodeFactResult = await this.runEpisodeFactExtractor(
+        writtenEpisodes,
+        multimodalConfigId,
+        debugEvents
+      );
+      if (!episodeFactResult.ok || !episodeFactResult.data) {
+        result.steps.factsWrite = { written: 0, skipped: writtenEpisodes.length };
+        result.errors.push({
+          step: "episodeFactExtractor",
+          code: episodeFactResult.errorCode,
+          message: episodeFactResult.errorMessage,
+        });
+        this.updatePipelineState("idle");
+        CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
+        return result;
+      }
+
+      const episodeFacts = episodeFactResult.data.facts;
+      result.steps.factsWrite = { written: episodeFacts.length, skipped: 0 };
+      result.written.factIds = episodeFacts.map((fact) => fact.id);
+      this.attachFactsToEpisodes(writtenEpisodes, episodeFacts);
+      this.sceneRelationProjector.projectScenes(writtenEpisodes);
+      this.persistDebugEvents(episodeFactResult.data.modelJobId, debugEvents);
+
+      // ---------------- 步骤 5：Linker/Judge（基于 Episode facts，SceneBuilder 关闭） ----------------
+      this.updatePipelineState("linking");
+      const linkerResult = await this.runLinkerSceneJudge(
+        episodeFacts,
+        batchBundle.batchId,
+        multimodalConfigId,
+        false,
+        debugEvents
+      );
+      result.steps.linkerSceneJudge = linkerResult.ok;
+      if (!linkerResult.ok || !linkerResult.data) {
+        result.errors.push({
+          step: "linkerSceneJudge",
+          code: linkerResult.errorCode,
+          message: linkerResult.errorMessage,
+        });
+      } else {
+        result.written.proactiveItemIds = linkerResult.data.proactiveItems.map((item) => item.id);
+        this.sceneRelationProjector.projectScenes(writtenEpisodes);
+        this.persistDebugEvents(linkerResult.data.modelJobId, debugEvents);
+      }
     }
 
-    // ---------------- 步骤 5：清理压缩图临时文件 ----------------
+    // ---------------- 步骤 6：清理压缩图临时文件 ----------------
     CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
 
     this.updatePipelineState("idle");
@@ -504,6 +570,27 @@ export class MemoryPipeline {
     }
   }
 
+  private async runEpisodeFactExtractor(
+    scenes: import("../models/types").Scene[],
+    multimodalConfigId: string,
+    debugEvents?: DebugEvent[]
+  ): Promise<StepResult<EpisodeFactExtractorResult>> {
+    try {
+      const result = await this.episodeFactExtractorWorker.run({
+        scenes,
+        multimodalModelConfigId: multimodalConfigId,
+        debugEvents,
+      });
+      return this.convertJobResult(result);
+    } catch (err) {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   // ----------------------------------------------------------------
   // 辅助方法
   // ----------------------------------------------------------------
@@ -533,6 +620,50 @@ export class MemoryPipeline {
       errorCode: result.errorCode,
       errorMessage: result.errorMessage,
     };
+  }
+
+  private attachFactsToEpisodes(
+    scenes: import("../models/types").Scene[],
+    facts: Fact[]
+  ): void {
+    for (const scene of scenes) {
+      const relatedFacts = facts.filter((fact) =>
+        fact.sourceObservationIds.some((id) => scene.observationIds.includes(id))
+      );
+      if (relatedFacts.length === 0) continue;
+
+      const mergedFactIds = Array.from(
+        new Set([...scene.factIds, ...relatedFacts.map((fact) => fact.id)])
+      );
+      try {
+        this.sceneRepo.update(scene.id, { factIds: mergedFactIds });
+      } catch {
+        // scene 更新失败不阻断整体 pipeline
+      }
+
+      if (!this.edgeRepo) continue;
+      for (const fact of relatedFacts) {
+        const evidenceIds = fact.sourceObservationIds.filter((id) =>
+          scene.observationIds.includes(id)
+        );
+        try {
+          this.edgeRepo.create({
+            fromType: "scene",
+            fromId: scene.id,
+            toType: "fact",
+            toId: fact.id,
+            relationType: "contains",
+            confidence: fact.confidence,
+            createdBy: "system",
+            evidenceIds,
+            status: "active",
+            reason: "episode_fact_extractor",
+          });
+        } catch {
+          // 单条 edge 失败不阻断
+        }
+      }
+    }
   }
 
   /**

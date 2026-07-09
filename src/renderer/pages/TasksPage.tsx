@@ -29,7 +29,10 @@ import {
   Link2,
 } from "lucide-react";
 import type { UnfinishedThread } from "../../shared/types";
+import type { TimelineBlock } from "../../shared/types";
 import { useAppStore } from "../state/store";
+import type { FactItem } from "../state/store";
+import { getIpc } from "../state/ipc";
 import { Button } from "../components/Button";
 import { Tag } from "../components/Tag";
 import { EmptyState } from "../components/EmptyState";
@@ -448,6 +451,54 @@ interface SourceDialogProps {
 function SourceDialog({ thread, onClose }: SourceDialogProps) {
   const hasTimelineBlocks = thread.sourceTimelineBlockIds.length > 0;
   const hasFacts = thread.sourceFactIds.length > 0;
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [facts, setFacts] = useState<FactItem[]>([]);
+  const [timelineBlocks, setTimelineBlocks] = useState<TimelineBlock[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    void getIpc().reports.getEvidenceByIds({
+      factIds: thread.sourceFactIds,
+      blockIds: thread.sourceTimelineBlockIds,
+      sceneIds: [],
+    })
+      .then((res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.error);
+          setFacts([]);
+          setTimelineBlocks([]);
+          return;
+        }
+        setFacts(Array.isArray(res.data.facts) ? (res.data.facts as FactItem[]) : []);
+        setTimelineBlocks(
+          Array.isArray(res.data.timelineBlocks)
+            ? (res.data.timelineBlocks as TimelineBlock[])
+            : []
+        );
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+        setFacts([]);
+        setTimelineBlocks([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [thread.sourceFactIds, thread.sourceTimelineBlockIds]);
+
+  const factMap = new Map(facts.map((fact) => [fact.id, fact]));
+  const blockMap = new Map(timelineBlocks.map((block) => [block.id, block]));
 
   return (
     <div
@@ -470,7 +521,13 @@ function SourceDialog({ thread, onClose }: SourceDialogProps) {
         </header>
         <div className="unfinished-source-dialog__body">
           <p className="unfinished-source-dialog__title-ref">{thread.title}</p>
-          {hasTimelineBlocks && (
+          {loading && (
+            <p className="unfinished-source-dialog__empty">正在加载来源记录...</p>
+          )}
+          {!loading && error && (
+            <p className="unfinished-source-dialog__empty">来源加载失败：{error}</p>
+          )}
+          {!loading && hasTimelineBlocks && (
             <div className="unfinished-source-dialog__section">
               <p className="unfinished-source-dialog__section-title">
                 相关时间轴片段（{thread.sourceTimelineBlockIds.length}）
@@ -478,13 +535,13 @@ function SourceDialog({ thread, onClose }: SourceDialogProps) {
               <ul className="unfinished-source-dialog__list">
                 {thread.sourceTimelineBlockIds.map((id) => (
                   <li key={id} className="unfinished-source-dialog__item">
-                    {id}
+                    {blockMap.get(id)?.title ?? "已找不到该时间轴片段"}
                   </li>
                 ))}
               </ul>
             </div>
           )}
-          {hasFacts && (
+          {!loading && hasFacts && (
             <div className="unfinished-source-dialog__section">
               <p className="unfinished-source-dialog__section-title">
                 相关线索（{thread.sourceFactIds.length}）
@@ -492,13 +549,13 @@ function SourceDialog({ thread, onClose }: SourceDialogProps) {
               <ul className="unfinished-source-dialog__list">
                 {thread.sourceFactIds.map((id) => (
                   <li key={id} className="unfinished-source-dialog__item">
-                    {id}
+                    {factMap.get(id)?.content ?? "已找不到该线索"}
                   </li>
                 ))}
               </ul>
             </div>
           )}
-          {!hasTimelineBlocks && !hasFacts && (
+          {!loading && !hasTimelineBlocks && !hasFacts && (
             <p className="unfinished-source-dialog__empty">
               这条待收尾没有关联来源记录。
             </p>

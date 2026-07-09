@@ -52,6 +52,17 @@ interface TimelineBlockRow {
 export class TimelineBlockRepository {
   constructor(private db: DB) {}
 
+  list(opts: { limit?: number; offset?: number } = {}): TimelineBlock[] {
+    const limit = opts.limit ?? 2000;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM timeline_blocks ORDER BY date_key DESC, start_at ASC LIMIT ? OFFSET ?"
+      )
+      .all(limit, offset) as TimelineBlockRow[];
+    return rows.map((row) => this.rowToTimelineBlock(row));
+  }
+
   /**
    * 查询某 dateKey 已落盘 blocks 的最大 endAt
    *

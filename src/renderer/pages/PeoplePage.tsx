@@ -21,6 +21,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../state/store";
 import type { PersonItem, ProjectItem, SceneItem, TaskItem, FactItem } from "../state/store";
+import { getIpc } from "../state/ipc";
 import { CorrectionDialog } from "../components/CorrectionDialog";
 import { MergeDialog } from "../components/MergeDialog";
 
@@ -29,20 +30,6 @@ import { MergeDialog } from "../components/MergeDialog";
  */
 function getRelatedProjects(person: PersonItem, projects: ProjectItem[]): ProjectItem[] {
   return projects.filter((p) => person.relatedProjectIds.includes(p.id));
-}
-
-/**
- * 派生：人物相关场景（场景 entityNames 包含人物名，或场景 factIds 与人物 sourceFactIds 有交集）
- */
-function getRelatedScenes(person: PersonItem, scenes: SceneItem[]): SceneItem[] {
-  const personFactIdSet = new Set(person.sourceFactIds);
-  return scenes
-    .filter((s) => !s.deletedAt)
-    .filter((s) => {
-      if (s.entityNames.includes(person.name)) return true;
-      return s.factIds.some((fid) => personFactIdSet.has(fid));
-    })
-    .sort((a, b) => b.startAt.localeCompare(a.startAt));
 }
 
 /**
@@ -56,29 +43,18 @@ function getRelatedTasks(person: PersonItem, tasks: TaskItem[]): TaskItem[] {
 }
 
 /**
- * 派生：人物相关资料（facts，id 在人物 sourceFactIds 中，或内容包含人物名）
- */
-function getRelatedFacts(person: PersonItem, facts: FactItem[]): FactItem[] {
-  const personFactIdSet = new Set(person.sourceFactIds);
-  return facts
-    .filter((f) => !f.deletedAt)
-    .filter((f) => personFactIdSet.has(f.id) || f.content.includes(person.name))
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-}
-
-/**
- * 派生：最近互动时间（取相关场景的最新 startAt）
- */
-function getLatestInteractionTime(person: PersonItem, scenes: SceneItem[]): string | null {
-  const related = getRelatedScenes(person, scenes);
-  return related.length > 0 ? related[0].startAt : person.updatedAt;
-}
-
-/**
  * 派生：未收尾承诺数（相关任务中状态非 done 的数量）
  */
 function getUnfinishedPromiseCount(person: PersonItem, tasks: TaskItem[]): number {
   return getRelatedTasks(person, tasks).filter((t) => t.status !== "done").length;
+}
+
+interface PersonDetailData {
+  person: PersonItem;
+  relatedProjects: ProjectItem[];
+  relatedScenes: SceneItem[];
+  relatedTasks: TaskItem[];
+  relatedFacts: FactItem[];
 }
 
 export function PeoplePage() {
@@ -89,6 +65,10 @@ export function PeoplePage() {
   const loadToday = useAppStore((s) => s.loadToday);
 
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+  const [personDetail, setPersonDetail] = useState<PersonDetailData | null>(null);
+  const [personDetailLoading, setPersonDetailLoading] = useState(false);
+  const [personDetailError, setPersonDetailError] = useState<string | null>(null);
+  const [personDetailReloadKey, setPersonDetailReloadKey] = useState(0);
   // 012 新增：合并对话框状态
   const [mergeFrom, setMergeFrom] = useState<{ id: string; name: string } | null>(null);
 
@@ -99,25 +79,57 @@ export function PeoplePage() {
     }
   }, [isReady, loadToday, todayData.people.length]);
 
+  useEffect(() => {
+    if (!selectedPersonId) {
+      setPersonDetail(null);
+      setPersonDetailLoading(false);
+      setPersonDetailError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setPersonDetailLoading(true);
+    setPersonDetailError(null);
+
+    void getIpc().memory.getPersonDetail({ id: selectedPersonId })
+      .then((detail) => {
+        if (cancelled) return;
+        setPersonDetail(detail as PersonDetailData);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setPersonDetail(null);
+        setPersonDetailError(message);
+      })
+      .finally(() => {
+        if (!cancelled) setPersonDetailLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPersonId, personDetailReloadKey]);
+
   // 选中的人物
   const selectedPerson = useMemo(() => {
     if (!selectedPersonId) return null;
-    return todayData.people.find((p) => p.id === selectedPersonId) ?? null;
-  }, [selectedPersonId, todayData.people]);
+    return personDetail?.person ?? todayData.people.find((p) => p.id === selectedPersonId) ?? null;
+  }, [selectedPersonId, personDetail, todayData.people]);
 
   // 详情派生数据
   const detailData = useMemo(() => {
-    if (!selectedPerson) return null;
+    if (!personDetail) return null;
     return {
-      relatedProjects: getRelatedProjects(selectedPerson, todayData.projects),
-      relatedScenes: getRelatedScenes(selectedPerson, todayData.scenes),
-      relatedTasks: getRelatedTasks(selectedPerson, todayData.tasks),
-      relatedFacts: getRelatedFacts(selectedPerson, todayData.facts),
-      unfinishedPromises: getRelatedTasks(selectedPerson, todayData.tasks).filter(
+      relatedProjects: personDetail.relatedProjects,
+      relatedScenes: personDetail.relatedScenes,
+      relatedTasks: personDetail.relatedTasks,
+      relatedFacts: personDetail.relatedFacts,
+      unfinishedPromises: personDetail.relatedTasks.filter(
         (t) => t.status !== "done"
       ),
     };
-  }, [selectedPerson, todayData]);
+  }, [personDetail]);
 
   // 列表派生数据（每个人物的统计）
   const peopleStats = useMemo(() => {
@@ -127,13 +139,13 @@ export function PeoplePage() {
     >();
     for (const person of todayData.people) {
       stats.set(person.id, {
-        latestInteraction: getLatestInteractionTime(person, todayData.scenes),
+        latestInteraction: person.updatedAt,
         unfinishedCount: getUnfinishedPromiseCount(person, todayData.tasks),
         projectNames: getRelatedProjects(person, todayData.projects).map((p) => p.name),
       });
     }
     return stats;
-  }, [todayData.people, todayData.scenes, todayData.tasks, todayData.projects]);
+  }, [todayData.people, todayData.tasks, todayData.projects]);
 
   if (!isReady) {
     return (
@@ -147,7 +159,7 @@ export function PeoplePage() {
   }
 
   // 详情视图
-  if (selectedPerson && detailData) {
+  if (selectedPersonId) {
     const person = selectedPerson;
     return (
       <div className="people-page">
@@ -160,12 +172,31 @@ export function PeoplePage() {
             >
               返回人物列表
             </button>
-            <h2>{person.name}</h2>
+            <h2>{person?.name ?? "人物详情"}</h2>
           </div>
           <p className="page-header__sub">
             相关记忆、最近协作和提到过的事。
           </p>
         </header>
+
+        {personDetailLoading && (
+          <p className="state-loading">正在加载人物记忆...</p>
+        )}
+
+        {personDetailError && (
+          <div className="people-page__error">
+            <span>加载失败：{personDetailError}</span>
+            <button onClick={() => setPersonDetailReloadKey((key) => key + 1)}>重试</button>
+          </div>
+        )}
+
+        {!personDetailLoading && !personDetailError && (!person || !detailData) && (
+          <div className="empty-state">
+            <p>没有找到这个人物的详细记忆。</p>
+          </div>
+        )}
+
+        {person && detailData && (
 
         <div className="person-detail">
           {/* 人物概览 */}
@@ -318,6 +349,7 @@ export function PeoplePage() {
             </div>
           </section>
         </div>
+        )}
       </div>
     );
   }

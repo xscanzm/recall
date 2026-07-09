@@ -28,6 +28,24 @@ interface MemoryEdgeRow {
 export class MemoryEdgeRepository {
   constructor(private db: DB) {}
 
+  list(opts: { status?: string; limit?: number; offset?: number } = {}): MemoryEdge[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.status) {
+      conditions.push("status = ?");
+      params.push(opts.status);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const limit = opts.limit ?? 1000;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_edges ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset) as MemoryEdgeRow[];
+    return rows.map(mapRow);
+  }
+
   create(input: CreateMemoryEdgeInput): MemoryEdge {
     const id = input.id ?? generateId("edge");
     const now = new Date().toISOString();
@@ -122,6 +140,24 @@ export class MemoryEdgeRepository {
       )
       .run(status, reason ?? null, now, id);
     return result.changes > 0;
+  }
+
+  updateStatusByNode(
+    nodeType: string,
+    nodeId: string,
+    status: MemoryEdge["status"],
+    reason?: string | null
+  ): number {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE memory_edges
+         SET status = ?, reason = COALESCE(?, reason), updated_at = ?
+         WHERE (from_type = ? AND from_id = ?)
+            OR (to_type = ? AND to_id = ?)`
+      )
+      .run(status, reason ?? null, now, nodeType, nodeId, nodeType, nodeId);
+    return result.changes;
   }
 }
 

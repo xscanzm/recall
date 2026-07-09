@@ -165,18 +165,13 @@ export function ProjectsPage() {
         decisionCount: 0,
         recentSummary: "",
       };
-      const projectFacts = todayData.facts
-        .filter((f) => !f.deletedAt && f.projectId === project.id)
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      if (projectFacts.length > 0) {
-        s.recentSummary = projectFacts[0].content.slice(0, 100);
-      } else if (project.summary) {
+      if (project.summary) {
         s.recentSummary = project.summary.slice(0, 100);
       }
       stats.set(project.id, s);
     }
     return stats;
-  }, [todayData.tasks, todayData.decisions, todayData.facts, todayData.projects]);
+  }, [todayData.tasks, todayData.decisions, todayData.projects]);
 
   const handleOpenDetail = (id: string) => {
     setSelectedProjectId(id);

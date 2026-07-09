@@ -17,10 +17,17 @@
 // - 主区域宽度最大 920px
 
 import { useEffect, useState } from "react";
-import { useAppStore, type ReportItem, type ReportsTabKey, type ProjectItem } from "../state/store";
+import {
+  useAppStore,
+  type FactItem,
+  type ProjectItem,
+  type ReportItem,
+  type ReportsTabKey,
+  type SceneItem,
+} from "../state/store";
 import { getIpc } from "../state/ipc";
 import { formatReportAsText } from "../components/ReportEditor";
-import type { PersonalReview, WorkReport } from "../../shared/types";
+import type { PersonalReview, TimelineBlock, WorkReport } from "../../shared/types";
 import { todayDateKey } from "./today/helpers";
 
 // ============================================================================
@@ -52,6 +59,12 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   personal_daily_review: "复盘",
   work_daily_report: "工作日报",
 };
+
+interface SourceEvidenceData {
+  facts: FactItem[];
+  scenes: SceneItem[];
+  timelineBlocks: TimelineBlock[];
+}
 
 // ============================================================================
 // 主组件
@@ -2011,18 +2024,61 @@ function SourcePanel({
   onClose,
 }: SourcePanelProps) {
   const total = factIds.length + sceneIds.length + blockIds.length;
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<SourceEvidenceData>({
+    facts: [],
+    scenes: [],
+    timelineBlocks: [],
+  });
 
-  // 从 store 缓存中查找 block / fact / scene 详情（方案 A：无新增 IPC）
-  const timelineBlocks = useAppStore(
-    (s) => s.todayPageData?.timelineBlocks ?? []
-  );
-  const facts = useAppStore((s) => s.todayData.facts);
-  const scenes = useAppStore((s) => s.todayData.scenes);
+  useEffect(() => {
+    let cancelled = false;
 
-  // 构建 id -> detail 的查找 map
-  const blockMap = new Map(timelineBlocks.map((b) => [b.id, b]));
-  const factMap = new Map(facts.map((f) => [f.id, f]));
-  const sceneMap = new Map(scenes.map((sc) => [sc.id, sc]));
+    const loadEvidence = async () => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        const res = await getIpc().reports.getEvidenceByIds({
+          factIds,
+          sceneIds,
+          blockIds,
+        });
+        if (cancelled) return;
+        if (!res.ok) {
+          setEvidence({ facts: [], scenes: [], timelineBlocks: [] });
+          setLoadError(res.error);
+          return;
+        }
+        const data = res.data;
+        setEvidence({
+          facts: Array.isArray(data.facts) ? (data.facts as FactItem[]) : [],
+          scenes: Array.isArray(data.scenes) ? (data.scenes as SceneItem[]) : [],
+          timelineBlocks: Array.isArray(data.timelineBlocks)
+            ? (data.timelineBlocks as TimelineBlock[])
+            : [],
+        });
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setEvidence({ facts: [], scenes: [], timelineBlocks: [] });
+        setLoadError(message);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadEvidence();
+    return () => {
+      cancelled = true;
+    };
+  }, [factIds, sceneIds, blockIds]);
+
+  const blockMap = new Map(evidence.timelineBlocks.map((block) => [block.id, block]));
+  const factMap = new Map(evidence.facts.map((fact) => [fact.id, fact]));
+  const sceneMap = new Map(evidence.scenes.map((scene) => [scene.id, scene]));
 
   return (
     <div className="report-source-overlay" onClick={onClose}>
@@ -2044,7 +2100,7 @@ function SourcePanel({
         </header>
         <div className="report-source-panel__body">
           <p className="report-source-panel__hint">
-            以下为相关 timeline block 标题、时间范围、摘要与来源事实。不显示截图。
+            以下为报告关联的事实、场景与时间轴片段。不显示截图。
           </p>
 
           <div className="report-source-panel__stats">
@@ -2068,8 +2124,18 @@ function SourcePanel({
             </div>
           </div>
 
+          {loading && (
+            <p className="report-source-panel__empty">正在加载来源证据...</p>
+          )}
+
+          {!loading && loadError && (
+            <p className="report-source-panel__empty">
+              来源加载失败：{loadError}
+            </p>
+          )}
+
           {/* 时间轴片段：显示标题 / 时间范围 / 摘要 / 关键产出 */}
-          {blockIds.length > 0 && (
+          {!loading && blockIds.length > 0 && (
             <div className="report-source-panel__group">
               <h5 className="report-source-panel__group-title">时间轴片段</h5>
               <div className="report-source-panel__items">
@@ -2113,9 +2179,8 @@ function SourcePanel({
                       className="source-panel__item source-panel__item--missing"
                     >
                       <span className="tag tag-category">片段</span>
-                      <code>{id}</code>
                       <span className="source-panel__item-hint">
-                        该片段不在当前缓存中
+                        该片段未找到，或已不再保留
                       </span>
                     </div>
                   );
@@ -2130,7 +2195,7 @@ function SourcePanel({
           )}
 
           {/* 来源事实：显示内容 */}
-          {factIds.length > 0 && (
+          {!loading && factIds.length > 0 && (
             <div className="report-source-panel__group">
               <h5 className="report-source-panel__group-title">来源事实</h5>
               <div className="report-source-panel__items">
@@ -2157,9 +2222,8 @@ function SourcePanel({
                       className="source-panel__item source-panel__item--missing"
                     >
                       <span className="tag tag-category">事实</span>
-                      <code>{id}</code>
                       <span className="source-panel__item-hint">
-                        该片段不在当前缓存中
+                        该事实未找到，或已不再保留
                       </span>
                     </div>
                   );
@@ -2174,7 +2238,7 @@ function SourcePanel({
           )}
 
           {/* 来源场景：显示标题 / 时间范围 / 摘要 */}
-          {sceneIds.length > 0 && (
+          {!loading && sceneIds.length > 0 && (
             <div className="report-source-panel__group">
               <h5 className="report-source-panel__group-title">来源场景</h5>
               <div className="report-source-panel__items">
@@ -2206,9 +2270,8 @@ function SourcePanel({
                       className="source-panel__item source-panel__item--missing"
                     >
                       <span className="tag tag-category">场景</span>
-                      <code>{id}</code>
                       <span className="source-panel__item-hint">
-                        该片段不在当前缓存中
+                        该场景未找到，或已不再保留
                       </span>
                     </div>
                   );
@@ -2222,7 +2285,7 @@ function SourcePanel({
             </div>
           )}
 
-          {total === 0 && (
+          {!loading && total === 0 && (
             <p className="report-source-panel__empty">
               本报告未关联来源。重要条目通常会显示来源事实或场景。
             </p>

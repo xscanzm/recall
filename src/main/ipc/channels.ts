@@ -40,6 +40,7 @@ export type IpcChannel =
   | "memory:ask"
   | "memory:createUserFeedback"
   | "memory:getProjectDetail"
+  | "memory:getPersonDetail"
   | "memory:mergeObjects"
   // 012/013 新增：合并建议
   | "memory:listMergeSuggestions"
@@ -51,6 +52,7 @@ export type IpcChannel =
   | "reminders:updateStatus"
   | "reports:list"
   | "reports:get"
+  | "reports:getEvidenceByIds"
   | "reports:generate"
   | "reports:update"
   | "reports:delete"
@@ -106,6 +108,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "memory:ask",
   "memory:createUserFeedback",
   "memory:getProjectDetail",
+  "memory:getPersonDetail",
   "memory:mergeObjects",
   // 012/013 新增
   "memory:listMergeSuggestions",
@@ -117,6 +120,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "reminders:updateStatus",
   "reports:list",
   "reports:get",
+  "reports:getEvidenceByIds",
   "reports:generate",
   "reports:update",
   "reports:delete",

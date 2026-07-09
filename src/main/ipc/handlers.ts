@@ -11,7 +11,12 @@
 // 后续 Milestone 逐步填充真实业务逻辑。
 
 import { ipcMain, BrowserWindow } from "electron";
-import type { AppStatus, PersonalReview, WorkReport } from "../../shared/types";
+import type {
+  AppStatus,
+  PersonalReview,
+  TimelineBlock,
+  WorkReport,
+} from "../../shared/types";
 import { isInvokeChannel } from "./channels";
 import { z } from "zod";
 import {
@@ -66,6 +71,7 @@ import type { ReportSelectionRepository } from "../db/repositories/ReportSelecti
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 // 012 新增：ObjectMerge 审计
 import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
+import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 import type { Fact, Scene } from "../models/types";
 import {
@@ -125,6 +131,8 @@ export interface IpcDeps {
   unfinishedThreadRepo?: UnfinishedThreadRepository;
   // 012 新增：ObjectMerge 审计 Repository
   objectMergeRepo?: ObjectMergeRepository;
+  // 015 新增：记忆关系层 Repository
+  memoryEdgeRepo?: MemoryEdgeRepository;
   // 调试模式：model_jobs 查询（DebugPage 用）
   modelJobRepo?: ModelJobRepository;
 }
@@ -423,17 +431,38 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   ipcMain.handle("memory:listToday", () => {
     // M4：从 Repositories 读取今日数据
     // - observations：今日捕获的 L0 观察记录
-    // - facts：未删除的 L1 事实（按 created_at 降序，限制 100 条）
+    // - facts：由今日 observations / scenes 反推出的今日事实（避免混入历史全局 facts）
     // - scenes：今日的 L2 场景
     // - tasks：未删除的 L3 任务（按 updated_at 降序）
     // - decisions：未删除的 L3 决策
     // - people：未删除的 L3 人物
     // - projects：未归档的 L3 项目
     try {
+      const observations = deps.observationRepo?.listToday() ?? [];
+      const scenes = deps.sceneRepo?.listToday() ?? [];
+      const factMap = new Map<string, Fact>();
+
+      if (deps.factRepo) {
+        const sceneFactIds = Array.from(new Set(scenes.flatMap((scene) => scene.factIds)));
+        for (const fact of deps.factRepo.listByIds(sceneFactIds)) {
+          factMap.set(fact.id, fact);
+        }
+
+        for (const observation of observations) {
+          for (const fact of deps.factRepo.listBySourceObservationId(observation.id)) {
+            factMap.set(fact.id, fact);
+          }
+        }
+      }
+
+      const facts = Array.from(factMap.values())
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .slice(0, 100);
+
       return {
-        observations: deps.observationRepo?.listToday() ?? [],
-        facts: deps.factRepo?.list({ includeDeleted: false, limit: 100 }) ?? [],
-        scenes: deps.sceneRepo?.listToday() ?? [],
+        observations,
+        facts,
+        scenes,
         tasks: deps.memoryObjectRepo?.listTasks({ includeDeleted: false }) ?? [],
         decisions: deps.memoryObjectRepo?.listDecisions({ includeDeleted: false }) ?? [],
         people: deps.memoryObjectRepo?.listPeople({ includeDeleted: false }) ?? [],
@@ -732,19 +761,64 @@ ${context}
       fail("not_found", `未找到项目 ${id}`);
     }
 
-    // 项目主线：summary + 最近 facts
-    const facts = deps.factRepo.listByProjectId(id, { includeDeleted: false, limit: 20 });
-    const scenes = deps.sceneRepo.listByProjectId(id, { includeDeleted: false, limit: 10 });
-    const tasks = deps.memoryObjectRepo.listTasks({ projectId: id, includeDeleted: false, limit: 50 });
-    const decisions = deps.memoryObjectRepo.listDecisions({ projectId: id, includeDeleted: false, limit: 20 });
+    // 项目主线：summary + 最近 facts/scenes
+    const sceneCandidates = [
+      ...deps.sceneRepo.listByProjectId(id, { includeDeleted: false, limit: 20 }),
+      ...project.sourceSceneIds
+        .map((sceneId) => deps.sceneRepo!.getByIdActive(sceneId))
+        .filter((scene): scene is NonNullable<typeof scene> => !!scene),
+    ];
+    const scenes = Array.from(new Map(sceneCandidates.map((scene) => [scene.id, scene])).values())
+      .sort((a, b) => b.startAt.localeCompare(a.startAt))
+      .slice(0, 10);
+    const facts = Array.from(
+      new Map([
+        ...deps.factRepo
+          .listByProjectId(id, { includeDeleted: false, limit: 20 })
+          .map((fact) => [fact.id, fact] as const),
+        ...deps.factRepo
+          .listByIds(Array.from(new Set(scenes.flatMap((scene) => scene.factIds))))
+          .map((fact) => [fact.id, fact] as const),
+      ]).values()
+    )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 20);
+    const tasks = Array.from(
+      new Map([
+        ...deps.memoryObjectRepo
+          .listTasks({ projectId: id, includeDeleted: false, limit: 50 })
+          .map((task) => [task.id, task] as const),
+        ...Array.from(new Set(scenes.flatMap((scene) => scene.taskIds)))
+          .map((taskId) => deps.memoryObjectRepo!.getTaskByIdActive(taskId))
+          .filter((task): task is NonNullable<typeof task> => !!task)
+          .map((task) => [task.id, task] as const),
+      ]).values()
+    )
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 50);
+    const decisions = Array.from(
+      new Map([
+        ...deps.memoryObjectRepo
+          .listDecisions({ projectId: id, includeDeleted: false, limit: 20 })
+          .map((decision) => [decision.id, decision] as const),
+        ...Array.from(new Set(scenes.flatMap((scene) => scene.decisionIds)))
+          .map((decisionId) => deps.memoryObjectRepo!.getDecisionByIdActive(decisionId))
+          .filter((decision): decision is NonNullable<typeof decision> => !!decision)
+          .map((decision) => [decision.id, decision] as const),
+      ]).values()
+    )
+      .sort((a, b) => (b.decidedAt ?? "").localeCompare(a.decidedAt ?? ""))
+      .slice(0, 20);
     const people = deps.memoryObjectRepo
       .listPeople({ includeDeleted: false, limit: 50 })
       .filter((p) => p.relatedProjectIds.includes(id));
 
-    // 报告片段：列出 source_fact_ids 包含项目相关 fact 的 reports
+    // 报告片段：列出 source_fact_ids 或 source_scene_ids 命中项目相关证据的 reports
     const projectFactIds = new Set(facts.map((f) => f.id));
+    const projectSceneIds = new Set(scenes.map((scene) => scene.id));
     const recentReports = deps.reportRepo.list({ limit: 10 }).filter((r) =>
-      r.sourceFactIds.some((fid) => projectFactIds.has(fid))
+      r.sourceFactIds.some((fid) => projectFactIds.has(fid)) ||
+      r.sourceSceneIds.some((sid) => projectSceneIds.has(sid))
     );
 
     return {
@@ -755,6 +829,82 @@ ${context}
       decisions,
       people,
       recentReports,
+    };
+  });
+
+  ipcMain.handle("memory:getPersonDetail", (_event, input: unknown) => {
+    const parsed = ProjectDetailInputSchema.safeParse(input);
+    if (!parsed.success) {
+      fail("schema_invalid", `memory:getPersonDetail 参数校验失败: ${parsed.error.message}`);
+    }
+    if (!deps.memoryObjectRepo || !deps.sceneRepo || !deps.factRepo) {
+      fail("not_ready", "Repositories 未初始化");
+    }
+
+    const { id } = parsed.data;
+    const person = deps.memoryObjectRepo.getPersonByIdActive(id);
+    if (!person) {
+      fail("not_found", `未找到人物 ${id}`);
+    }
+
+    const knownNames = new Set<string>([person.name, ...(person.aliases ?? [])].filter(Boolean));
+
+    const relatedFacts = Array.from(
+      new Map([
+        ...deps.factRepo.listByIds(person.sourceFactIds).map((fact) => [fact.id, fact] as const),
+        ...deps.factRepo
+          .list({ includeDeleted: false, limit: 500 })
+          .filter((fact) => {
+            if (fact.peopleHints?.some((name) => knownNames.has(name))) return true;
+            return Array.from(knownNames).some((name) => fact.content.includes(name));
+          })
+          .map((fact) => [fact.id, fact] as const),
+      ]).values()
+    )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 120);
+
+    const relatedFactIds = new Set(relatedFacts.map((fact) => fact.id));
+
+    const relatedScenes = deps.sceneRepo
+      .listByStartAt({ includeDeleted: false, limit: 500 })
+      .filter((scene) => {
+        if (scene.entityNames.some((name) => knownNames.has(name))) return true;
+        return scene.factIds.some((factId) => relatedFactIds.has(factId));
+      })
+      .sort((a, b) => b.startAt.localeCompare(a.startAt))
+      .slice(0, 80);
+
+    const relatedTasks = deps.memoryObjectRepo
+      .listTasks({ includeDeleted: false, limit: 300 })
+      .filter((task) => task.sourceFactIds.some((factId) => relatedFactIds.has(factId)))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 80);
+
+    const relatedProjectIds = new Set<string>([
+      ...person.relatedProjectIds,
+      ...relatedFacts
+        .map((fact) => fact.projectId)
+        .filter((projectId): projectId is string => !!projectId),
+      ...relatedScenes
+        .map((scene) => scene.projectId)
+        .filter((projectId): projectId is string => !!projectId),
+      ...relatedTasks
+        .map((task) => task.projectId)
+        .filter((projectId): projectId is string => !!projectId),
+    ]);
+
+    const relatedProjects = Array.from(relatedProjectIds)
+      .map((projectId) => deps.memoryObjectRepo!.getProjectByIdActive(projectId))
+      .filter((project): project is NonNullable<typeof project> => !!project)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+    return {
+      person,
+      relatedProjects,
+      relatedScenes,
+      relatedTasks,
+      relatedFacts,
     };
   });
 
@@ -963,6 +1113,58 @@ ${context}
       return deps.reportRepo?.getById(idParsed.data.id) ?? null;
     } catch {
       return null;
+    }
+  });
+
+  ipcMain.handle("reports:getEvidenceByIds", (_event, input: unknown) => {
+    const parsed = z.object({
+      factIds: z.array(z.string().min(1)).max(200).optional().default([]),
+      sceneIds: z.array(z.string().min(1)).max(200).optional().default([]),
+      blockIds: z.array(z.string().min(1)).max(200).optional().default([]),
+    }).safeParse(input);
+    if (!parsed.success) {
+      return {
+        ok: false as const,
+        error: `reports:getEvidenceByIds 参数校验失败: ${parsed.error.message}`,
+        code: "schema_invalid",
+      };
+    }
+    if (!deps.factRepo || !deps.sceneRepo || !deps.timelineBlockRepo) {
+      return {
+        ok: false as const,
+        error: "报告证据查询依赖未初始化。",
+        code: "not_ready",
+      };
+    }
+
+    try {
+      const factIds = dedupeIds(parsed.data.factIds);
+      const sceneIds = dedupeIds(parsed.data.sceneIds);
+      const blockIds = dedupeIds(parsed.data.blockIds);
+
+      const facts = deps.factRepo.listByIds(factIds);
+      const scenes = sceneIds
+        .map((id) => deps.sceneRepo?.getByIdActive(id) ?? null)
+        .filter((scene): scene is Scene => scene !== null);
+      const timelineBlocks = blockIds
+        .map((id) => deps.timelineBlockRepo?.findById(id) ?? null)
+        .filter((block): block is TimelineBlock => block !== null);
+
+      return {
+        ok: true as const,
+        data: {
+          facts,
+          scenes,
+          timelineBlocks,
+        },
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false as const,
+        error: message,
+        code: "unknown_error",
+      };
     }
   });
 
@@ -1179,11 +1381,12 @@ ${context}
    * 导出全部结构化记忆为 JSON
    * - 默认不包含截图（includeScreenshots=false）
    * - 包含 observations / facts / scenes / tasks / projects / decisions / people / reports
+   * - 以及 proactive_items / timeline_blocks / unfinished_threads / report_selections / object_merges / memory_edges
    * - 包含导出时间和版本
    *
    * 来自 spec.md "本地 JSON 导出"：
    * - 不包含截图，除非用户明确选择
-   * - 包含 observations/facts/scenes/tasks/projects/reports
+   * - 包含 observations/facts/scenes/tasks/projects/reports，以及重构后的关系层数据
    * - 包含导出时间和版本
    */
   ipcMain.handle("data:export", (_event, input: unknown) => {
@@ -1203,6 +1406,12 @@ ${context}
       const people = deps.memoryObjectRepo?.listPeople({ includeDeleted: false }) ?? [];
       const projects = deps.memoryObjectRepo?.listProjects({ includeArchived: false }) ?? [];
       const reports = deps.reportRepo?.list({ limit: 200 }) ?? [];
+      const proactiveItems = deps.proactiveItemRepo?.list({ limit: 1000 }) ?? [];
+      const timelineBlocks = deps.timelineBlockRepo?.list({ limit: 5000 }) ?? [];
+      const unfinishedThreads = deps.unfinishedThreadRepo?.list({ limit: 2000 }) ?? [];
+      const reportSelections = deps.reportSelectionRepo?.list({ limit: 1000 }) ?? [];
+      const objectMerges = deps.objectMergeRepo?.listRecent({ limit: 1000 }) ?? [];
+      const memoryEdges = deps.memoryEdgeRepo?.list({ limit: 5000 }) ?? [];
 
       // 不包含截图：移除 observations 中的 screenshotPaths（除非用户明确选择）
       const sanitizedObservations = observations.map((obs) => {
@@ -1232,6 +1441,12 @@ ${context}
           people,
           projects,
           reports,
+          proactiveItems,
+          timelineBlocks,
+          unfinishedThreads,
+          reportSelections,
+          objectMerges,
+          memoryEdges,
         },
       };
     } catch (err) {
@@ -1269,8 +1484,13 @@ ${context}
           "tasks",
           "people",
           "decisions",
+          "memory_edges",
           "proactive_items",
           "reports",
+          "timeline_blocks",
+          "report_selections",
+          "unfinished_threads",
+          "object_merges",
           "model_jobs",
         ];
         for (const table of tables) {
@@ -1778,11 +1998,13 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "memory:ask",
   "memory:createUserFeedback",
   "memory:getProjectDetail",
+  "memory:getPersonDetail",
   "memory:mergeObjects",
   "reminders:list",
   "reminders:updateStatus",
   "reports:list",
   "reports:get",
+  "reports:getEvidenceByIds",
   "reports:generate",
   "reports:update",
   "reports:delete",
@@ -2141,5 +2363,9 @@ function searchMemoryByKeyword(
 
   // 应用 offset/limit
   return results.slice(offset, offset + limit);
+}
+
+function dedupeIds(ids: string[]): string[] {
+  return Array.from(new Set(ids.filter((id) => typeof id === "string" && id.length > 0)));
 }
 

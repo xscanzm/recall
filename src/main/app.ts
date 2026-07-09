@@ -44,6 +44,7 @@ import { getModelJobQueue } from "./services/ModelJobQueue";
 import { ObserverExtractorWorker } from "./services/ObserverExtractorWorker";
 import { ObservationNormalizer } from "./services/ObservationNormalizer";
 import { LinkerSceneJudgeWorker } from "./services/LinkerSceneJudgeWorker";
+import { EpisodeFactExtractorWorker } from "./services/EpisodeFactExtractorWorker";
 import { ReporterWorker } from "./services/ReporterWorker";
 import { ReportScheduler } from "./services/ReportScheduler";
 import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
@@ -136,6 +137,11 @@ let timelineBuilderTimer: NodeJS.Timeout | null = null;
 
 function isDev(): boolean {
   return process.env.NODE_ENV === "development" || !!process.env.VITE_DEV_SERVER_URL;
+}
+
+function shouldAutoOpenDevTools(): boolean {
+  const value = (process.env.RECALL_OPEN_DEVTOOLS ?? "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes";
 }
 
 // ============================================================================
@@ -234,8 +240,10 @@ function createMainWindow(): BrowserWindow {
   // 加载 renderer
   if (isDev() && process.env.VITE_DEV_SERVER_URL) {
     void win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    // 开发期自动打开 DevTools
-    win.webContents.openDevTools({ mode: "detach" });
+    // DevTools 默认改为手动打开，避免 Electron/Chromium 协议噪声刷到主进程日志。
+    if (shouldAutoOpenDevTools()) {
+      win.webContents.openDevTools({ mode: "detach" });
+    }
   } else {
     // 生产环境加载打包后的 index.html
     const indexHtml = path.join(__dirname, "..", "renderer", "index.html");
@@ -404,8 +412,17 @@ app.whenReady().then(async () => {
     sceneRepo,
     memoryObjectRepo,
     proactiveItemRepo,
+    edgeRepo: memoryEdgeRepo,
     unfinishedThreadRepo,
     timelineBlockRepo,
+    settingsService,
+  });
+  const episodeFactExtractorWorker = new EpisodeFactExtractorWorker({
+    modelGateway,
+    modelJobQueue,
+    factRepo,
+    observationRepo: obsRepo,
+    memoryObjectRepo,
     settingsService,
   });
 
@@ -414,9 +431,11 @@ app.whenReady().then(async () => {
     observerExtractorWorker,
     normalizer,
     linkerSceneJudgeWorker,
+    episodeFactExtractorWorker,
     modelJobQueue,
     sceneRepo,
     factRepo,
+    memoryObjectRepo,
     edgeRepo: memoryEdgeRepo,
     settingsService,
     modelJobRepo,
@@ -652,6 +671,8 @@ app.whenReady().then(async () => {
     unfinishedThreadRepo,
     // 012 新增：ObjectMerge 审计
     objectMergeRepo: objectMergeRepo,
+    // 015 新增：记忆关系层
+    memoryEdgeRepo: memoryEdgeRepo,
     // 调试模式：model_jobs 查询（DebugPage 用）
     modelJobRepo,
   });

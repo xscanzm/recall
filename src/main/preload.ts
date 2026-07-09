@@ -140,6 +140,13 @@ const recallApi = {
       people: unknown[];
       recentReports: unknown[];
     }> => ipcRenderer.invoke("memory:getProjectDetail", input),
+    getPersonDetail: (input: { id: string }): Promise<{
+      person: unknown;
+      relatedProjects: unknown[];
+      relatedScenes: unknown[];
+      relatedTasks: unknown[];
+      relatedFacts: unknown[];
+    }> => ipcRenderer.invoke("memory:getPersonDetail", input),
     // M7 新增：合并对象（基于 Linker mergeSuggestions）
     mergeObjects: (input: {
       objectType: "project" | "task" | "person" | "decision";
@@ -189,6 +196,15 @@ const recallApi = {
   reports: {
     list: <T>(input?: unknown): Promise<T[]> => ipcRenderer.invoke("reports:list", input),
     get: <T>(input: { id: string }): Promise<T | null> => ipcRenderer.invoke("reports:get", input),
+    getEvidenceByIds: (input: {
+      factIds?: string[];
+      sceneIds?: string[];
+      blockIds?: string[];
+    }): Promise<IpcResult<{
+      facts: unknown[];
+      scenes: unknown[];
+      timelineBlocks: unknown[];
+    }>> => ipcRenderer.invoke("reports:getEvidenceByIds", input),
     generate: (input: {
       type: "daily" | "weekly" | "monthly" | "retrospective";
       dateKey: string;

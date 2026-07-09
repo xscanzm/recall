@@ -83,6 +83,17 @@ const PRIORITY_ORDER_CASE =
 export class UnfinishedThreadRepository {
   constructor(private db: DB) {}
 
+  list(opts: { limit?: number; offset?: number } = {}): UnfinishedThread[] {
+    const limit = opts.limit ?? 1000;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM unfinished_threads ORDER BY date_key DESC, ${PRIORITY_ORDER_CASE}, created_at ASC LIMIT ? OFFSET ?`
+      )
+      .all(limit, offset) as UnfinishedThreadRow[];
+    return rows.map(mapRow);
+  }
+
   /**
    * 批量 upsert（同 date_key 替换：先删除当天所有，再插入新的）
    *

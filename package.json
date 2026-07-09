@@ -24,7 +24,9 @@
     "package": "npm run build && electron-builder --win",
     "typecheck:main": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.node.json --noEmit",
     "typecheck:renderer": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.web.json --noEmit",
-    "backfill:memory": "python scripts/backfill_memory_objects.py"
+    "backfill:memory": "python scripts/backfill_memory_objects.py",
+    "smoke:memory": "cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-memory-pipeline.js",
+    "smoke:renderer": "electron scripts/smoke-renderer-memory-ui.js"
   },
   "dependencies": {
     "active-win": "^8.2.1",

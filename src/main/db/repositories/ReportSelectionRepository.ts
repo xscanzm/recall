@@ -40,6 +40,17 @@ export interface ReportSelectionRow {
 export class ReportSelectionRepository {
   constructor(private db: DB) {}
 
+  list(opts: { limit?: number; offset?: number } = {}): ReportSelectionRow[] {
+    const limit = opts.limit ?? 1000;
+    const offset = opts.offset ?? 0;
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM report_selections ORDER BY date_key DESC, updated_at DESC LIMIT ? OFFSET ?"
+      )
+      .all(limit, offset) as ReportSelectionRowDb[];
+    return rows.map((row) => this.rowToReportSelection(row));
+  }
+
   /**
    * upsert（按 date_key + report_type 唯一）
    *

@@ -42,6 +42,7 @@ export type ModelJobType =
   | "observer_extractor"
   | "observer_extractor_batch"
   | "observer_batch"
+  | "episode_fact_extractor"
   | "linker_scene_judge"
   | "personal_review"
   // 兼容旧类型（迁移完成后可删除）

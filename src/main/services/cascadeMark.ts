@@ -23,6 +23,7 @@ import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepo
 import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRepository";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
+import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
 import type { Fact, Scene } from "../models/types";
 
 /**
@@ -37,6 +38,7 @@ export interface CascadeMarkDeps {
   proactiveItemRepo?: ProactiveItemRepository;
   reportRepo?: ReportRepository;
   objectMergeRepo?: ObjectMergeRepository; // 012 新增：合并审计
+  memoryEdgeRepo?: MemoryEdgeRepository;
   db?: DB;
 }
 
@@ -223,6 +225,7 @@ export function softDeleteByType(
       deps.proactiveItemRepo?.updateStatus(targetId, "ignored");
       break;
   }
+  markEdgesForNode(deps, targetType, targetId, "superseded", "source_deleted");
 }
 
 /**
@@ -258,6 +261,7 @@ export function hardDeleteByType(
       deps.proactiveItemRepo?.updateStatus(targetId, "ignored");
       break;
   }
+  markEdgesForNode(deps, targetType, targetId, "rejected", "hard_deleted");
 }
 
 /**
@@ -358,6 +362,7 @@ export function mergeObjects(
 
         // 5. soft delete from（archive）
         deps.memoryObjectRepo!.archiveProject(fromId);
+        markEdgesForNode(deps, "project", fromId, "superseded", "merged_into_other_object");
         break;
       }
       case "task": {
@@ -373,6 +378,7 @@ export function mergeObjects(
         deps.memoryObjectRepo!.updateTask(toId, { sourceFactIds: mergedFactIds });
         // soft delete from
         deps.memoryObjectRepo!.softDeleteTask(fromId);
+        markEdgesForNode(deps, "task", fromId, "superseded", "merged_into_other_object");
         break;
       }
       case "person": {
@@ -419,6 +425,7 @@ export function mergeObjects(
 
         // 6. soft delete from
         deps.memoryObjectRepo!.softDeletePerson(fromId);
+        markEdgesForNode(deps, "person", fromId, "superseded", "merged_into_other_object");
         break;
       }
       case "decision": {
@@ -432,6 +439,7 @@ export function mergeObjects(
         const mergedFactIds = Array.from(new Set([...to!.sourceFactIds, ...from!.sourceFactIds]));
         deps.memoryObjectRepo!.updateDecision(toId, { sourceFactIds: mergedFactIds });
         deps.memoryObjectRepo!.softDeleteDecision(fromId);
+        markEdgesForNode(deps, "decision", fromId, "superseded", "merged_into_other_object");
         break;
       }
       default:
@@ -509,6 +517,7 @@ export function cascadeMarkAfterFactSceneDelete(
 
   // 1. 处理 facts：L3 反向影响 + reports stale
   for (const fact of facts) {
+    markEdgesForNode(deps, "fact", fact.id, "superseded", STALE_REASON);
     // 1a. L3 反向影响
     if (deps.memoryObjectRepo) {
       // 仅由该 fact 支撑的对象 -> markOrphaned
@@ -567,6 +576,7 @@ export function cascadeMarkAfterFactSceneDelete(
 
   // 2. 处理 scenes：reports stale
   for (const scene of scenes) {
+    markEdgesForNode(deps, "scene", scene.id, "superseded", STALE_REASON);
     if (deps.reportRepo) {
       const reports = deps.reportRepo.findReportsReferencingScene(scene.id);
       for (const r of reports) {
@@ -583,4 +593,19 @@ export function cascadeMarkAfterFactSceneDelete(
   // 触发 factIds/sceneIds 已使用，避免 lint 警告（保留以备后续扩展）
   void factIds;
   void sceneIds;
+}
+
+function markEdgesForNode(
+  deps: CascadeMarkDeps,
+  nodeType: "fact" | "task" | "scene" | "project" | "person" | "decision" | "reminder",
+  nodeId: string,
+  status: "superseded" | "rejected",
+  reason: string
+): void {
+  if (!deps.memoryEdgeRepo) return;
+  try {
+    deps.memoryEdgeRepo.updateStatusByNode(nodeType, nodeId, status, reason);
+  } catch {
+    // edge 状态更新失败不阻断主流程
+  }
 }

@@ -333,3 +333,60 @@ updated_at
 6. 调整报告：只在报告生成阶段做对外筛选和措辞。
 
 第一批代码修改只做低风险基础设施，不直接接管旧 pipeline。
+
+## 7. 当前实现检查点
+
+截至本检查点，代码已经不再停留在基础设施阶段，而是完成了一条可验证的批次记忆主链：
+
+```text
+6 帧 BatchCaptureBundle
+  -> L0 observations（逐帧落库）
+  -> L1 episode / scene（规则切片）
+  -> L2 facts（从 episode 抽取）
+  -> L3 objects（project/task/person/decision）
+  -> memory_edges（observation / scene / fact / object 之间的来源关系）
+```
+
+关键实现点：
+
+- L0 批次观察：`CaptureBatcher` 默认攒 6 帧，`ObserverExtractorWorker.runObservationsForBatch` 只返回 observations，不直接抽 facts。
+- L1 片段：`EpisodeBuilder` 从已落库 observations 生成 episode，并写入 scene -> observation 的 `contains` 边。
+- L2 原子：`EpisodeFactExtractorWorker` 基于 episode 和真实 observation ids 抽取 facts。
+- L3 对象：`LinkerSceneJudgeWorker` 基于 episode facts 创建或链接项目、任务、人物、决策。
+- 关系投影：`SceneRelationProjector` 把 facts 和对象关系回填到 scene、project、task、decision、person，并补 scene -> object 边。
+- 新建对象收口：新建或去重命中 L3 对象后，会补齐 fact -> object 边，并尽量回填 `fact.projectId`、`task.projectId`、`decision.projectId`、`person.relatedProjectIds`。
+
+当前自动化验收命令：
+
+```powershell
+npm run typecheck:main
+npm run typecheck:renderer
+npm run build:main
+npm run build:renderer
+npm run smoke:memory
+npm run smoke:renderer
+```
+
+`smoke:memory` 使用 Electron Node 模式运行，因为 `better-sqlite3` 是按 Electron ABI 编译的。该 smoke 不调用真实模型 API，而是使用合成的模型输出验证本地数据编排。一次通过应证明：
+
+- 6 条 L0 observations 入库
+- 至少 1 个 L1 episode/scene 入库
+- L2 facts 能挂回 episode
+- L3 project/task/person/decision 能创建并互相关联
+- scene -> observation、scene -> fact、fact -> object、scene -> object 的 edges 均存在
+
+`smoke:renderer` 启动隐藏 Electron BrowserWindow，加载真实打包后的 renderer，并通过 preload 注入受控 IPC 数据。该 smoke 验证前台能消费新链路数据：
+
+- 今日页展示时间轴片段、待收尾和我的复盘。
+- 待收尾页能打开来源弹窗，并显示来源事实。
+- 项目页能进入项目详情，展示最近时间轴、待收尾、关键决策和相关人物。
+- 人物页能进入人物详情，展示相关项目、最近协作和提到过的事。
+- 记忆库页能正常进入搜索/问答入口。
+- 报告页能展示工作日报，并打开来源面板显示来源事实和时间轴片段。
+
+仍未完成的最终验收：
+
+- 用真实应用运行一次观察，而不是只跑合成 smoke。
+- 用真实模型输出验证 prompt 质量、失败降级和异常输出修复。
+- 在真实数据库和真实采集数据下复核今日、待收尾、项目、人物、报告的展示质量。
+- 根据真实数据再校正 L1 切片边界和 L2 抽取粒度。

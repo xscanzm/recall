@@ -27,7 +27,7 @@
 
 import type { ModelGateway } from "./ModelGateway";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
-import type { Fact, Scene, ProactiveItem, Task, DebugEvent } from "../models/types";
+import type { Fact, Scene, ProactiveItem, Task, DebugEvent, MemoryRelationType } from "../models/types";
 import type { LinkerSceneJudgeOutput } from "../models/schemas";
 import { LinkerSceneJudgeOutputSchema } from "../models/schemas";
 import { LINKER_SCENE_JUDGE_PROMPT_TEMPLATE } from "../models/prompts";
@@ -35,6 +35,7 @@ import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepo
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRepository";
 import type { FactRepository } from "../db/repositories/FactRepository";
+import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
 import type { SettingsService } from "./SettingsService";
@@ -112,6 +113,8 @@ interface ReminderPolicy {
   priorityThreshold: number;
 }
 
+type LinkableMemoryObjectType = "project" | "task" | "person" | "decision";
+
 /**
  * LinkerSceneJudge Worker 输出
  *
@@ -168,6 +171,7 @@ export class LinkerSceneJudgeWorker {
   private readonly sceneRepo: SceneRepository;
   private readonly memoryObjectRepo: MemoryObjectRepository;
   private readonly proactiveItemRepo: ProactiveItemRepository;
+  private readonly edgeRepo: MemoryEdgeRepository | null;
   private readonly unfinishedThreadRepo: UnfinishedThreadRepository | null;
   private readonly timelineBlockRepo: TimelineBlockRepository | null;
   private readonly settingsService: SettingsService | null;
@@ -179,6 +183,7 @@ export class LinkerSceneJudgeWorker {
     sceneRepo: SceneRepository;
     memoryObjectRepo: MemoryObjectRepository;
     proactiveItemRepo: ProactiveItemRepository;
+    edgeRepo?: MemoryEdgeRepository;
     unfinishedThreadRepo?: UnfinishedThreadRepository;
     timelineBlockRepo?: TimelineBlockRepository;
     settingsService?: SettingsService;
@@ -189,6 +194,7 @@ export class LinkerSceneJudgeWorker {
     this.sceneRepo = deps.sceneRepo;
     this.memoryObjectRepo = deps.memoryObjectRepo;
     this.proactiveItemRepo = deps.proactiveItemRepo;
+    this.edgeRepo = deps.edgeRepo ?? null;
     this.unfinishedThreadRepo = deps.unfinishedThreadRepo ?? null;
     this.timelineBlockRepo = deps.timelineBlockRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
@@ -566,18 +572,21 @@ export class LinkerSceneJudgeWorker {
         );
         if (!updated) continue;
 
-        if (
-          link.relationship === "belongs_to" &&
-          link.targetType === "project"
-        ) {
+        const inferredProjectId = this.resolveProjectIdForLink(
+          link.targetType,
+          link.targetId
+        );
+        if (inferredProjectId) {
           try {
             this.factRepo.update(link.sourceFactId, {
-              projectId: link.targetId,
+              projectId: inferredProjectId,
             });
           } catch {
             // 单条 fact 更新失败不阻断
           }
         }
+
+        this.persistFactLinkEdge(link);
 
         processed.push(link);
       } catch {
@@ -655,6 +664,59 @@ export class LinkerSceneJudgeWorker {
     }
   }
 
+  private resolveProjectIdForLink(
+    targetType: LinkerSceneJudgeOutput["linkedFacts"][number]["targetType"],
+    targetId: string
+  ): string | null {
+    try {
+      switch (targetType) {
+        case "project":
+          return targetId;
+        case "task":
+          return this.memoryObjectRepo.getTaskByIdActive(targetId)?.projectId ?? null;
+        case "decision":
+          return this.memoryObjectRepo.getDecisionByIdActive(targetId)?.projectId ?? null;
+        case "scene":
+          return this.sceneRepo.getByIdActive(targetId)?.projectId ?? null;
+        default:
+          return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  private persistFactLinkEdge(
+    link: LinkerSceneJudgeOutput["linkedFacts"][number]
+  ): void {
+    if (!this.edgeRepo) return;
+    try {
+      const existing = this.edgeRepo
+        .listFrom("fact", link.sourceFactId, { status: "active", limit: 200 })
+        .some(
+          (edge) =>
+            edge.toType === link.targetType &&
+            edge.toId === link.targetId &&
+            edge.relationType === link.relationship
+        );
+      if (existing) return;
+      this.edgeRepo.create({
+        fromType: "fact",
+        fromId: link.sourceFactId,
+        toType: link.targetType,
+        toId: link.targetId,
+        relationType: link.relationship,
+        confidence: link.confidence,
+        createdBy: "model",
+        evidenceIds: [link.sourceFactId],
+        status: "active",
+        reason: link.reason,
+      });
+    } catch {
+      // edge 写入失败不阻断
+    }
+  }
+
   /**
    * 处理 newObjects：创建新 L3 MemoryObject
    */
@@ -715,9 +777,10 @@ export class LinkerSceneJudgeWorker {
             message: `dedup hit: project ${existingId}`,
           });
           this.linkFactIdsToExisting("project", existingId, sourceFactIds);
+          this.finalizeObjectFactLinks("project", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
           return true;
         }
-        this.memoryObjectRepo.createProject({
+        const created = this.memoryObjectRepo.createProject({
           name: newObj.title,
           summary: newObj.summary,
           status: "active",
@@ -725,6 +788,7 @@ export class LinkerSceneJudgeWorker {
           sourceFactIds,
           sourceSceneIds: [],
         });
+        this.finalizeObjectFactLinks("project", created.id, sourceFactIds, newObj.confidence, "新建项目对象的事实来源关系");
         return true;
       }
       case "task": {
@@ -738,18 +802,21 @@ export class LinkerSceneJudgeWorker {
             message: `dedup hit: task ${existingId}`,
           });
           this.linkFactIdsToExisting("task", existingId, sourceFactIds);
+          this.finalizeObjectFactLinks("task", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
           return true;
         }
-        this.memoryObjectRepo.createTask({
+        const inferredProjectId = this.inferProjectIdFromFacts(sourceFactIds);
+        const created = this.memoryObjectRepo.createTask({
           title: newObj.title,
           status: "open",
-          projectId: null,
+          projectId: inferredProjectId,
           summary: newObj.summary,
           dueHint: null,
           priority: newObj.confidence,
           confidence: newObj.confidence,
           sourceFactIds,
         });
+        this.finalizeObjectFactLinks("task", created.id, sourceFactIds, newObj.confidence, "新建任务对象的事实来源关系");
         return true;
       }
       case "person": {
@@ -763,16 +830,19 @@ export class LinkerSceneJudgeWorker {
             message: `dedup hit: person ${existingId}`,
           });
           this.linkFactIdsToExisting("person", existingId, sourceFactIds);
+          this.finalizeObjectFactLinks("person", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
           return true;
         }
-        this.memoryObjectRepo.createPerson({
+        const inferredProjectId = this.inferProjectIdFromFacts(sourceFactIds);
+        const created = this.memoryObjectRepo.createPerson({
           name: newObj.title,
           role: null,
           organization: null,
           summary: newObj.summary,
-          relatedProjectIds: [],
+          relatedProjectIds: inferredProjectId ? [inferredProjectId] : [],
           sourceFactIds,
         });
+        this.finalizeObjectFactLinks("person", created.id, sourceFactIds, newObj.confidence, "新建人物对象的事实来源关系");
         return true;
       }
       case "decision": {
@@ -786,17 +856,20 @@ export class LinkerSceneJudgeWorker {
             message: `dedup hit: decision ${existingId}`,
           });
           this.linkFactIdsToExisting("decision", existingId, sourceFactIds);
+          this.finalizeObjectFactLinks("decision", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
           return true;
         }
-        this.memoryObjectRepo.createDecision({
+        const inferredProjectId = this.inferProjectIdFromFacts(sourceFactIds);
+        const created = this.memoryObjectRepo.createDecision({
           title: newObj.title,
           decision: newObj.summary,
-          projectId: null,
+          projectId: inferredProjectId,
           rationale: null,
           confidence: newObj.confidence,
           sourceFactIds,
           decidedAt: now,
         });
+        this.finalizeObjectFactLinks("decision", created.id, sourceFactIds, newObj.confidence, "新建决策对象的事实来源关系");
         return true;
       }
       case "knowledge":
@@ -855,7 +928,7 @@ export class LinkerSceneJudgeWorker {
    * 用于硬性去重命中时：不创建新对象，但仍建立 link。
    */
   private linkFactIdsToExisting(
-    objectType: "project" | "task" | "person" | "decision",
+    objectType: LinkableMemoryObjectType,
     existingId: string,
     factIds: string[]
   ): boolean {
@@ -904,6 +977,170 @@ export class LinkerSceneJudgeWorker {
       // 单条 link 失败不阻断
     }
     return false;
+  }
+
+  private finalizeObjectFactLinks(
+    objectType: LinkableMemoryObjectType,
+    objectId: string,
+    factIds: string[],
+    confidence: number,
+    reason: string
+  ): void {
+    const projectId = this.resolveProjectIdForObject(objectType, objectId) ?? this.inferProjectIdFromFacts(factIds);
+    this.backfillObjectProjectId(objectType, objectId, projectId);
+
+    for (const factId of factIds) {
+      this.backfillFactProjectId(factId, projectId, objectType === "project");
+      this.persistFactObjectEdge({
+        factId,
+        objectType,
+        objectId,
+        relationType: this.relationForNewObject(objectType),
+        confidence,
+        reason,
+      });
+    }
+  }
+
+  private resolveProjectIdForObject(
+    objectType: LinkableMemoryObjectType,
+    objectId: string
+  ): string | null {
+    try {
+      switch (objectType) {
+        case "project":
+          return objectId;
+        case "task":
+          return this.memoryObjectRepo.getTaskByIdActive(objectId)?.projectId ?? null;
+        case "decision":
+          return this.memoryObjectRepo.getDecisionByIdActive(objectId)?.projectId ?? null;
+        case "person": {
+          const person = this.memoryObjectRepo.getPersonByIdActive(objectId);
+          return person?.relatedProjectIds[0] ?? null;
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  private inferProjectIdFromFacts(factIds: string[]): string | null {
+    for (const factId of factIds) {
+      try {
+        const fact = this.factRepo.getByIdActive(factId);
+        if (!fact) continue;
+        if (fact.projectId) return fact.projectId;
+        const hintedProjectId = this.resolveProjectId(fact.projectHint ?? undefined);
+        if (hintedProjectId) return hintedProjectId;
+      } catch {
+        // 单条 fact 查询失败不阻断其他事实
+      }
+    }
+    return null;
+  }
+
+  private backfillObjectProjectId(
+    objectType: LinkableMemoryObjectType,
+    objectId: string,
+    projectId: string | null
+  ): void {
+    if (!projectId) return;
+    try {
+      switch (objectType) {
+        case "task": {
+          const task = this.memoryObjectRepo.getTaskByIdActive(objectId);
+          if (task && !task.projectId) {
+            this.memoryObjectRepo.updateTask(objectId, { projectId });
+          }
+          return;
+        }
+        case "decision": {
+          const decision = this.memoryObjectRepo.getDecisionByIdActive(objectId);
+          if (decision && !decision.projectId) {
+            this.memoryObjectRepo.updateDecision(objectId, { projectId });
+          }
+          return;
+        }
+        case "person": {
+          const person = this.memoryObjectRepo.getPersonByIdActive(objectId);
+          if (person && !person.relatedProjectIds.includes(projectId)) {
+            this.memoryObjectRepo.updatePerson(objectId, {
+              relatedProjectIds: [...person.relatedProjectIds, projectId],
+            });
+          }
+          return;
+        }
+        case "project":
+          return;
+      }
+    } catch {
+      // 对象 projectId 回填失败不阻断主流程
+    }
+  }
+
+  private backfillFactProjectId(
+    factId: string,
+    projectId: string | null,
+    overwrite: boolean
+  ): void {
+    if (!projectId) return;
+    try {
+      const fact = this.factRepo.getByIdActive(factId);
+      if (!fact) return;
+      if (!overwrite && fact.projectId) return;
+      if (fact.projectId === projectId) return;
+      this.factRepo.update(factId, { projectId });
+    } catch {
+      // 单条 fact projectId 回填失败不阻断
+    }
+  }
+
+  private relationForNewObject(objectType: LinkableMemoryObjectType): MemoryRelationType {
+    switch (objectType) {
+      case "project":
+        return "belongs_to";
+      case "person":
+        return "mentions";
+      case "task":
+      case "decision":
+        return "supports";
+    }
+  }
+
+  private persistFactObjectEdge(input: {
+    factId: string;
+    objectType: LinkableMemoryObjectType;
+    objectId: string;
+    relationType: MemoryRelationType;
+    confidence: number;
+    reason: string;
+  }): void {
+    if (!this.edgeRepo) return;
+    try {
+      const existing = this.edgeRepo
+        .listFrom("fact", input.factId, { status: "active", limit: 200 })
+        .some(
+          (edge) =>
+            edge.toType === input.objectType &&
+            edge.toId === input.objectId &&
+            edge.relationType === input.relationType
+        );
+      if (existing) return;
+      this.edgeRepo.create({
+        fromType: "fact",
+        fromId: input.factId,
+        toType: input.objectType,
+        toId: input.objectId,
+        relationType: input.relationType,
+        confidence: input.confidence,
+        createdBy: "system",
+        evidenceIds: [input.factId],
+        status: "active",
+        reason: input.reason,
+      });
+    } catch {
+      // edge 写入失败不阻断
+    }
   }
 
   /**
