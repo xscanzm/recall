@@ -313,6 +313,47 @@ const recallApi = {
     }): Promise<IpcResult<null>> =>
       ipcRenderer.invoke("unfinishedThreads:updateStatus", input),
   },
+
+  // -------------------- debug --------------------
+  /**
+   * debug：调试模式专用（DebugPage 用）
+   * - listJobs：按时间范围查询 model_jobs 列表
+   * - getJobDetails：查询单条 model_job 详情（含 rawInputJson / debugEventsJson）
+   * - getRelatedRecords：按 job.createdAt ± N 秒查询关联落库记录
+   *
+   * 安全约束：main 进程 3 个 handler 均强制校验 isDebugMode()，关闭时返回 error
+   */
+  debug: {
+    listJobs: (input: {
+      startAt: string;
+      endAt: string;
+      limit?: number;
+    }): Promise<
+      | { ok: true; data: unknown[] }
+      | { ok: false; error: string; code?: string }
+    > => ipcRenderer.invoke("debug:listJobs", input),
+    getJobDetails: (
+      jobId: string
+    ): Promise<
+      | { ok: true; data: unknown }
+      | { ok: false; error: string; code?: string }
+    > => ipcRenderer.invoke("debug:getJobDetails", { jobId }),
+    getRelatedRecords: (input: {
+      createdAt: string;
+      windowSeconds?: number;
+    }): Promise<
+      | {
+          ok: true;
+          data: {
+            observations: unknown[];
+            facts: unknown[];
+            scenes: unknown[];
+            proactiveItems: unknown[];
+          };
+        }
+      | { ok: false; error: string; code?: string }
+    > => ipcRenderer.invoke("debug:getRelatedRecords", input),
+  },
 };
 
 // 通过 contextBridge 暴露白名单 API 到 renderer（window.recallAPI）

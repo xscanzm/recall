@@ -174,6 +174,19 @@ export class ProactiveItemRepository {
   }
 
   /**
+   * 按时间范围查询（debug 页用，不分页）
+   * - 时间字段：created_at
+   * - proactive_items 表无软删除标记
+   */
+  listByTimeRange(startAt: string, endAt: string): ProactiveItem[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM proactive_items WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC"
+    );
+    const rows = stmt.all(startAt, endAt) as ProactiveItemRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
    * 查询今日新增的 proactive_items
    *
    * 注意：使用本地日期与时区偏移构造起始时间，避免 UTC 与本地时区差异

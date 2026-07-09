@@ -20,9 +20,9 @@ import {
   Search,
   Users,
   Settings,
-  ShieldCheck,
   Pause,
   Play,
+  Bug,
 } from "lucide-react";
 import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
@@ -36,19 +36,21 @@ interface NavItem {
 }
 
 /**
- * 8 个主导航项（顺序严格，来自 spec）
- * 今日 / 待收尾 / 报告 / 项目 / 记忆库 / 人物 / 设置 / 信任中心
+ * 主导航项（顺序严格，来自记忆系统重构设计）
+ * 今日 / 待收尾 / 项目 / 人物 / 记忆库 / 报告 / 设置
  */
 const NAV_ITEMS: NavItem[] = [
   { key: "today", label: "今日", Icon: CalendarDays },
   { key: "tasks", label: "待收尾", Icon: ListTodo },
-  { key: "reports", label: "报告", Icon: FileText },
   { key: "projects", label: "项目", Icon: FolderKanban },
-  { key: "memory", label: "记忆库", Icon: Search },
   { key: "people", label: "人物", Icon: Users },
+  { key: "memory", label: "记忆库", Icon: Search },
+  { key: "reports", label: "报告", Icon: FileText },
   { key: "settings", label: "设置", Icon: Settings },
-  { key: "trust", label: "信任中心", Icon: ShieldCheck },
 ];
+
+/** 调试导航项（仅当 settings.debug.enabled 时由组件内条件拼接） */
+const DEBUG_NAV_ITEM: NavItem = { key: "debug", label: "调试", Icon: Bug };
 
 interface AppShellProps {
   children: ReactNode;
@@ -58,8 +60,10 @@ export const AppShell = ({ children }: AppShellProps) => {
   const currentPage = useAppStore((s) => s.currentPage);
   const setPage = useAppStore((s) => s.setPage);
   const appStatus = useAppStore((s) => s.appStatus);
+  const isDebugEnabled = useAppStore((s) => s.settings?.debug?.enabled ?? false);
 
   const isObserving = appStatus.observing && !appStatus.paused;
+  const navItems = isDebugEnabled ? [...NAV_ITEMS, DEBUG_NAV_ITEM] : NAV_ITEMS;
 
   const handlePauseToggle = async () => {
     try {
@@ -81,7 +85,7 @@ export const AppShell = ({ children }: AppShellProps) => {
           <BrandMark />
         </div>
         <nav className="app-shell__nav">
-          {NAV_ITEMS.map(({ key, label, Icon }) => (
+          {navItems.map(({ key, label, Icon }) => (
             <button
               key={key}
               type="button"

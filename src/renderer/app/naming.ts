@@ -3,28 +3,28 @@
 //
 // 重要约束：
 // - 不在 UI 中暴露 L0/L1/L2/L3 术语
-// - 前台使用"观察、线索、工作片段、长期记忆、提醒、日报"等更自然的词
+// - 前台使用"瞬间观察、工作片段、记忆、长期记忆、待收尾、日报"等更自然的词
 //
 // 映射（来自 08 文档）：
-// - Observation -> 观察
-// - Fact -> 线索
-// - Scene -> 工作片段
+// - Observation -> 瞬间观察
+// - Fact / Memory Atom -> 记忆
+// - Scene / Episode -> 工作片段
 // - Memory Object -> 长期记忆
-// - Proactive Item -> 提醒
+// - Proactive Item / Unfinished Thread -> 待收尾
 // - Daily Report -> 日报
 
 /**
  * 核心前台命名映射
  */
 export const NAMING = {
-  observation: "观察",
-  fact: "线索",
+  observation: "瞬间观察",
+  fact: "记忆",
   scene: "工作片段",
   memoryObject: "长期记忆",
-  proactiveItem: "提醒",
+  proactiveItem: "待收尾",
   dailyReport: "日报",
   weeklyReport: "周报",
-  task: "任务",
+  task: "待收尾",
   project: "项目",
   decision: "决策",
   person: "人物",

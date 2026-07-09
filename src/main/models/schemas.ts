@@ -446,6 +446,26 @@ const ENTITY_TYPE_PLURAL_TO_SINGULAR: Record<string, string> = {
   url: "url",
   concept: "concept",
   other: "other",
+  // 模型常见但 schema 未直接接收的实体类型
+  model: "product",
+  models: "product",
+  service: "product",
+  services: "product",
+  platform: "product",
+  platforms: "product",
+  tool: "product",
+  tools: "product",
+  technology: "concept",
+  technologies: "concept",
+  framework: "concept",
+  frameworks: "concept",
+  library: "concept",
+  libraries: "concept",
+  website: "url",
+  websites: "url",
+  repo: "project",
+  repository: "project",
+  repositories: "project",
 };
 
 /**
@@ -707,6 +727,12 @@ const FACT_TYPE_NORMALIZE: Record<string, string> = {
   risk: "risk",
   question: "question",
   note: "note",
+  entity: "note",
+  event: "note",
+  progress: "project_progress",
+  project: "project_progress",
+  reminder: "task",
+  action: "task",
 };
 
 /**
@@ -743,6 +769,9 @@ const FACT_STATUS_NORMALIZE: Record<string, string> = {
   paused: "blocked",
   unknown: "unknown",
   unclear: "unknown",
+  dropped: "unknown",
+  cancelled: "unknown",
+  canceled: "unknown",
 };
 
 /**
@@ -1898,15 +1927,42 @@ function normalizeObserverOutputV2(data: unknown): unknown {
   }
   if (obj.possibleProjectProgress !== undefined) {
     result.possibleProjectProgress = normalizeTaskLikeItems(obj.possibleProjectProgress);
+  } else {
+    result.possibleProjectProgress = [];
   }
   if (obj.visibleContent !== undefined) {
     result.visibleContent = Array.isArray(obj.visibleContent)
-      ? (obj.visibleContent as unknown[]).map((item) =>
-          item && typeof item === "object"
-            ? normalizeKeysToCamel(item)
-            : item
-        )
+      ? (obj.visibleContent as unknown[]).map((item) => {
+          if (!item || typeof item !== "object") return item;
+          const content = normalizeKeysToCamel(item);
+          const rawType = typeof content.type === "string" ? content.type.toLowerCase() : "unknown";
+          const type =
+            rawType === "image" || rawType === "screenshot" || rawType === "photo"
+              ? "unknown"
+              : rawType === "system_dialog" || rawType === "dialog" || rawType === "other"
+              ? "unknown"
+              : rawType;
+          return {
+            ...content,
+            type: [
+              "webpage",
+              "document",
+              "chat",
+              "code",
+              "spreadsheet",
+              "design",
+              "email",
+              "terminal",
+              "unknown",
+            ].includes(type)
+              ? type
+              : "unknown",
+            keyTextSnippets: normalizeStringArray(content.keyTextSnippets),
+          };
+        })
       : [];
+  } else {
+    result.visibleContent = [];
   }
 
   // 字段名变体归一化
@@ -1919,6 +1975,7 @@ function normalizeObserverOutputV2(data: unknown): unknown {
     "userSummary",
   ]);
   if (typeof userFacingSummary === "string") result.userFacingSummary = userFacingSummary;
+  else if (typeof result.sceneSummary === "string") result.userFacingSummary = result.sceneSummary;
 
   const likelyWorkPurpose = pickFirst(obj, [
     "likelyWorkPurpose",
@@ -1926,6 +1983,7 @@ function normalizeObserverOutputV2(data: unknown): unknown {
     "workPurpose",
   ]);
   if (typeof likelyWorkPurpose === "string") result.likelyWorkPurpose = likelyWorkPurpose;
+  else if (typeof result.possibleUserIntent === "string") result.likelyWorkPurpose = result.possibleUserIntent;
 
   const possibleUserIntent = pickFirst(obj, [
     "possibleUserIntent",
@@ -1933,6 +1991,7 @@ function normalizeObserverOutputV2(data: unknown): unknown {
     "userIntent",
   ]);
   if (typeof possibleUserIntent === "string") result.possibleUserIntent = possibleUserIntent;
+  else if (typeof result.likelyWorkPurpose === "string") result.possibleUserIntent = result.likelyWorkPurpose;
 
   // 枚举归一化
   const rawPrivacyRisk = pickFirst(obj, ["privacyRisk", "privacy_risk", "privateRisk"]);
@@ -1940,6 +1999,16 @@ function normalizeObserverOutputV2(data: unknown): unknown {
     const norm = PRIVACY_RISK_NORMALIZE[rawPrivacyRisk.toLowerCase()];
     if (norm) result.privacyRisk = norm;
   }
+  if (typeof result.privacyRisk !== "string") result.privacyRisk = "low";
+
+  const privacyRiskReason = pickFirst(obj, [
+    "privacyRiskReason",
+    "privacy_risk_reason",
+    "privateRiskReason",
+    "sensitivityReason",
+  ]);
+  if (typeof privacyRiskReason === "string") result.privacyRiskReason = privacyRiskReason;
+  else result.privacyRiskReason = result.privacyRisk === "high" ? "可能包含敏感内容" : "未发现明显隐私风险";
 
   const rawReportableSignal = pickFirst(obj, [
     "reportableSignal",
@@ -1952,15 +2021,33 @@ function normalizeObserverOutputV2(data: unknown): unknown {
   } else if (typeof rawReportableSignal === "boolean") {
     result.reportableSignal = rawReportableSignal ? "yes" : "no";
   }
+  if (typeof result.reportableSignal !== "string") result.reportableSignal = "maybe";
+
+  const reportableReason = pickFirst(obj, [
+    "reportableReason",
+    "reportable_reason",
+    "workReportReason",
+  ]);
+  if (typeof reportableReason === "string") result.reportableReason = reportableReason;
+  else result.reportableReason = result.reportableSignal === "no" ? "不适合进入工作日报" : "可能对后续回顾有价值";
 
   const rawSensitivity = pickFirst(obj, ["sensitivity"]);
   if (typeof rawSensitivity === "string") {
     const norm = SENSITIVITY_NORMALIZE[rawSensitivity.toLowerCase()];
     if (norm) result.sensitivity = norm;
   }
+  if (typeof result.sensitivity !== "string") result.sensitivity = "normal";
 
   // 缺失数组默认 []
   if (!Array.isArray(result.uncertainties)) result.uncertainties = [];
+  if (!Array.isArray(result.detectedEntities)) result.detectedEntities = [];
+  if (!Array.isArray(result.possibleTasks)) result.possibleTasks = [];
+  if (!Array.isArray(result.possibleDecisions)) result.possibleDecisions = [];
+
+  if (typeof result.sceneSummary !== "string") result.sceneSummary = "无法清晰识别当前画面";
+  if (typeof result.userFacingSummary !== "string") result.userFacingSummary = result.sceneSummary;
+  if (typeof result.likelyWorkPurpose !== "string") result.likelyWorkPurpose = "当前工作目的不明确";
+  if (typeof result.possibleUserIntent !== "string") result.possibleUserIntent = result.likelyWorkPurpose;
 
   return result;
 }
@@ -3030,9 +3117,13 @@ function normalizeObserverExtractorOutput(input: unknown): unknown {
   }
   if (obj.facts !== undefined) {
     result.facts = normalizeFactsV2(obj.facts);
+  } else {
+    result.facts = [];
   }
   if (obj.discardedNoise !== undefined) {
     result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
+  } else {
+    result.discardedNoise = [];
   }
   return result;
 }
@@ -3049,6 +3140,75 @@ export const ObserverExtractorOutputSchema = z.preprocess(
  * ObserverExtractor 合并输出类型
  */
 export type ObserverExtractorOutput = z.infer<typeof ObserverExtractorOutputCoreSchema>;
+
+/**
+ * 批次 ObserverExtractor 合并输出 CoreSchema
+ *
+ * 攒批多帧合并提交时使用，一次多模态调用同时产出多条 L0 Observation 和 L1 Facts。
+ * 输出格式：{ observations: [{...}, ...], facts: [...], discardedNoise: [...] }
+ *
+ * 模型输出的 observations 数组长度应等于输入的帧数，
+ * 每条 observation 对应一帧截图，通过 frames[i].frameIndex 对齐。
+ */
+const BatchObserverExtractorOutputCoreSchema = z.object({
+  observations: z.array(ObserverOutputV2CoreSchema).min(1).max(20),
+  facts: ExtractorOutputV2CoreSchema.shape.facts,
+  discardedNoise: ExtractorOutputV2CoreSchema.shape.discardedNoise,
+});
+
+/**
+ * 批次 ObserverExtractor 合并输出归一化
+ *
+ * 处理模型可能返回单 observation 而非数组的边界情况：
+ * - 如果返回 observation（单数）而非 observations（数组），包装成数组
+ * - 对每个 observation 调用 normalizeObserverOutputV2
+ * - 对 facts 和 discardedNoise 调用现有归一化函数
+ */
+function normalizeBatchObserverExtractorOutput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const obj = input as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...obj };
+
+  // 兼容：模型返回单 observation 而非 observations 数组
+  if (!obj.observations && obj.observation) {
+    result.observations = [obj.observation];
+    delete result.observation;
+  }
+
+  // 对每个 observation 调用归一化
+  if (Array.isArray(result.observations)) {
+    result.observations = result.observations.map(
+      (o) => normalizeObserverOutputV2(o) ?? o
+    );
+  }
+
+  if (obj.facts !== undefined) {
+    result.facts = normalizeFactsV2(obj.facts);
+  } else {
+    result.facts = [];
+  }
+  if (obj.discardedNoise !== undefined) {
+    result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
+  } else {
+    result.discardedNoise = [];
+  }
+  return result;
+}
+
+/**
+ * 导出的批次 ObserverExtractor 合并 schema
+ */
+export const BatchObserverExtractorOutputSchema = z.preprocess(
+  normalizeBatchObserverExtractorOutput,
+  BatchObserverExtractorOutputCoreSchema
+);
+
+/**
+ * 批次 ObserverExtractor 合并输出类型
+ */
+export type BatchObserverExtractorOutput = z.infer<
+  typeof BatchObserverExtractorOutputCoreSchema
+>;
 
 /**
  * LinkerSceneJudge 合并输出 CoreSchema
@@ -3115,3 +3275,16 @@ export const LinkerSceneJudgeOutputSchema = z.preprocess(
  * LinkerSceneJudge 合并输出类型
  */
 export type LinkerSceneJudgeOutput = z.infer<typeof LinkerSceneJudgeOutputCoreSchema>;
+
+// ==================== Debug Schemas ====================
+
+export const DebugListJobsInputSchema = z.object({
+  startAt: z.string(),
+  endAt: z.string(),
+  limit: z.number().int().min(1).max(1000).optional(),
+});
+
+export const DebugRelatedRecordsInputSchema = z.object({
+  createdAt: z.string(),
+  windowSeconds: z.number().int().min(1).max(300).optional(),
+});

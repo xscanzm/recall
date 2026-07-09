@@ -104,6 +104,16 @@ export interface AppSettings {
    * - true：进入正常主界面
    */
   onboardingCompleted: boolean;
+  /**
+   * 调试模式（供开发者排查数据流问题）
+   * - enabled：总开关，开启后主导航出现「调试」入口，Logger devDebug 生效，各层收集丢弃事件
+   * - verboseModelIO：额外记录完整模型输入输出到 model_jobs.raw_input_json（开销较大，单独控制）
+   * 默认关闭，普通用户不可见
+   */
+  debug: {
+    enabled: boolean;
+    verboseModelIO: boolean;
+  };
 }
 
 /**
@@ -140,6 +150,97 @@ export const DEFAULT_SETTINGS: AppSettings = {
     lastPersonalReviewDate: null,
   },
   onboardingCompleted: false,
+  debug: {
+    enabled: false,
+    verboseModelIO: false,
+  },
+};
+
+/**
+ * 调试事件（管道各层丢弃/跳过记录）
+ *
+ * 仅在调试模式开启时由各 Worker 收集，最终写入 model_jobs.debug_events_json。
+ * 用于 DebugPage 展示「数据卡在哪一层」的逐项原因。
+ */
+export interface DebugEvent {
+  /** 发生丢弃的层级 */
+  layer: "L0" | "L1" | "L2" | "L3" | "proactive";
+  /** 丢弃动作类型 */
+  action: "discard" | "skip" | "dedup" | "downgrade" | "fallback";
+  /** 人类可读原因（英文短语，前端直接展示） */
+  reason: string;
+  /** 被丢弃项的 id（如有） */
+  itemId?: string;
+  /** 批次模式下的帧序号（仅 L0/L1 批次相关事件） */
+  frameIndex?: number;
+  /** L3 dedup 命中时的目标对象类型（project/task/person/decision） */
+  targetType?: string;
+}
+
+// ============================================================================
+// 记忆系统重构：关系层 Edge
+// ============================================================================
+
+export type MemoryNodeType =
+  | "capture"
+  | "moment"
+  | "episode"
+  | "atom"
+  | "object"
+  | "report"
+  // 兼容当前旧表命名，后续迁移时逐步收敛到 moment/episode/atom/object
+  | "observation"
+  | "scene"
+  | "fact"
+  | "project"
+  | "task"
+  | "person"
+  | "decision"
+  | "preference"
+  | "knowledge";
+
+export type MemoryRelationType =
+  | "contains"
+  | "derived_from"
+  | "mentions"
+  | "belongs_to"
+  | "updates"
+  | "continues"
+  | "duplicates"
+  | "contradicts"
+  | "depends_on"
+  | "involves"
+  | "supports"
+  | "uses";
+
+export type MemoryEdgeStatus = "active" | "pending" | "rejected" | "superseded";
+export type MemoryEdgeCreatedBy = "system" | "model" | "user";
+
+export interface MemoryEdge {
+  id: string;
+  fromType: MemoryNodeType;
+  fromId: string;
+  toType: MemoryNodeType;
+  toId: string;
+  relationType: MemoryRelationType;
+  confidence: number;
+  createdBy: MemoryEdgeCreatedBy;
+  evidenceIds: string[];
+  status: MemoryEdgeStatus;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateMemoryEdgeInput = Omit<
+  MemoryEdge,
+  "id" | "createdAt" | "updatedAt"
+> & {
+  id?: string;
+  confidence?: number;
+  evidenceIds?: string[];
+  status?: MemoryEdgeStatus;
+  reason?: string | null;
 };
 
 /**
@@ -176,6 +277,39 @@ export interface CaptureBundle {
   imagePaths: string[];
   stitchedImagePath?: string;
   retentionPolicy: "delete_immediately" | "1h" | "6h" | "today" | "3d" | "7d";
+}
+
+/**
+ * 批次 CaptureBundle（攒批 12 帧合并提交）
+ *
+ * 由 CaptureBatcher 攒批后产出，交 MemoryPipeline.processBatchCaptureBundle 处理。
+ * - frames：原始的 12 个单帧 CaptureBundle（保留帧级元数据，用于 normalizer 落 observation）
+ * - compressedImagePaths：每帧 resize 到 800px 宽 + JPEG q=25 的临时文件路径
+ *   由 CaptureBatcher.compressImages 生成，使用后由调用方负责清理
+ */
+export interface BatchCaptureBundle {
+  /** 批次唯一 id */
+  batchId: string;
+  /** 12 个单帧 bundle（按时间顺序） */
+  frames: CaptureBundle[];
+  /** 首帧捕获时间（UTC ISO 8601 with Z） */
+  capturedAtStart: string;
+  /** 末帧捕获时间（UTC ISO 8601 with Z） */
+  capturedAtEnd: string;
+  /** 时区（与单帧 bundle 一致） */
+  timezone: string;
+  /** 主帧 appName（取中位帧） */
+  appName: string;
+  /** 主帧 windowTitle（取中位帧） */
+  windowTitle: string;
+  /** 批次触发原因 */
+  captureReason: CaptureBundle["captureReason"] | "batch_flush";
+  /** 12 张原始截图路径（扁平化 frames[].imagePaths） */
+  imagePaths: string[];
+  /** 12 张压缩后的 JPEG q=25 临时文件路径 */
+  compressedImagePaths: string[];
+  /** 截图保留策略（取首帧） */
+  retentionPolicy: ScreenshotRetentionPolicy;
 }
 
 /**

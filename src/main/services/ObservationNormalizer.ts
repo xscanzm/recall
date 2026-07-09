@@ -22,7 +22,8 @@
 
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
 import type { Observation, ObserverOutputV2 } from "../models/types";
-import type { CaptureBundle, ScreenshotRetentionPolicy } from "../models/types";
+import type { CaptureBundle, ScreenshotRetentionPolicy, BatchCaptureBundle } from "../models/types";
+import type { DebugEvent } from "../models/types";
 import { TEXT_LIMITS } from "../models/schemas";
 import type { PrivacyGuard } from "./PrivacyGuard";
 
@@ -38,6 +39,20 @@ export interface NormalizeResult {
   discardReason?: string;
   /** 清洗过程中产生的 warning */
   warnings: string[];
+}
+
+/**
+ * 批次 Normalizer 输出
+ */
+export interface BatchNormalizeResult {
+  /** 每帧 observation 落库后的真实 id（discarded 的帧为 null） */
+  observationIds: (string | null)[];
+  /** 每帧的清洗结果 */
+  results: NormalizeResult[];
+  /** 总 warning 数 */
+  totalWarnings: number;
+  /** 丢弃的帧数 */
+  discardedCount: number;
 }
 
 /**
@@ -78,6 +93,8 @@ export class ObservationNormalizer {
   normalize(input: {
     visionOutput: ObserverOutputV2;
     captureBundle: CaptureBundle;
+    debugEvents?: DebugEvent[];
+    frameIndex?: number;
   }): NormalizeResult {
     const warnings: string[] = [];
     const { visionOutput, captureBundle } = input;
@@ -91,6 +108,9 @@ export class ObservationNormalizer {
       if (this.privacyGuard) {
         const postCheck = this.privacyGuard.checkPostVision(visionOutput.sensitivity);
         if (!postCheck.allowed && postCheck.action === "delete_observation") {
+          if (input.debugEvents) {
+            input.debugEvents.push({ layer: "L0", action: "discard", reason: "high_sensitive_privacy_guard", frameIndex: input.frameIndex });
+          }
           return {
             observation: null,
             discarded: true,
@@ -100,6 +120,9 @@ export class ObservationNormalizer {
         }
       } else {
         // 没有 PrivacyGuard 时，保守地丢弃 high_sensitive 内容
+        if (input.debugEvents) {
+          input.debugEvents.push({ layer: "L0", action: "discard", reason: "high_sensitive_no_guard", frameIndex: input.frameIndex });
+        }
         return {
           observation: null,
           discarded: true,
@@ -148,6 +171,69 @@ export class ObservationNormalizer {
       observation,
       discarded: false,
       warnings,
+    };
+  }
+
+  /**
+   * 批次 normalize：循环 12 帧 observation，逐个落库
+   *
+   * 与单帧 normalize() 的差异：
+   * - 输入是 observations 数组（来自批次 ObserverExtractor 返回）
+   * - 每帧 observation 对应 batchBundle.frames[i] 的单帧 CaptureBundle
+   * - 返回 observationIds 数组（供 MemoryPipeline 回填 facts.sourceObservationIds）
+   * - 单帧失败不阻断其他帧
+   *
+   * @param input.observations 模型返回的 12 帧 observation
+   * @param input.batchBundle 批次 CaptureBundle
+   */
+  normalizeBatch(input: {
+    observations: ObserverOutputV2[];
+    batchBundle: BatchCaptureBundle;
+    debugEvents?: DebugEvent[];
+  }): BatchNormalizeResult {
+    const { observations, batchBundle } = input;
+    const results: NormalizeResult[] = [];
+    const observationIds: (string | null)[] = [];
+    let totalWarnings = 0;
+    let discardedCount = 0;
+
+    for (let i = 0; i < observations.length; i++) {
+      const obs = observations[i];
+      // 用对应单帧 bundle 落 observation（帧级元数据：captureId/capturedAt/appName/windowTitle）
+      // 如果 observations 数量多于 frames（模型多输出了），用最后一帧兜底
+      const frameBundle = batchBundle.frames[i] ?? batchBundle.frames[batchBundle.frames.length - 1];
+
+      try {
+        const result = this.normalize({
+          visionOutput: obs,
+          captureBundle: frameBundle,
+          debugEvents: input.debugEvents,
+          frameIndex: i,
+        });
+        results.push(result);
+        observationIds.push(result.observation?.id ?? null);
+        totalWarnings += result.warnings.length;
+        if (result.discarded) {
+          discardedCount++;
+        }
+      } catch {
+        // 单帧 normalize 失败不阻断其他帧
+        results.push({
+          observation: null,
+          discarded: true,
+          discardReason: `帧 ${i + 1} normalize 异常`,
+          warnings: [],
+        });
+        observationIds.push(null);
+        discardedCount++;
+      }
+    }
+
+    return {
+      observationIds,
+      results,
+      totalWarnings,
+      discardedCount,
     };
   }
 

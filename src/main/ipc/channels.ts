@@ -69,7 +69,10 @@ export type IpcChannel =
   | "workReport:get"
   | "workReport:saveSelection"
   | "unfinishedThreads:list"
-  | "unfinishedThreads:updateStatus";
+  | "unfinishedThreads:updateStatus"
+  | "debug:listJobs"
+  | "debug:getJobDetails"
+  | "debug:getRelatedRecords";
 
 /**
  * 主进程主动推送到 renderer 的 channel（不是 invoke 通道，是 send 通道）
@@ -132,6 +135,9 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "workReport:saveSelection",
   "unfinishedThreads:list",
   "unfinishedThreads:updateStatus",
+  "debug:listJobs",
+  "debug:getJobDetails",
+  "debug:getRelatedRecords",
 ] as const;
 
 /**

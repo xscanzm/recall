@@ -25,7 +25,8 @@ export type PageKey =
   | "memory"
   | "people"
   | "settings"
-  | "trust";
+  | "trust"
+  | "debug";
 
 // ============================================================================
 // Renderer 端领域类型（与 main/models/types.ts 结构保持一致）
@@ -347,6 +348,66 @@ export interface AppSettingsState {
     time: string;
   };
   onboardingCompleted: boolean;
+  debug: {
+    enabled: boolean;
+    verboseModelIO: boolean;
+  };
+}
+
+/**
+ * DebugPage：model_jobs 列表项摘要（与 main ModelJob 对齐，renderer 端镜像）
+ */
+export interface DebugJobSummary {
+  id: string;
+  type: string;
+  status: string;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  /** 丢弃事件数量（从 debugEventsJson 解析，null/无事件为 0） */
+  debugEventCount: number;
+}
+
+/**
+ * DebugPage：model_job 详情（含完整 rawInputJson / debugEventsJson / outputJson）
+ */
+export interface DebugJobDetails {
+  id: string;
+  type: string;
+  status: string;
+  inputJson: string;
+  outputJson: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  attempts: number;
+  createdAt: string;
+  updatedAt: string;
+  rawInputJson: string | null;
+  debugEventsJson: string | null;
+}
+
+/**
+ * DebugPage：关联落库记录
+ */
+export interface DebugRelatedRecords {
+  observations: unknown[];
+  facts: unknown[];
+  scenes: unknown[];
+  proactiveItems: unknown[];
+}
+
+/**
+ * Debug 丢弃事件（与 main DebugEvent 对齐）
+ */
+export interface DebugEventItem {
+  layer: "L0" | "L1" | "L2" | "L3" | "proactive";
+  action: "discard" | "skip" | "dedup" | "downgrade" | "fallback";
+  reason: string;
+  itemId?: string;
+  frameIndex?: number;
+  targetType?: string;
 }
 
 /**
@@ -533,6 +594,21 @@ interface AppState {
   reportsHistoryDateTo: string;
   /** 历史报告列表过滤：项目 ID（"all" 或具体 projectId） */
   reportsHistoryProjectFilter: string;
+
+  // 调试模式：DebugPage 数据
+  debugJobs: DebugJobSummary[] | null;
+  debugJobsLoading: boolean;
+  debugJobsError: string | null;
+  debugJobDetails: DebugJobDetails | null;
+  debugJobDetailsLoading: boolean;
+  debugRelatedRecords: DebugRelatedRecords | null;
+  debugRelatedRecordsLoading: boolean;
+  debugFilters: {
+    startAt: string;
+    endAt: string;
+    jobType: string;
+    status: string;
+  };
 
   // 动作
   setAppStatus: (status: AppStatus) => void;
@@ -759,6 +835,13 @@ interface AppState {
   closeConfirmDialog: () => void;
   /** 执行确认对话框的确认动作 */
   executeConfirm: () => void;
+
+  // 调试模式 actions
+  loadDebugJobs: () => Promise<void>;
+  loadDebugJobDetails: (jobId: string) => Promise<void>;
+  loadDebugRelatedRecords: (createdAt: string) => Promise<void>;
+  setDebugFilters: (patch: Partial<{ startAt: string; endAt: string; jobType: string; status: string }>) => void;
+  clearDebugState: () => void;
 }
 
 /**
@@ -916,6 +999,21 @@ export const useAppStore = create<AppState>((set, get) => ({
   reportsHistoryDateFrom: "",
   reportsHistoryDateTo: "",
   reportsHistoryProjectFilter: "all",
+
+  // 调试模式初始状态
+  debugJobs: null,
+  debugJobsLoading: false,
+  debugJobsError: null,
+  debugJobDetails: null,
+  debugJobDetailsLoading: false,
+  debugRelatedRecords: null,
+  debugRelatedRecordsLoading: false,
+  debugFilters: {
+    startAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+    endAt: new Date().toISOString(),
+    jobType: "all",
+    status: "all",
+  },
 
   // 012/013 新增：合并建议 + 别名映射
   mergeSuggestions: [],
@@ -1459,6 +1557,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             dailyReport: patch.dailyReport ?? current.dailyReport,
             onboardingCompleted:
               patch.onboardingCompleted ?? current.onboardingCompleted,
+            debug: patch.debug ?? current.debug,
           },
         });
       }
@@ -2176,5 +2275,106 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (action) {
       action();
     }
+  },
+
+  // -------------------- debug actions --------------------
+  loadDebugJobs: async () => {
+    const filters = get().debugFilters;
+    set({ debugJobsLoading: true, debugJobsError: null });
+    try {
+      const result = await getIpc().debug.listJobs({
+        startAt: filters.startAt,
+        endAt: filters.endAt,
+        limit: 500,
+      });
+      if (result.ok) {
+        const jobs: DebugJobSummary[] = (result.data as Array<Record<string, unknown>>).map((j) => {
+          let debugEventCount = 0;
+          if (typeof j.debugEventsJson === "string" && j.debugEventsJson) {
+            try {
+              const events = JSON.parse(j.debugEventsJson);
+              if (Array.isArray(events)) debugEventCount = events.length;
+            } catch {
+              // ignore parse error
+            }
+          }
+          return {
+            id: String(j.id),
+            type: String(j.type),
+            status: String(j.status),
+            attempts: Number(j.attempts ?? 0),
+            createdAt: String(j.createdAt ?? j.created_at ?? ""),
+            updatedAt: String(j.updatedAt ?? j.updated_at ?? ""),
+            errorCode: (j.errorCode ?? j.error_code ?? null) as string | null,
+            errorMessage: (j.errorMessage ?? j.error_message ?? null) as string | null,
+            debugEventCount,
+          };
+        });
+        set({ debugJobs: jobs, debugJobsLoading: false });
+      } else {
+        set({ debugJobsLoading: false, debugJobsError: result.error });
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ debugJobsLoading: false, debugJobsError: message });
+    }
+  },
+
+  loadDebugJobDetails: async (jobId: string) => {
+    set({ debugJobDetailsLoading: true, debugJobDetails: null });
+    try {
+      const result = await getIpc().debug.getJobDetails(jobId);
+      if (result.ok && result.data) {
+        const j = result.data as Record<string, unknown>;
+        const details: DebugJobDetails = {
+          id: String(j.id),
+          type: String(j.type),
+          status: String(j.status),
+          inputJson: String(j.inputJson ?? j.input_json ?? ""),
+          outputJson: (j.outputJson ?? j.output_json ?? null) as string | null,
+          errorCode: (j.errorCode ?? j.error_code ?? null) as string | null,
+          errorMessage: (j.errorMessage ?? j.error_message ?? null) as string | null,
+          attempts: Number(j.attempts ?? 0),
+          createdAt: String(j.createdAt ?? j.created_at ?? ""),
+          updatedAt: String(j.updatedAt ?? j.updated_at ?? ""),
+          rawInputJson: (j.rawInputJson ?? j.raw_input_json ?? null) as string | null,
+          debugEventsJson: (j.debugEventsJson ?? j.debug_events_json ?? null) as string | null,
+        };
+        set({ debugJobDetails: details, debugJobDetailsLoading: false });
+      } else {
+        set({ debugJobDetailsLoading: false, debugJobDetails: null });
+      }
+    } catch (err) {
+      set({ debugJobDetailsLoading: false, debugJobDetails: null });
+      console.error("loadDebugJobDetails failed:", err);
+    }
+  },
+
+  loadDebugRelatedRecords: async (createdAt: string) => {
+    set({ debugRelatedRecordsLoading: true, debugRelatedRecords: null });
+    try {
+      const result = await getIpc().debug.getRelatedRecords({ createdAt, windowSeconds: 60 });
+      if (result.ok) {
+        set({ debugRelatedRecords: result.data as DebugRelatedRecords, debugRelatedRecordsLoading: false });
+      } else {
+        set({ debugRelatedRecordsLoading: false, debugRelatedRecords: null });
+      }
+    } catch (err) {
+      set({ debugRelatedRecordsLoading: false, debugRelatedRecords: null });
+      console.error("loadDebugRelatedRecords failed:", err);
+    }
+  },
+
+  setDebugFilters: (patch) => {
+    set({ debugFilters: { ...get().debugFilters, ...patch } });
+  },
+
+  clearDebugState: () => {
+    set({
+      debugJobs: null,
+      debugJobsError: null,
+      debugJobDetails: null,
+      debugRelatedRecords: null,
+    });
   },
 }));

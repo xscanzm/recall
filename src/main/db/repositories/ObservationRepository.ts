@@ -145,6 +145,19 @@ export class ObservationRepository {
   }
 
   /**
+   * 按时间范围查询（debug 页用，含全部记录，不分页）
+   * - 时间字段：captured_at
+   * - 不做软删除过滤（observations 表无 deleted_at）
+   */
+  listByTimeRange(startAt: string, endAt: string): Observation[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM observations WHERE captured_at >= ? AND captured_at <= ? ORDER BY captured_at DESC"
+    );
+    const rows = stmt.all(startAt, endAt) as ObservationRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
    * 查询今日 observation
    *
    * 注意：使用本地日期与时区偏移构造起始时间，避免 UTC 与本地时区差异

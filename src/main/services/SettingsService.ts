@@ -79,10 +79,29 @@ export class SettingsService {
       schedule: patch.schedule ?? this.cache.schedule,
       onboardingCompleted:
         patch.onboardingCompleted ?? this.cache.onboardingCompleted,
+      debug: patch.debug ?? this.cache.debug,
     };
 
     this.saveToFile(this.cache);
     return this.cache;
+  }
+
+  /**
+   * 调试模式是否开启（总开关）
+   * 控制Logger devDebug、各层 debugEvents 收集、DebugPage 入口可见性
+   */
+  isDebugMode(): boolean {
+    if (!this.initialized) this.init();
+    return this.cache.debug?.enabled ?? false;
+  }
+
+  /**
+   * 是否记录完整模型输入输出到 model_jobs.raw_input_json
+   * 需 isDebugMode() 同时为 true 才生效（开销较大，单独控制）
+   */
+  isVerboseModelIO(): boolean {
+    if (!this.initialized) this.init();
+    return this.cache.debug?.enabled === true && this.cache.debug?.verboseModelIO === true;
   }
 
   /**
@@ -252,6 +271,7 @@ export class SettingsService {
         schedule: { ...DEFAULT_SETTINGS.schedule, ...parsed.schedule },
         onboardingCompleted:
           parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,
+        debug: { ...DEFAULT_SETTINGS.debug, ...(parsed.debug ?? {}) },
       };
     } catch {
       // 文件损坏时回退到默认值

@@ -40,6 +40,7 @@ import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 export type ModelJobType =
   // 新合并类型
   | "observer_extractor"
+  | "observer_extractor_batch"
   | "linker_scene_judge"
   | "personal_review"
   // 兼容旧类型（迁移完成后可删除）

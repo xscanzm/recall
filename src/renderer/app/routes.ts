@@ -14,15 +14,16 @@ export interface RouteMeta {
  * 全部页面路由（与 store.ts 的 PageKey 保持一致）
  */
 export const ROUTES: RouteMeta[] = [
-  { key: "today", label: "今日", description: "今日概览、当前工作主线、应用内提醒" },
-  { key: "reminders", label: "提醒", description: "应用内提醒列表，按类型分组" },
-  { key: "tasks", label: "任务", description: "任务按状态分组：进行中、未完成、已完成等" },
-  { key: "projects", label: "项目", description: "项目卡片与详情" },
-  { key: "reports", label: "报告", description: "日报、历史日报、周报" },
-  { key: "memory", label: "记忆库", description: "搜索线索、工作片段、任务、项目、决策、报告" },
-  { key: "people", label: "人物", description: "人物列表与详情" },
+  { key: "today", label: "今日", description: "当天片段流与我的复盘" },
+  { key: "tasks", label: "待收尾", description: "需要继续、确认、跟进或可能遗忘的事项" },
+  { key: "projects", label: "项目", description: "项目记忆、最近片段、关键记忆与待收尾" },
+  { key: "people", label: "人物", description: "人物上下文、最近互动、相关项目与提到过的事" },
+  { key: "memory", label: "记忆库", description: "搜索片段、记忆原子、长期对象和报告" },
+  { key: "reports", label: "报告", description: "日报、周报、月报等对外表达" },
   { key: "settings", label: "设置", description: "模型配置、观察设置、截图保留、通知、黑名单" },
-  { key: "trust", label: "信任中心", description: "Recall 看到什么、保存什么、如何删除" },
+  { key: "reminders", label: "提醒", description: "旧提醒页，后续并入待收尾" },
+  { key: "trust", label: "信任中心", description: "旧信任中心，后续并入设置" },
+  { key: "debug", label: "调试", description: "开发者调试：模型调用记录、丢弃事件、落库对比" },
 ];
 
 /**

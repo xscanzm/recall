@@ -20,6 +20,7 @@ import { MemorySearchPage } from "./pages/MemorySearchPage";
 import { PeoplePage } from "./pages/PeoplePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TrustCenterPage } from "./pages/TrustCenterPage";
+import { DebugPage } from "./pages/DebugPage";
 import { useAppStore, type AppSettingsState } from "./state/store";
 import { getIpc } from "./state/ipc";
 
@@ -178,6 +179,8 @@ function renderPage(page: string) {
       return <SettingsPage />;
     case "trust":
       return <TrustCenterPage />;
+    case "debug":
+      return <DebugPage />;
     default:
       return <TodayPage />;
   }

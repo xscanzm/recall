@@ -1,0 +1,161 @@
+// src/main/db/repositories/MemoryEdgeRepository.ts
+// 记忆关系层（Edges）数据访问
+//
+// 用途：
+// - 连接 L0 Moment / L1 Episode / L2 Atom / L3 Object / Report
+// - 记录关系来源：system / model / user
+// - 支持后续重建、纠错、来源追溯
+
+import type { DB } from "../Database";
+import type { MemoryEdge, CreateMemoryEdgeInput } from "../../models/types";
+
+interface MemoryEdgeRow {
+  id: string;
+  from_type: string;
+  from_id: string;
+  to_type: string;
+  to_id: string;
+  relation_type: string;
+  confidence: number;
+  created_by: string;
+  evidence_ids_json: string;
+  status: string;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export class MemoryEdgeRepository {
+  constructor(private db: DB) {}
+
+  create(input: CreateMemoryEdgeInput): MemoryEdge {
+    const id = input.id ?? generateId("edge");
+    const now = new Date().toISOString();
+
+    this.db
+      .prepare(
+        `INSERT INTO memory_edges (
+          id, from_type, from_id, to_type, to_id, relation_type,
+          confidence, created_by, evidence_ids_json, status, reason,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.fromType,
+        input.fromId,
+        input.toType,
+        input.toId,
+        input.relationType,
+        input.confidence ?? 1,
+        input.createdBy,
+        JSON.stringify(input.evidenceIds ?? []),
+        input.status ?? "active",
+        input.reason ?? null,
+        now,
+        now
+      );
+
+    return this.getById(id)!;
+  }
+
+  getById(id: string): MemoryEdge | null {
+    const row = this.db
+      .prepare("SELECT * FROM memory_edges WHERE id = ?")
+      .get(id) as MemoryEdgeRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  listFrom(fromType: string, fromId: string, opts: { status?: string; limit?: number } = {}): MemoryEdge[] {
+    const limit = opts.limit ?? 100;
+    if (opts.status) {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM memory_edges
+           WHERE from_type = ? AND from_id = ? AND status = ?
+           ORDER BY created_at DESC LIMIT ?`
+        )
+        .all(fromType, fromId, opts.status, limit) as MemoryEdgeRow[];
+      return rows.map(mapRow);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_edges
+         WHERE from_type = ? AND from_id = ?
+         ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(fromType, fromId, limit) as MemoryEdgeRow[];
+    return rows.map(mapRow);
+  }
+
+  listTo(toType: string, toId: string, opts: { status?: string; limit?: number } = {}): MemoryEdge[] {
+    const limit = opts.limit ?? 100;
+    if (opts.status) {
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM memory_edges
+           WHERE to_type = ? AND to_id = ? AND status = ?
+           ORDER BY created_at DESC LIMIT ?`
+        )
+        .all(toType, toId, opts.status, limit) as MemoryEdgeRow[];
+      return rows.map(mapRow);
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM memory_edges
+         WHERE to_type = ? AND to_id = ?
+         ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(toType, toId, limit) as MemoryEdgeRow[];
+    return rows.map(mapRow);
+  }
+
+  updateStatus(id: string, status: MemoryEdge["status"], reason?: string | null): boolean {
+    const now = new Date().toISOString();
+    const result = this.db
+      .prepare(
+        `UPDATE memory_edges
+         SET status = ?, reason = COALESCE(?, reason), updated_at = ?
+         WHERE id = ?`
+      )
+      .run(status, reason ?? null, now, id);
+    return result.changes > 0;
+  }
+}
+
+export function createMemoryEdgeRepository(db: DB): MemoryEdgeRepository {
+  return new MemoryEdgeRepository(db);
+}
+
+function mapRow(row: MemoryEdgeRow): MemoryEdge {
+  return {
+    id: row.id,
+    fromType: row.from_type as MemoryEdge["fromType"],
+    fromId: row.from_id,
+    toType: row.to_type as MemoryEdge["toType"],
+    toId: row.to_id,
+    relationType: row.relation_type as MemoryEdge["relationType"],
+    confidence: row.confidence,
+    createdBy: row.created_by as MemoryEdge["createdBy"],
+    evidenceIds: safeParseArray<string>(row.evidence_ids_json),
+    status: row.status as MemoryEdge["status"],
+    reason: row.reason,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function safeParseArray<T = unknown>(json: string): T[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function generateId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}

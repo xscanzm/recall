@@ -121,6 +121,19 @@ export class SceneRepository {
   }
 
   /**
+   * 按时间范围查询（debug 页用，含已删除记录，不分页）
+   * - 时间字段：start_at
+   * - 不做软删除过滤（debug 查询需要看到所有记录包括已删除的）
+   */
+  listByTimeRange(startAt: string, endAt: string): Scene[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM scenes WHERE start_at >= ? AND start_at <= ? ORDER BY start_at DESC"
+    );
+    const rows = stmt.all(startAt, endAt) as SceneRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
    * 按 project_id 查询
    */
   listByProjectId(

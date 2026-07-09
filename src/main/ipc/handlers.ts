@@ -17,6 +17,8 @@ import { z } from "zod";
 import {
   AppStatusSchema,
   DataExportInputSchema,
+  DebugListJobsInputSchema,
+  DebugRelatedRecordsInputSchema,
   ForgetRecentInputSchema,
   MemoryAskInputSchema,
   MemoryAskOutputSchema,
@@ -64,6 +66,7 @@ import type { ReportSelectionRepository } from "../db/repositories/ReportSelecti
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 // 012 新增：ObjectMerge 审计
 import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
+import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 import type { Fact, Scene } from "../models/types";
 import {
   cascadeMarkAfterFactSceneDelete,
@@ -72,6 +75,7 @@ import {
   hardDeleteByType,
   mergeObjects,
 } from "../services/cascadeMark";
+import { logger } from "../services/Logger";
 
 /**
  * IpcDeps：handler 所需的 main 进程依赖
@@ -121,6 +125,8 @@ export interface IpcDeps {
   unfinishedThreadRepo?: UnfinishedThreadRepository;
   // 012 新增：ObjectMerge 审计 Repository
   objectMergeRepo?: ObjectMergeRepository;
+  // 调试模式：model_jobs 查询（DebugPage 用）
+  modelJobRepo?: ModelJobRepository;
 }
 
 /**
@@ -194,6 +200,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       fail("schema_invalid", `settings:update 参数校验失败: ${parsed.error.message}`);
     }
     const updated = deps.settingsService.update(parsed.data as Partial<AppSettings>);
+    // 调试模式开关：保存后立即同步到 Logger（无需重启应用）
+    logger.setDevDebug(updated.debug?.enabled ?? false);
     return { ok: true, settings: updated };
   });
 
@@ -1661,6 +1669,77 @@ ${context}
     }
   );
 
+  // -------------------- debug --------------------
+  // 调试模式专用：3 个 handler 均强制校验 settingsService.isDebugMode()
+  // 关闭时返回 error，防止通过 IPC 绕过 UI 开关
+
+  ipcMain.handle("debug:listJobs", (_event, input: unknown) => {
+    if (!deps.settingsService.isDebugMode()) {
+      return { ok: false as const, error: "debug mode disabled", code: "debug_disabled" };
+    }
+    const parsed = DebugListJobsInputSchema.safeParse(input);
+    if (!parsed.success) {
+      return { ok: false as const, error: `参数校验失败: ${parsed.error.message}`, code: "schema_invalid" };
+    }
+    if (!deps.modelJobRepo) {
+      return { ok: false as const, error: "ModelJobRepository 未初始化", code: "not_ready" };
+    }
+    try {
+      const jobs = deps.modelJobRepo.listByTimeRange(
+        parsed.data.startAt,
+        parsed.data.endAt,
+        parsed.data.limit ?? 200
+      );
+      return { ok: true as const, data: jobs };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  ipcMain.handle("debug:getJobDetails", (_event, input: unknown) => {
+    if (!deps.settingsService.isDebugMode()) {
+      return { ok: false as const, error: "debug mode disabled", code: "debug_disabled" };
+    }
+    const parsed = z.object({ jobId: z.string() }).safeParse(input);
+    if (!parsed.success) {
+      return { ok: false as const, error: `参数校验失败: ${parsed.error.message}`, code: "schema_invalid" };
+    }
+    if (!deps.modelJobRepo) {
+      return { ok: false as const, error: "ModelJobRepository 未初始化", code: "not_ready" };
+    }
+    try {
+      const job = deps.modelJobRepo.getById(parsed.data.jobId);
+      return { ok: true as const, data: job };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
+  ipcMain.handle("debug:getRelatedRecords", (_event, input: unknown) => {
+    if (!deps.settingsService.isDebugMode()) {
+      return { ok: false as const, error: "debug mode disabled", code: "debug_disabled" };
+    }
+    const parsed = DebugRelatedRecordsInputSchema.safeParse(input);
+    if (!parsed.success) {
+      return { ok: false as const, error: `参数校验失败: ${parsed.error.message}`, code: "schema_invalid" };
+    }
+    const { createdAt, windowSeconds = 30 } = parsed.data;
+    const start = new Date(Date.parse(createdAt) - windowSeconds * 1000).toISOString();
+    const end = new Date(Date.parse(createdAt) + windowSeconds * 1000).toISOString();
+    try {
+      const observations = deps.observationRepo?.listByTimeRange(start, end) ?? [];
+      const facts = deps.factRepo?.listByTimeRange(start, end) ?? [];
+      const scenes = deps.sceneRepo?.listByTimeRange(start, end) ?? [];
+      const proactiveItems = deps.proactiveItemRepo?.listByTimeRange(start, end) ?? [];
+      return { ok: true as const, data: { observations, facts, scenes, proactiveItems } };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false as const, error: message, code: "unknown_error" };
+    }
+  });
+
   // -------------------- 白名单校验 --------------------
   // 额外安全网：捕获未注册的 channel 调用（理论上不会发生，因为 ipcMain.handle 已限定）
   // 这里仅作为开发期检查：断言所有 channel 都已注册
@@ -1723,6 +1802,10 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "workReport:saveSelection",
   "unfinishedThreads:list",
   "unfinishedThreads:updateStatus",
+  // 调试模式
+  "debug:listJobs",
+  "debug:getJobDetails",
+  "debug:getRelatedRecords",
 ] as const;
 
 // ============================================================================

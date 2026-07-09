@@ -360,6 +360,19 @@ export class FactRepository {
   }
 
   /**
+   * 按时间范围查询（debug 页用，含已删除记录，不分页）
+   * - 时间字段：created_at
+   * - 不做软删除过滤（debug 查询需要看到所有记录包括已删除的）
+   */
+  listByTimeRange(startAt: string, endAt: string): Fact[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM facts WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC"
+    );
+    const rows = stmt.all(startAt, endAt) as FactRow[];
+    return rows.map(mapRow);
+  }
+
+  /**
    * 更新 fact
    */
   update(id: string, patch: UpdateFactInput): Fact | null {

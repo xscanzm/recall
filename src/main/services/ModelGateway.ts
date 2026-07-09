@@ -43,6 +43,7 @@ import {
   JSON_REPAIR_PROMPT_TEMPLATE,
 } from "../models/prompts";
 import { zodToDescription } from "./zodToDescription";
+import { logger } from "./Logger";
 
 /**
  * 模型种类
@@ -98,6 +99,17 @@ export interface ModelCallInput {
   temperature?: number;
   /** max tokens（覆盖配置 options） */
   maxTokens?: number;
+  /**
+   * reasoning effort（仅部分模型支持，如 sensenova-6.7-flash-lite）
+   * - "none"：禁用推理模式，避免 content 为空（阶段一验证此参数为必须）
+   * - 其他值由调用方按需传入
+   */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
+  /**
+   * 单次调用超时覆盖（毫秒）。未指定时使用实例默认超时（120s）。
+   * 批次模式（12 帧多图）需要 180s，普通模式保持 120s。
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -398,6 +410,12 @@ export class ModelGateway {
       imagePaths: input.imagePaths,
     });
 
+    // 调试模式：记录完整 prompt 文本上下文（不含图片 base64），供 DebugPage 查看
+    const rawInputJsonForDebug =
+      logger.isDevDebugEnabled() && this.settingsService.isVerboseModelIO()
+        ? buildRawInputJsonForDebug(messages)
+        : undefined;
+
     const requestBody: Record<string, unknown> = {
       model: config.model,
       messages,
@@ -405,6 +423,10 @@ export class ModelGateway {
       max_tokens: maxTokens,
       response_format: { type: "json_object" },
     };
+    // 透传 reasoning_effort（阶段一验证：sensenova-6.7-flash-lite 必须设为 "none" 否则 content 为空）
+    if (input.reasoningEffort) {
+      requestBody.reasoning_effort = input.reasoningEffort;
+    }
     // 合并 extra options（除 temperature/max_tokens 外的字段）
     for (const [k, v] of Object.entries(extraOptions)) {
       if (k !== "temperature" && k !== "max_tokens" && !requestBody.hasOwnProperty(k)) {
@@ -421,7 +443,7 @@ export class ModelGateway {
 
     // 6. 第一次调用
     attempts++;
-    const firstResult = await this.sendRequest(url, apiKey, requestBody);
+    const firstResult = await this.sendRequest(url, apiKey, requestBody, input.timeoutMs);
     if (firstResult.ok) {
       rawOutput = firstResult.content ?? "";
       hasRawOutput = true;
@@ -441,7 +463,8 @@ export class ModelGateway {
               "safety_blocked",
               safetyCheck.reason ?? "high sensitive content",
               attempts,
-              rawOutput
+              rawOutput,
+              rawInputJsonForDebug
             );
             return {
               ok: false,
@@ -453,7 +476,7 @@ export class ModelGateway {
             };
           }
           // 成功
-          this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts);
+          this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
           return {
             ok: true,
             data: schemaResult.data,
@@ -513,7 +536,7 @@ export class ModelGateway {
                   usage,
                 };
               }
-              this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts);
+              this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
               return {
                 ok: true,
                 data: schemaResult2.data,
@@ -544,7 +567,8 @@ export class ModelGateway {
       lastErrorCode ?? "unknown_error",
       lastErrorMessage ?? "未知错误",
       attempts,
-      hasRawOutput ? rawOutput : null
+      hasRawOutput ? rawOutput : null,
+      rawInputJsonForDebug
     );
 
     return {
@@ -618,7 +642,8 @@ export class ModelGateway {
   private async sendRequest(
     url: string,
     apiKey: string,
-    requestBody: Record<string, unknown>
+    requestBody: Record<string, unknown>,
+    timeoutMsOverride?: number
   ): Promise<{
     ok: boolean;
     content?: string;
@@ -631,7 +656,7 @@ export class ModelGateway {
         method: "POST",
         headers: buildHeaders(apiKey),
         body: JSON.stringify(requestBody),
-      });
+      }, timeoutMsOverride);
 
       if (!response.ok) {
         const errInfo = await extractErrorBody(response);
@@ -675,10 +700,11 @@ export class ModelGateway {
    */
   private async fetchWithTimeout(
     url: string,
-    init: RequestInit
+    init: RequestInit,
+    overrideMs?: number
   ): Promise<Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timer = setTimeout(() => controller.abort(), overrideMs ?? this.timeoutMs);
     try {
       const response = await fetch(url, {
         ...init,
@@ -775,6 +801,52 @@ function buildMessages(params: {
     { role: "system", content: systemContent },
     { role: "user", content: params.userPrompt },
   ];
+}
+
+/**
+ * 构造调试用的 raw_input_json（完整 prompt 文本上下文，不含图片 base64）
+ *
+ * 仅在 devDebug + verboseModelIO 双开时调用。
+ * - 图片 base64 替换为 `[image: NNN chars]` 占位（避免日志爆炸）
+ * - 超 64KB 截断为 `[TRUNCATED:NNN chars]` 前缀 + 前 64KB
+ * - 失败时返回 undefined（不阻断主流程）
+ */
+function buildRawInputJsonForDebug(
+  messages: Array<Record<string, unknown>>
+): string | undefined {
+  try {
+    const summary = messages.map((m) => {
+      const content = m.content;
+      if (typeof content === "string") {
+        return { role: m.role, content };
+      }
+      if (Array.isArray(content)) {
+        return {
+          role: m.role,
+          content: (content as Array<Record<string, unknown>>).map((part) => {
+            if (part.type === "image_url" && part.image_url) {
+              const url =
+                ((part.image_url as { url?: string }).url) ?? "";
+              return {
+                type: "image_url",
+                image_url: { url: `[image: ${url.length} chars]` },
+              };
+            }
+            return part;
+          }),
+        };
+      }
+      return { role: m.role, content: "[unknown content type]" };
+    });
+    let json = JSON.stringify(summary);
+    const MAX = 64 * 1024;
+    if (json.length > MAX) {
+      json = `[TRUNCATED:${json.length} chars]` + json.slice(0, MAX);
+    }
+    return json;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

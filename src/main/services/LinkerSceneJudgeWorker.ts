@@ -27,7 +27,7 @@
 
 import type { ModelGateway } from "./ModelGateway";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
-import type { Fact, Scene, ProactiveItem, Task } from "../models/types";
+import type { Fact, Scene, ProactiveItem, Task, DebugEvent } from "../models/types";
 import type { LinkerSceneJudgeOutput } from "../models/schemas";
 import { LinkerSceneJudgeOutputSchema } from "../models/schemas";
 import { LINKER_SCENE_JUDGE_PROMPT_TEMPLATE } from "../models/prompts";
@@ -206,8 +206,9 @@ export class LinkerSceneJudgeWorker {
     captureId: string;
     multimodalModelConfigId: string;
     shouldTriggerSceneBuilder: boolean;
+    debugEvents?: DebugEvent[];
   }): Promise<LinkerSceneJudgeResult> {
-    const { newFacts, captureId, multimodalModelConfigId, shouldTriggerSceneBuilder } = input;
+    const { newFacts, captureId, multimodalModelConfigId, shouldTriggerSceneBuilder, debugEvents } = input;
 
     // 1. 空 facts 短路返回（无需调用模型）
     if (newFacts.length === 0) {
@@ -365,16 +366,24 @@ export class LinkerSceneJudgeWorker {
     const processedLinkedFacts = this.processLinks(output.linkedFacts);
 
     // 10b. 处理 newObjects：创建新 L3 MemoryObject（含硬性去重 fallback）
-    const processedNewObjects = this.processNewObjects(output.newObjects, captureId);
+    const processedNewObjects = this.processNewObjects(output.newObjects, captureId, debugEvents);
 
     // 10c. 处理 mergedObjects：写入 proactive_items 表作为 merge_suggestion
-    const processedMergedObjects = this.processMergeSuggestions(output.mergedObjects);
+    const processedMergedObjects = this.processMergeSuggestions(output.mergedObjects, debugEvents);
 
     // 10d. 条件写入 scenes：当 shouldTriggerSceneBuilder=true 时（空数组则无写入）
-    const scenes = shouldTriggerSceneBuilder ? this.writeScenes(output.scenes) : [];
+    let scenes: Scene[];
+    if (shouldTriggerSceneBuilder) {
+      scenes = this.writeScenes(output.scenes);
+    } else {
+      if (debugEvents && output.scenes.length > 0) {
+        debugEvents.push({ layer: "L2", action: "skip", reason: "scene_builder_not_triggered" });
+      }
+      scenes = [];
+    }
 
     // 10e. 写入 proactive_items 表（priorityThreshold 过滤 + surface 降级）
-    const proactiveItems = this.writeProactiveItems(output.proactiveItems, reminderPolicy);
+    const proactiveItems = this.writeProactiveItems(output.proactiveItems, reminderPolicy, debugEvents);
 
     // 10f. 写入 unfinished_threads 表（若 repo 可用，upsertMany）
     const unfinishedThreads = this.writeUnfinishedThreads(
@@ -651,12 +660,16 @@ export class LinkerSceneJudgeWorker {
    */
   private processNewObjects(
     newObjects: LinkerSceneJudgeOutput["newObjects"],
-    _captureId?: string
+    _captureId: string | undefined,
+    debugEvents?: DebugEvent[]
   ): LinkerSceneJudgeOutput["newObjects"] {
     const processed: LinkerSceneJudgeOutput["newObjects"] = [];
     for (const newObj of newObjects) {
       // MVP 阶段不支持 knowledge 对象创建（无对应存储表），过滤掉该类型建议
       if (newObj.objectType === "knowledge") {
+        if (debugEvents) {
+          debugEvents.push({ layer: "L3", action: "skip", reason: "knowledge_object_not_supported", targetType: "knowledge" });
+        }
         logger.info({
           jobType: "linker_scene_judge",
           message: `[LinkerSceneJudgeWorker] 跳过 knowledge 对象创建建议（MVP 不支持）: ${newObj.title}`,
@@ -664,7 +677,7 @@ export class LinkerSceneJudgeWorker {
         continue;
       }
       try {
-        const created = this.createNewMemoryObject(newObj);
+        const created = this.createNewMemoryObject(newObj, debugEvents);
         if (created) {
           processed.push(newObj);
         }
@@ -684,7 +697,8 @@ export class LinkerSceneJudgeWorker {
    * - 去重查询失败时静默回退到创建新对象（不阻断流程）
    */
   private createNewMemoryObject(
-    newObj: LinkerSceneJudgeOutput["newObjects"][number]
+    newObj: LinkerSceneJudgeOutput["newObjects"][number],
+    debugEvents?: DebugEvent[]
   ): boolean {
     const sourceFactIds = newObj.sourceFactIds;
     const now = new Date().toISOString();
@@ -693,6 +707,9 @@ export class LinkerSceneJudgeWorker {
       case "project": {
         const existingId = this.dedupCheck("project", newObj.title);
         if (existingId) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: project", targetType: "project", itemId: existingId });
+          }
           logger.info({
             jobType: "linker_scene_judge",
             message: `dedup hit: project ${existingId}`,
@@ -713,6 +730,9 @@ export class LinkerSceneJudgeWorker {
       case "task": {
         const existingId = this.dedupCheck("task", newObj.title);
         if (existingId) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: task", targetType: "task", itemId: existingId });
+          }
           logger.info({
             jobType: "linker_scene_judge",
             message: `dedup hit: task ${existingId}`,
@@ -735,6 +755,9 @@ export class LinkerSceneJudgeWorker {
       case "person": {
         const existingId = this.dedupCheck("person", newObj.title);
         if (existingId) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: person", targetType: "person", itemId: existingId });
+          }
           logger.info({
             jobType: "linker_scene_judge",
             message: `dedup hit: person ${existingId}`,
@@ -755,6 +778,9 @@ export class LinkerSceneJudgeWorker {
       case "decision": {
         const existingId = this.dedupCheck("decision", newObj.title);
         if (existingId) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: decision", targetType: "decision", itemId: existingId });
+          }
           logger.info({
             jobType: "linker_scene_judge",
             message: `dedup hit: decision ${existingId}`,
@@ -890,12 +916,16 @@ export class LinkerSceneJudgeWorker {
    * - 去重：同 (objectType, fromId, toId) 已存在 status='new' 则跳过
    */
   private processMergeSuggestions(
-    mergeSuggestions: LinkerSceneJudgeOutput["mergedObjects"]
+    mergeSuggestions: LinkerSceneJudgeOutput["mergedObjects"],
+    debugEvents?: DebugEvent[]
   ): LinkerSceneJudgeOutput["mergedObjects"] {
     const processed: LinkerSceneJudgeOutput["mergedObjects"] = [];
     for (const suggestion of mergeSuggestions) {
       // MVP 阶段不支持 knowledge 对象合并（无对应存储表），过滤掉该类型建议
       if (suggestion.objectType === "knowledge") {
+        if (debugEvents) {
+          debugEvents.push({ layer: "L3", action: "skip", reason: "knowledge_merge_not_supported", targetType: "knowledge" });
+        }
         logger.info({
           jobType: "linker_scene_judge",
           message: `[LinkerSceneJudgeWorker] 跳过 knowledge 对象合并建议（MVP 不支持）: ${suggestion.fromId} -> ${suggestion.toId}`,
@@ -910,6 +940,9 @@ export class LinkerSceneJudgeWorker {
             suggestion.toId
           )
         ) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "L3", action: "dedup", reason: "merge_suggestion_already_exists", targetType: suggestion.objectType });
+          }
           logger.debug({
             jobType: "linker_scene_judge",
             message: `[LinkerSceneJudgeWorker] 合并建议已存在，跳过: ${suggestion.objectType} ${suggestion.fromId} -> ${suggestion.toId}`,
@@ -1301,13 +1334,17 @@ export class LinkerSceneJudgeWorker {
    */
   private writeProactiveItems(
     items: LinkerSceneJudgeOutput["proactiveItems"],
-    policy: ReminderPolicy
+    policy: ReminderPolicy,
+    debugEvents?: DebugEvent[]
   ): ProactiveItem[] {
     const written: ProactiveItem[] = [];
     for (const item of items) {
       try {
         // 优先级过滤（数值 [0,1]）
         if (item.priority < policy.priorityThreshold) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "proactive", action: "skip", reason: "priority_below_threshold" });
+          }
           continue;
         }
 
@@ -1317,9 +1354,15 @@ export class LinkerSceneJudgeWorker {
           surface === "desktop_notification_candidate" &&
           !policy.desktopNotifications
         ) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "proactive", action: "downgrade", reason: "surface_downgrade: desktop_to_in_app" });
+          }
           surface = "in_app";
         }
         if (surface === "in_app" && !policy.inAppReminders) {
+          if (debugEvents) {
+            debugEvents.push({ layer: "proactive", action: "downgrade", reason: "surface_downgrade: in_app_to_daily_report" });
+          }
           surface = "daily_report";
         }
         if (surface === "daily_report" && !policy.dailyReportCandidate) {

@@ -134,6 +134,11 @@ export function SettingsPage() {
   // 操作结果消息（忘掉最近 / 清空截图 / 清空所有）
   const [actionMessage, setActionMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
+  // 调试模式
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  const [debugVerboseModelIO, setDebugVerboseModelIO] = useState(false);
+  const [debugSaving, setDebugSaving] = useState(false);
+
   // 初始化加载
   useEffect(() => {
     void loadModelConfigs();
@@ -151,6 +156,8 @@ export function SettingsPage() {
       setDesktopNotifications(settings.notification.desktopNotifications);
       setDailyReportTime(settings.notification.dailyReportTime);
       setWeeklyReportTime(settings.notification.weeklyReportTime);
+      setDebugEnabled(settings.debug?.enabled ?? false);
+      setDebugVerboseModelIO(settings.debug?.verboseModelIO ?? false);
     }
   }, [settings]);
 
@@ -447,6 +454,20 @@ export function SettingsPage() {
         }
       },
     });
+  };
+
+  /**
+   * 保存调试模式设置
+   */
+  const handleSaveDebug = async () => {
+    setDebugSaving(true);
+    await updateSettings({
+      debug: {
+        enabled: debugEnabled,
+        verboseModelIO: debugVerboseModelIO,
+      },
+    });
+    setDebugSaving(false);
   };
 
   // 按模型类型分组
@@ -879,6 +900,68 @@ export function SettingsPage() {
             >
               {actionMessage.text}
             </p>
+          )}
+        </div>
+      </section>
+
+      {/* ============ Section 7: 调试 ============ */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">7. 调试</h3>
+          <p className="settings-section__hint">
+            调试模式供开发者排查数据流问题。开启后会额外记录模型输入输出与各层丢弃事件。
+          </p>
+        </header>
+        <div className="settings-section__content">
+          {settingsLoading ? (
+            <p className="settings-section__hint">加载中...</p>
+          ) : (
+            <>
+              <div className="settings-section__note">
+                <span className="settings-section__note-icon" aria-hidden>⚠️</span>
+                <span>开启调试模式会增加磁盘占用（记录完整模型输入输出）。普通用户无需开启。</span>
+              </div>
+
+              <label className="settings-section__toggle">
+                <input
+                  type="checkbox"
+                  checked={debugEnabled}
+                  onChange={(e) => setDebugEnabled(e.target.checked)}
+                />
+                <div className="settings-section__toggle-text">
+                  <span className="settings-section__toggle-label">开启调试模式</span>
+                  <p className="settings-section__hint">
+                    开启后主导航出现「调试」入口，各层开始收集丢弃事件。
+                  </p>
+                </div>
+              </label>
+
+              <label className="settings-section__toggle">
+                <input
+                  type="checkbox"
+                  checked={debugVerboseModelIO}
+                  onChange={(e) => setDebugVerboseModelIO(e.target.checked)}
+                  disabled={!debugEnabled}
+                />
+                <div className="settings-section__toggle-text">
+                  <span className="settings-section__toggle-label">记录完整模型输入输出</span>
+                  <p className="settings-section__hint">
+                    额外记录 prompt 上下文到 model_jobs.raw_input_json（开销较大）。需先开启调试模式。
+                  </p>
+                </div>
+              </label>
+
+              <div className="settings-section__actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveDebug}
+                  disabled={debugSaving}
+                >
+                  {debugSaving ? "保存中..." : "保存调试设置"}
+                </button>
+              </div>
+            </>
           )}
         </div>
       </section>

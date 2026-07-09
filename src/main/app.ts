@@ -48,6 +48,7 @@ import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
 import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
 import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
 import { SceneScheduler } from "./services/SceneScheduler";
+import { CaptureBatcher } from "./services/CaptureBatcher";
 import { CAPTURE_CANDIDATE_EVENT } from "./services/ActivityService";
 import { MemoryPipeline, setMemoryPipeline } from "./services/MemoryPipeline";
 import { logger } from "./services/Logger";
@@ -126,6 +127,8 @@ let memoryPipeline: MemoryPipeline | null = null;
 let reportScheduler: ReportScheduler | null = null;
 // 长会话场景调度器（C-3 修复：触发 long_session capture bundle）
 let sceneScheduler: SceneScheduler | null = null;
+// 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
+let captureBatcher: CaptureBatcher | null = null;
 // Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
 let timelineBuilderTimer: NodeJS.Timeout | null = null;
 
@@ -179,6 +182,12 @@ function pauseObserving(): void {
   activityService.stop();
   captureService.stop();
   sceneScheduler?.stop();
+  // 暂停前冲刷攒批（提交已积累的截图，避免暂停期间丢失数据）
+  if (captureBatcher) {
+    captureBatcher.flush().catch(() => {
+      // flush 失败不阻断暂停流程
+    });
+  }
 
   setStatus({ observing: false, paused: true, pipelineState: "idle" });
 }
@@ -296,6 +305,8 @@ app.whenReady().then(async () => {
   // 注意：settingsService 提升为模块级变量（让 startObserving 能检查 observation.enabled）
   settingsService = new SettingsService(settingsRepo, secretService);
   settingsService.init();
+  // 调试模式：根据设置初始化 Logger devDebug（用户开启后立即生效，无需重启）
+  logger.setDevDebug(settingsService.isDebugMode());
 
   // 启动时清理：把上次进程异常退出留下的 status='running' 卡死任务标记为 failed
   // 修复：原版未清理，导致 model_jobs 表中有 2 条任务永远停留在 running 状态
@@ -403,6 +414,7 @@ app.whenReady().then(async () => {
     sceneRepo,
     factRepo,
     settingsService,
+    modelJobRepo,
   });
   // 注册为单例（IPC handlers 和其他服务可通过 getMemoryPipeline() 访问）
   setMemoryPipeline(memoryPipeline);
@@ -511,27 +523,41 @@ app.whenReady().then(async () => {
   });
   reportScheduler.start();
 
-  // 5. 订阅 CaptureService 的 capture-bundle 事件
-  //    - 每当 CaptureService 成功捕获一个 bundle，触发 AI Pipeline 处理
-  //    - 失败不阻断 capture 流程（pipeline 内部 try/catch）
-  //    - 暂停状态由 CaptureService.setPaused 控制（暂停时不再 emit capture-bundle）
-  captureService.on("capture-bundle", (bundle) => {
+  // 5. 创建 CaptureBatcher（阶段二：攒批 12 帧合并提交）
+  //    - CaptureService 的 capture-bundle 交给 batcher 攒批（不再直接调 pipeline）
+  //    - 攒满 12 帧或 5 分钟超时后 emit "batch-ready"
+  //    - batch-ready 交给 MemoryPipeline.processBatchCaptureBundle 处理
+  captureBatcher = new CaptureBatcher();
+  captureBatcher.on("batch-ready", (batchBundle) => {
     if (!memoryPipeline) return;
-    // 异步处理，不阻塞 EventEmitter
-    memoryPipeline.processCaptureBundle(bundle).catch(() => {
-      // pipeline 单次失败不阻断后续捕获
+    // 批次处理异步执行，不阻塞 EventEmitter
+    memoryPipeline.processBatchCaptureBundle(batchBundle).catch(() => {
+      // 批次处理失败不阻断后续攒批
     });
   });
 
-  // 6. 创建 SceneScheduler（C-3 修复：长会话触发 long_session capture bundle）
+  // 6. 订阅 CaptureService 的 capture-bundle 事件
+  //    - 每当 CaptureService 成功捕获一个 bundle，加入攒批队列
+  //    - 攒批由 CaptureBatcher 管理（满 12 帧 / 5 分钟超时自动 flush）
+  //    - 暂停状态由 CaptureService.setPaused 控制（暂停时不再 emit capture-bundle）
+  captureService.on("capture-bundle", (bundle) => {
+    if (!captureBatcher) return;
+    captureBatcher.add(bundle);
+  });
+
+  // 7. 创建 SceneScheduler（C-3 修复：长会话触发 long_session capture bundle）
   //    - 监听 ActivityService 的 capture-candidate 事件，更新窗口/项目状态
   //    - 同一窗口/项目持续工作 >= longSessionIntervalMinutes 时发出 long_session bundle
-  //    - 该 bundle 直接交给 MemoryPipeline 处理（不经过 CaptureService，无截图）
+  //    - long_session 作为 flush 信号：先冲刷攒批（提交已积累的截图），再独立处理
   sceneScheduler = new SceneScheduler({
     settingsService,
     activityService,
-    emitCaptureBundle: (bundle) => {
+    emitCaptureBundle: async (bundle) => {
       if (!memoryPipeline) return;
+      // long_session: 先冲刷攒批，再独立处理（long_session bundle 无截图，走单帧 pipeline）
+      if (bundle.captureReason === "long_session" && captureBatcher) {
+        await captureBatcher.flush();
+      }
       memoryPipeline.processCaptureBundle(bundle).catch(() => {
         // pipeline 单次失败不阻断后续调度
       });
@@ -592,6 +618,8 @@ app.whenReady().then(async () => {
     unfinishedThreadRepo,
     // 012 新增：ObjectMerge 审计
     objectMergeRepo: objectMergeRepo,
+    // 调试模式：model_jobs 查询（DebugPage 用）
+    modelJobRepo,
   });
 
   // AppStatus 变化时主动推送给 renderer，并刷新托盘菜单
@@ -638,6 +666,11 @@ app.on("before-quit", () => {
     activityService?.stop();
     captureService?.stop();
     sceneScheduler?.stop();
+    // 阶段二：冲刷并停止 CaptureBatcher（提交已积累的截图）
+    if (captureBatcher) {
+      captureBatcher.flush().catch(() => {});
+      captureBatcher.stop();
+    }
   } catch {
     // 退出时忽略错误
   }

@@ -12,6 +12,7 @@
 // - input_json 由调用方负责脱敏后再传入
 
 import type { DB } from "../Database";
+import type { DebugEvent } from "../../models/types";
 
 /**
  * model_job 状态
@@ -46,6 +47,8 @@ interface ModelJobRow {
   attempts: number;
   created_at: string;
   updated_at: string;
+  raw_input_json: string | null;
+  debug_events_json: string | null;
 }
 
 /**
@@ -62,6 +65,10 @@ export interface ModelJob {
   attempts: number;
   createdAt: string;
   updatedAt: string;
+  /** 调试模式：完整 prompt 文本上下文（仅 verboseModelIO=true 时写入） */
+  rawInputJson: string | null;
+  /** 调试模式：各层丢弃/跳过事件 JSON 数组（仅 debug.enabled=true 时写入） */
+  debugEventsJson: string | null;
 }
 
 /**
@@ -126,36 +133,83 @@ export class ModelJobRepository {
 
   /**
    * 标记为 succeeded
+   * @param rawInputJson 调试模式可选：完整 prompt 文本上下文
+   * @param debugEventsJson 调试模式可选：丢弃/跳过事件 JSON 数组
    */
-  markSucceeded(id: string, outputJson: string, attempts: number): void {
+  markSucceeded(
+    id: string,
+    outputJson: string,
+    attempts: number,
+    rawInputJson?: string,
+    debugEventsJson?: string
+  ): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE model_jobs
-         SET status = 'succeeded', output_json = ?, error_code = NULL, error_message = NULL, attempts = ?, updated_at = ?
+         SET status = 'succeeded', output_json = ?, error_code = NULL, error_message = NULL, attempts = ?, updated_at = ?,
+             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json)
          WHERE id = ?`
       )
-      .run(outputJson, attempts, now, id);
+      .run(outputJson, attempts, now, rawInputJson ?? null, debugEventsJson ?? null, id);
   }
 
   /**
    * 标记为 failed
+   * @param rawInputJson 调试模式可选：完整 prompt 文本上下文
+   * @param debugEventsJson 调试模式可选：丢弃/跳过事件 JSON 数组
    */
   markFailed(
     id: string,
     errorCode: ModelJobErrorCode,
     errorMessage: string,
     attempts: number,
-    outputJson: string | null = null
+    outputJson: string | null = null,
+    rawInputJson?: string,
+    debugEventsJson?: string
   ): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE model_jobs
-         SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, attempts = ?, updated_at = ?
+         SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, attempts = ?, updated_at = ?,
+             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json)
          WHERE id = ?`
       )
-      .run(errorCode, errorMessage, outputJson, attempts, now, id);
+      .run(errorCode, errorMessage, outputJson, attempts, now, rawInputJson ?? null, debugEventsJson ?? null, id);
+  }
+
+  /**
+   * 按时间范围倒序查询（DebugPage 列表用）
+   */
+  listByTimeRange(startAt: string, endAt: string, limit: number = 200): ModelJob[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM model_jobs WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?`
+      )
+      .all(startAt, endAt, limit) as ModelJobRow[];
+    return rows.map(mapModelJobRow);
+  }
+
+  /**
+   * 追加调试事件到 debug_events_json（读-改-写模式）
+   *
+   * 用于 Worker 流式处理过程中分批追加丢弃/跳过事件。
+   * 单次 pipeline 内无并发写入同一 jobId（MemoryPipeline 串行处理，安全）。
+   */
+  appendDebugEvents(jobId: string, events: DebugEvent[]): void {
+    if (events.length === 0) return;
+    const existing = this.getById(jobId);
+    const existingEvents: DebugEvent[] = existing?.debugEventsJson
+      ? safeParseDebugEvents(existing.debugEventsJson)
+      : [];
+    const merged = [...existingEvents, ...events];
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE model_jobs SET debug_events_json = ?, updated_at = ? WHERE id = ?`
+      )
+      .run(JSON.stringify(merged), now, jobId);
   }
 
   /**
@@ -231,7 +285,21 @@ function mapModelJobRow(row: ModelJobRow): ModelJob {
     attempts: row.attempts,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    rawInputJson: row.raw_input_json,
+    debugEventsJson: row.debug_events_json,
   };
+}
+
+/**
+ * 安全解析 debug_events_json（损坏时返回空数组，不抛错）
+ */
+function safeParseDebugEvents(json: string): DebugEvent[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as DebugEvent[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 function generateId(prefix: string): string {

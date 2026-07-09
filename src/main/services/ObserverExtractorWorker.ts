@@ -21,10 +21,10 @@
 
 import type { ModelGateway } from "./ModelGateway";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
-import type { CaptureBundle, Fact, Observation, ObserverOutputV2 } from "../models/types";
-import type { ObserverExtractorOutput } from "../models/schemas";
-import { ObserverExtractorOutputSchema } from "../models/schemas";
-import { OBSERVER_EXTRACTOR_PROMPT_TEMPLATE } from "../models/prompts";
+import type { CaptureBundle, Fact, Observation, ObserverOutputV2, BatchCaptureBundle } from "../models/types";
+import type { ObserverExtractorOutput, BatchObserverExtractorOutput } from "../models/schemas";
+import { ObserverExtractorOutputSchema, BatchObserverExtractorOutputSchema } from "../models/schemas";
+import { OBSERVER_EXTRACTOR_PROMPT_TEMPLATE, BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE } from "../models/prompts";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
@@ -90,6 +90,26 @@ export interface ObserverExtractorWorkerResult {
   facts: Fact[];
   /** 已丢弃的噪声（来自模型） */
   discardedNoise: Array<{ reason: string; text: string }>;
+  /** model_job id（用于追溯） */
+  modelJobId: string;
+  /** 尝试次数 */
+  attempts: number;
+}
+
+/**
+ * 批次 ObserverExtractor Worker 输出
+ *
+ * 与单帧版差异：
+ * - observations 是数组（每帧一个）
+ * - facts 不在此处写入数据库（由 MemoryPipeline 两阶段写入回填 sourceObservationIds）
+ */
+export interface BatchObserverExtractorWorkerResult {
+  /** 多帧 L0 observation（V2，含体验字段） */
+  observations: ObserverOutputV2[];
+  /** 模型返回的 facts（未写入数据库，由 MemoryPipeline 落库时回填真实 observationId） */
+  facts: BatchObserverExtractorOutput["facts"];
+  /** 已丢弃的噪声（来自模型） */
+  discardedNoise: BatchObserverExtractorOutput["discardedNoise"];
   /** model_job id（用于追溯） */
   modelJobId: string;
   /** 尝试次数 */
@@ -289,6 +309,152 @@ export class ObserverExtractorWorker {
       data: {
         observation: result.data.observation,
         facts,
+        discardedNoise: result.data.discardedNoise,
+        modelJobId: result.modelJobId ?? "",
+        attempts: result.attempts ?? 1,
+      },
+      modelJobId: result.modelJobId,
+      attempts: result.attempts,
+    };
+  }
+
+  // ----------------------------------------------------------------
+  // 批次模式：runForBatch
+  // ----------------------------------------------------------------
+
+  /**
+   * 批次模式：一次性处理多帧截图
+   *
+   * 与单帧 run() 的差异：
+   * - 使用 compressedImagePaths（多张压缩 JPEG q=25）
+   * - 使用 BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE（批次版 prompt）
+   * - 使用 BatchObserverExtractorOutputSchema（observations 数组）
+   * - 调用 callMultimodal 时传 reasoningEffort: "none"
+   * - 不在此处写 facts（由 MemoryPipeline 两阶段写入回填真实 observationId）
+   *
+   * @param input.batchBundle 批次 CaptureBundle
+   * @param input.multimodalModelConfigId 多模态模型配置 id
+   */
+  async runForBatch(input: {
+    batchBundle: BatchCaptureBundle;
+    multimodalModelConfigId: string;
+  }): Promise<JobResult<BatchObserverExtractorWorkerResult>> {
+    const { batchBundle, multimodalModelConfigId } = input;
+
+    // 1. 收集压缩图路径（过滤空路径，跳过压缩失败的帧）
+    const imagePaths = batchBundle.compressedImagePaths.filter(
+      (p): p is string => !!p && p.length > 0
+    );
+
+    if (imagePaths.length === 0) {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: "没有可用的压缩截图，无法调用多模态模型",
+      };
+    }
+
+    // 2. 构造每帧元数据数组（frameIndex + capturedAt + appName + windowTitle）
+    const framesMetadata = batchBundle.frames.map((f, i) => ({
+      frameIndex: i + 1,
+      capturedAt: f.capturedAt,
+      appName: f.appName,
+      windowTitle: f.windowTitle,
+      captureReason: f.captureReason,
+    }));
+    const framesMetadataText = framesMetadata
+      .map(
+        (m) =>
+          `  #${String(m.frameIndex).padStart(2, "0")} → ${m.capturedAt} → ${m.appName} → ${m.windowTitle}`
+      )
+      .join("\n");
+
+    // 3. 查询上下文（复用现有方法）
+    const recentObservations = this.fetchRecentObservations(
+      batchBundle.batchId,
+      8
+    );
+    const activeProjects = this.fetchActiveProjects();
+    const activeTasks = this.fetchActiveTasks();
+    const userFeedbackSummary = this.fetchUserFeedbackSummary();
+
+    const extractorInput = {
+      recentObservations,
+      activeKnownProjects: activeProjects,
+      activeTasks,
+      userFeedbackSummary,
+    };
+    const extractorInputJson = JSON.stringify(extractorInput, null, 2);
+
+    // 4. 构造"已知别名"块
+    const knownAliasesBlock = this.buildKnownAliasesBlock();
+
+    // 5. 填充批次 prompt 模板
+    const userPrompt = BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE.replace(
+      /\{\{frames_count\}\}/g,
+      String(imagePaths.length)
+    )
+      .replace("{{frames_metadata_array}}", framesMetadataText)
+      .replace("{{batch_start_at}}", batchBundle.capturedAtStart)
+      .replace("{{batch_end_at}}", batchBundle.capturedAtEnd)
+      .replace("{{batch_timezone}}", batchBundle.timezone)
+      .replace("{{extractor_input_json}}", extractorInputJson)
+      .replace("{{known_aliases_block}}", knownAliasesBlock);
+
+    // 6. 构造脱敏 jobInputJson
+    const jobInputJson = JSON.stringify({
+      batchId: batchBundle.batchId,
+      capturedAtStart: batchBundle.capturedAtStart,
+      capturedAtEnd: batchBundle.capturedAtEnd,
+      frameCount: imagePaths.length,
+      primaryAppName: batchBundle.appName,
+      primaryWindowTitle: batchBundle.windowTitle,
+      recentObservationCount: recentObservations.length,
+      activeProjectCount: activeProjects.length,
+      activeTaskCount: activeTasks.length,
+    });
+
+    // 7. 提交多模态任务（批次版）
+    const result = await this.modelJobQueue.enqueueMultimodalJob<BatchObserverExtractorOutput>(
+      {
+        type: "observer_extractor_batch",
+        captureId: batchBundle.batchId,
+        executor: async () => {
+          return this.modelGateway.callMultimodal<BatchObserverExtractorOutput>(
+            {
+              kind: "multimodal",
+              configId: multimodalModelConfigId,
+              systemPrompt: "",
+              userPrompt,
+              imagePaths,
+              jobType: "observer_extractor_batch",
+              jobInputJson,
+              reasoningEffort: "none", // 关键参数（阶段一验证：禁用 reasoning，避免 content 为空）
+              maxTokens: 8192,
+              timeoutMs: 180_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
+            },
+            BatchObserverExtractorOutputSchema
+          );
+        },
+      }
+    );
+
+    if (!result.ok || !result.data) {
+      return {
+        ok: false,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+        modelJobId: result.modelJobId,
+        attempts: result.attempts,
+      };
+    }
+
+    // 8. 返回批次 observations + facts（facts 不在此处落库）
+    return {
+      ok: true,
+      data: {
+        observations: result.data.observations,
+        facts: result.data.facts,
         discardedNoise: result.data.discardedNoise,
         modelJobId: result.modelJobId ?? "",
         attempts: result.attempts ?? 1,
