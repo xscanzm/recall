@@ -31,6 +31,7 @@ import { TimelineBlockRepository } from "./db/repositories/TimelineBlockReposito
 import { ReportSelectionRepository } from "./db/repositories/ReportSelectionRepository";
 import { UnfinishedThreadRepository } from "./db/repositories/UnfinishedThreadRepository";
 import { createObjectMergeRepository } from "./db/repositories/ObjectMergeRepository";
+import { createMemoryEdgeRepository } from "./db/repositories/MemoryEdgeRepository";
 import { SecretService } from "./services/SecretService";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
@@ -376,6 +377,8 @@ app.whenReady().then(async () => {
   const unfinishedThreadRepo = new UnfinishedThreadRepository(db);
   // 012 新增：ObjectMerge 审计 Repository
   const objectMergeRepo = createObjectMergeRepository(db);
+  // 015 新增：记忆关系层 Repository
+  const memoryEdgeRepo = createMemoryEdgeRepository(db);
 
   // 2. ModelJobQueue 单例（多模态统一并发 3）
   const modelJobQueue = getModelJobQueue(modelJobRepo);
@@ -413,6 +416,7 @@ app.whenReady().then(async () => {
     modelJobQueue,
     sceneRepo,
     factRepo,
+    edgeRepo: memoryEdgeRepo,
     settingsService,
     modelJobRepo,
   });

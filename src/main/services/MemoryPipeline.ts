@@ -26,9 +26,11 @@ import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
+import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
 import type { SettingsService } from "./SettingsService";
 import type { AppStatus } from "../../shared/types";
 import { CaptureBatcher } from "./CaptureBatcher";
+import { EpisodeBuilder } from "./EpisodeBuilder";
 
 /**
  * Pipeline 处理结果
@@ -124,8 +126,10 @@ export class MemoryPipeline {
   private readonly modelJobQueue: ModelJobQueue;
   private readonly sceneRepo: SceneRepository;
   private readonly factRepo: FactRepository;
+  private readonly edgeRepo: MemoryEdgeRepository | null;
   private readonly settingsService: SettingsService | null;
   private readonly modelJobRepo: ModelJobRepository | null;
+  private readonly episodeBuilder: EpisodeBuilder;
   private config: MemoryPipelineConfig;
   private setStatus: ((patch: Partial<AppStatus>) => void) | null = null;
 
@@ -136,6 +140,7 @@ export class MemoryPipeline {
     modelJobQueue: ModelJobQueue;
     sceneRepo: SceneRepository;
     factRepo: FactRepository;
+    edgeRepo?: MemoryEdgeRepository;
     settingsService?: SettingsService;
     modelJobRepo?: ModelJobRepository;
     config?: Partial<MemoryPipelineConfig>;
@@ -146,8 +151,13 @@ export class MemoryPipeline {
     this.modelJobQueue = deps.modelJobQueue;
     this.sceneRepo = deps.sceneRepo;
     this.factRepo = deps.factRepo;
+    this.edgeRepo = deps.edgeRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
     this.modelJobRepo = deps.modelJobRepo ?? null;
+    this.episodeBuilder = new EpisodeBuilder({
+      sceneRepo: this.sceneRepo,
+      edgeRepo: this.edgeRepo ?? undefined,
+    });
     this.config = { ...DEFAULT_CONFIG, ...(deps.config ?? {}) };
   }
 
@@ -395,14 +405,28 @@ export class MemoryPipeline {
     };
     result.written.observationIds = normalizeResult.observationIds;
 
-    // ---------------- 步骤 3：L0-only 阶段不写 facts，不触发 LinkerSceneJudge ----------------
+    // ---------------- 步骤 3：从批次 observations 规则生成最小 Episode（写入 scenes） ----------------
+    const episodeItems = normalizeResult.results
+      .map((r, index) => {
+        const observation = r.observation;
+        const bundle = batchBundle.frames[index];
+        if (!observation || !bundle) return null;
+        return { observation, bundle };
+      })
+      .filter((item): item is NonNullable<typeof item> => !!item);
+    const writtenEpisodes = this.episodeBuilder.buildFromBatch({
+      items: episodeItems,
+    });
+    result.written.sceneIds = writtenEpisodes.map((s) => s.id);
+
+    // ---------------- 步骤 4：L0-only 阶段不写 facts，不触发 LinkerSceneJudge ----------------
     result.steps.factsWrite = { written: 0, skipped: 0 };
     result.steps.linkerSceneJudge = true;
     if (debugEvents) {
-      debugEvents.push({ layer: "L1", action: "skip", reason: "l0_only_batch_pipeline" });
+      debugEvents.push({ layer: "L1", action: "skip", reason: "l0_to_episode_only_batch_pipeline" });
     }
 
-    // ---------------- 步骤 4：清理压缩图临时文件 ----------------
+    // ---------------- 步骤 5：清理压缩图临时文件 ----------------
     CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
 
     this.updatePipelineState("idle");
