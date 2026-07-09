@@ -21,6 +21,8 @@ export type IpcChannel =
   | "app:getStatus"
   | "app:startObserving"
   | "app:pauseObserving"
+  | "app:getLaunchAtLogin"
+  | "app:setLaunchAtLogin"
   | "settings:get"
   | "settings:update"
   | "model:testConnection"
@@ -90,6 +92,8 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "app:getStatus",
   "app:startObserving",
   "app:pauseObserving",
+  "app:getLaunchAtLogin",
+  "app:setLaunchAtLogin",
   "settings:get",
   "settings:update",
   "model:testConnection",

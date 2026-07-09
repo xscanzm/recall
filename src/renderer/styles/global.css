@@ -1974,6 +1974,31 @@ a:hover {
   margin: 0;
 }
 
+.settings-section__advanced {
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-sm);
+  background: var(--recall-bg-subtle);
+  padding: 12px 14px;
+}
+
+.settings-section__advanced summary {
+  cursor: pointer;
+  font-size: var(--fs-body);
+  font-weight: 650;
+  color: var(--recall-text);
+}
+
+.settings-section__advanced[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.settings-section__advanced .settings-section__block {
+  padding-top: 12px;
+  border-top: 1px solid var(--recall-border);
+}
+
 /* 单行：标签 + 状态 pill + 操作按钮 */
 .settings-section__row {
   display: flex;

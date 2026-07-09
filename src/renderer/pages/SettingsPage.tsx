@@ -122,6 +122,9 @@ export function SettingsPage() {
 
   // 观察状态切换 loading
   const [observationToggling, setObservationToggling] = useState(false);
+  const [launchAtLogin, setLaunchAtLogin] = useState(false);
+  const [launchAtLoginLoading, setLaunchAtLoginLoading] = useState(true);
+  const [launchAtLoginSaving, setLaunchAtLoginSaving] = useState(false);
 
   // 截图缓存
   const [cacheSize, setCacheSize] = useState<{ bytes: number; fileCount: number } | null>(null);
@@ -145,6 +148,7 @@ export function SettingsPage() {
     void loadPrivacyRules();
     void loadSettings();
     void refreshCacheSize();
+    void refreshLaunchAtLogin();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -167,6 +171,21 @@ export function SettingsPage() {
   const refreshCacheSize = async () => {
     const result = await getCacheSize();
     setCacheSize({ bytes: result.bytes, fileCount: result.fileCount });
+  };
+
+  const refreshLaunchAtLogin = async () => {
+    setLaunchAtLoginLoading(true);
+    try {
+      const result = await getIpc().app.getLaunchAtLogin();
+      setLaunchAtLogin(result.enabled);
+    } catch (err) {
+      setActionMessage({
+        kind: "err",
+        text: err instanceof Error ? err.message : "读取 Windows 自启动设置失败",
+      });
+    } finally {
+      setLaunchAtLoginLoading(false);
+    }
   };
 
   // ============================================================================
@@ -214,6 +233,26 @@ export function SettingsPage() {
     });
     if (!result.ok) {
       setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+    }
+  };
+
+  const handleLaunchAtLoginChange = async (checked: boolean) => {
+    setLaunchAtLoginSaving(true);
+    setActionMessage(null);
+    try {
+      const result = await getIpc().app.setLaunchAtLogin({ enabled: checked });
+      if (result.ok) {
+        setLaunchAtLogin(result.enabled);
+      } else {
+        setActionMessage({ kind: "err", text: "保存 Windows 自启动设置失败" });
+      }
+    } catch (err) {
+      setActionMessage({
+        kind: "err",
+        text: err instanceof Error ? err.message : "保存 Windows 自启动设置失败",
+      });
+    } finally {
+      setLaunchAtLoginSaving(false);
     }
   };
 
@@ -485,7 +524,7 @@ export function SettingsPage() {
       <header className="page-header">
         <h2>设置</h2>
         <p className="page-header__sub">
-          支持分开配置视觉模型与语言模型，或只配置一个多模态模型。API Key 保存在系统安全存储，不会进入数据库或日志。
+          早测版本推荐只配置一个多模态模型。API Key 保存在系统安全存储，不会进入数据库或日志。
         </p>
       </header>
 
@@ -494,14 +533,14 @@ export function SettingsPage() {
         <header className="settings-section__header">
           <h3 className="settings-section__title">1. 模型配置</h3>
           <p className="settings-section__hint">
-            视觉模型用于分析截图，语言模型用于整理记忆和生成报告。也可只配置一个多模态模型（如 gpt-4o）替代两者。API Key 通过系统安全存储（Electron safeStorage）保存，不写入数据库、不进日志。
+            当前记忆流水线需要一个支持图片输入的多模态模型，用于截图理解、记忆整理、待收尾判断和报告生成。API Key 通过系统安全存储保存，不写入数据库、不进日志。
           </p>
         </header>
         <div className="settings-section__content">
           <div className="settings-section__block">
-            <h4 className="settings-section__subtitle">多模态模型（可选）</h4>
+            <h4 className="settings-section__subtitle">多模态模型（必填）</h4>
             <p className="settings-section__hint">
-              同时支持视觉和语言任务，可替代下方分开配置的视觉模型与语言模型。配置后无需再单独配置视觉/语言模型。
+              早测用户只需要配置这一项。模型必须兼容 OpenAI Chat Completions，并支持图片输入。
             </p>
             <ModelConfigForm
               kind="multimodal"
@@ -513,6 +552,12 @@ export function SettingsPage() {
               onTest={testModelConnection}
             />
           </div>
+
+          <details className="settings-section__advanced">
+            <summary>高级兼容：分开配置视觉模型与语言模型</summary>
+            <p className="settings-section__hint">
+              旧版本保留入口。当前主流水线优先使用多模态模型，早测用户通常不需要配置这里。
+            </p>
 
           <div className="settings-section__block">
             <h4 className="settings-section__subtitle">视觉模型</h4>
@@ -545,6 +590,7 @@ export function SettingsPage() {
               onTest={testModelConnection}
             />
           </div>
+          </details>
         </div>
       </section>
 
@@ -589,6 +635,21 @@ export function SettingsPage() {
               <span className="settings-section__toggle-label">开机后自动恢复观察</span>
               <p className="settings-section__hint">
                 关闭后，每次启动 Recall 都需要手动点击恢复观察。
+              </p>
+            </div>
+          </label>
+
+          <label className="settings-section__toggle">
+            <input
+              type="checkbox"
+              checked={launchAtLogin}
+              onChange={(e) => handleLaunchAtLoginChange(e.target.checked)}
+              disabled={launchAtLoginLoading || launchAtLoginSaving}
+            />
+            <div className="settings-section__toggle-text">
+              <span className="settings-section__toggle-label">登录 Windows 后自动启动 Recall</span>
+              <p className="settings-section__hint">
+                适合早测长期使用。开启后应用随 Windows 登录启动，并按上方观察设置决定是否自动恢复观察。
               </p>
             </div>
           </label>

@@ -144,6 +144,10 @@ function shouldAutoOpenDevTools(): boolean {
   return value === "1" || value === "true" || value === "yes";
 }
 
+function shouldStartHidden(): boolean {
+  return process.argv.includes("--hidden") || process.argv.includes("--background");
+}
+
 // ============================================================================
 // 观察启停控制（M3）
 // ============================================================================
@@ -221,7 +225,9 @@ function createMainWindow(): BrowserWindow {
 
   // 启动后再显示，避免白屏
   win.once("ready-to-show", () => {
-    win.show();
+    if (!shouldStartHidden()) {
+      win.show();
+    }
   });
 
   // 关闭时隐藏到托盘而不是退出（后台常驻）
@@ -676,6 +682,11 @@ app.whenReady().then(async () => {
     // 调试模式：model_jobs 查询（DebugPage 用）
     modelJobRepo,
   });
+
+  // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
+  if (settingsService.getAll().observation.enabled) {
+    startObserving();
+  }
 
   // AppStatus 变化时主动推送给 renderer，并刷新托盘菜单
   subscribeStatus((status) => {

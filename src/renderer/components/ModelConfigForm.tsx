@@ -140,7 +140,11 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
       ? "用于分析屏幕截图，识别窗口内容、实体和可能意图。"
       : kind === "language"
       ? "用于提取线索、构建场景、生成报告和回答用户问题。"
-      : "同时支持视觉和语言任务，可替代分开配置的视觉模型与语言模型。";
+      : "早测推荐配置项：同时处理截图理解、记忆整理、待收尾判断和报告生成。";
+  const providerPlaceholder =
+    kind === "multimodal" ? "例如 OpenAI / 日日新 / 通义千问" : "例如 OpenAI / Azure / 通义千问";
+  const modelPlaceholder =
+    kind === "multimodal" ? "gpt-4o / sensenova-6.7-flash-lite / qwen-vl-max" : "gpt-4o / qwen-vl-max";
 
   /**
    * 开始新建配置
@@ -398,7 +402,7 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
               type="text"
               value={fields.providerName}
               onChange={(e) => setFields({ ...fields, providerName: e.target.value })}
-              placeholder="例如 OpenAI / Azure / 通义千问"
+              placeholder={providerPlaceholder}
               required
             />
           </div>
@@ -420,7 +424,7 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
               type="text"
               value={fields.model}
               onChange={(e) => setFields({ ...fields, model: e.target.value })}
-              placeholder="gpt-4o / qwen-vl-max"
+              placeholder={modelPlaceholder}
               required
             />
           </div>

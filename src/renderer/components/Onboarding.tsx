@@ -3,7 +3,7 @@
 //
 // 引导流程：
 // 1. 欢迎页：介绍 Recall 是什么、做什么、不做什么
-// 2. 模型配置向导：配置视觉模型（可选）+ 语言模型（可选）
+// 2. 模型配置向导：配置多模态模型
 // 3. 隐私设置确认：展示默认隐私规则、截图保留策略、通知设置
 // 4. 完成页：开始使用 Recall
 //
@@ -25,8 +25,7 @@ import { useAppStore } from "../state/store";
 
 type OnboardingStep =
   | "welcome"
-  | "vision"
-  | "language"
+  | "multimodal"
   | "privacy"
   | "complete";
 
@@ -78,8 +77,7 @@ export function Onboarding(props: OnboardingProps) {
   }, [modelConfigs]);
 
   // 按模型类型分组
-  const visionConfigs = modelConfigs.filter((c) => c.kind === "vision");
-  const languageConfigs = modelConfigs.filter((c) => c.kind === "language");
+  const multimodalConfigs = modelConfigs.filter((c) => c.kind === "multimodal");
 
   /**
    * 跳过引导，直接进入主界面
@@ -112,9 +110,7 @@ export function Onboarding(props: OnboardingProps) {
    * 引导模式下保存模型配置成功后的回调
    */
   const handleModelSaved = () => {
-    if (step === "vision") {
-      setStep("language");
-    } else if (step === "language") {
+    if (step === "multimodal") {
       setStep("privacy");
     }
   };
@@ -123,9 +119,7 @@ export function Onboarding(props: OnboardingProps) {
    * 跳过当前步骤
    */
   const handleSkipStep = () => {
-    if (step === "vision") {
-      setStep("language");
-    } else if (step === "language") {
+    if (step === "multimodal") {
       setStep("privacy");
     }
   };
@@ -136,8 +130,7 @@ export function Onboarding(props: OnboardingProps) {
   const renderProgress = () => {
     const steps: Array<{ key: OnboardingStep; label: string }> = [
       { key: "welcome", label: "欢迎" },
-      { key: "vision", label: "视觉模型" },
-      { key: "language", label: "语言模型" },
+      { key: "multimodal", label: "多模态模型" },
       { key: "privacy", label: "隐私确认" },
       { key: "complete", label: "完成" },
     ];
@@ -172,32 +165,16 @@ export function Onboarding(props: OnboardingProps) {
         <div className="onboarding__content">
           {step === "welcome" && (
             <WelcomeStep
-              onNext={() => setStep("vision")}
+              onNext={() => setStep("multimodal")}
               onSkip={handleSkip}
             />
           )}
 
-          {step === "vision" && (
+          {step === "multimodal" && (
             <ModelStep
-              kind="vision"
-              alreadyConfigured={visionConfigured}
-              configs={visionConfigs}
-              loading={modelConfigsLoading}
-              error={modelConfigsError}
-              onSave={saveModelConfig}
-              onDelete={deleteModelConfig}
-              onTest={testModelConnection}
-              onSaved={handleModelSaved}
-              onNext={handleSkipStep}
-              onSkip={handleSkipStep}
-            />
-          )}
-
-          {step === "language" && (
-            <ModelStep
-              kind="language"
-              alreadyConfigured={languageConfigured}
-              configs={languageConfigs}
+              kind="multimodal"
+              alreadyConfigured={multimodalConfigured}
+              configs={multimodalConfigs}
               loading={modelConfigsLoading}
               error={modelConfigsError}
               onSave={saveModelConfig}
@@ -562,7 +539,7 @@ function ModelStep(props: ModelStepProps) {
           ? "视觉模型用于分析屏幕截图，识别窗口内容、实体和可能意图。需要支持 vision 的模型（如 gpt-4o / qwen-vl-max）。"
           : kind === "language"
           ? "语言模型用于提取线索、构建场景、生成报告和回答用户问题。任何 OpenAI-compatible 模型均可。"
-          : "多模态模型同时支持视觉和语言任务，可替代分开配置的视觉模型与语言模型。需要支持 vision 的多模态模型（如 gpt-4o）。"}
+          : "早测版本使用一个多模态模型完成截图理解、记忆整理和报告生成。请配置支持图片输入的 OpenAI-compatible 模型。"}
       </p>
 
       {alreadyConfigured && (
@@ -584,7 +561,7 @@ function ModelStep(props: ModelStepProps) {
       />
 
       <p className="onboarding__hint">
-        提示：可以先跳过此步骤，后续在「设置 - 模型配置」中完成。未配置模型时无法开始观察采集。
+        提示：可以先跳过此步骤，后续在「设置 - 模型配置」中完成。未配置多模态模型时无法开始观察采集。
       </p>
 
       <div className="onboarding__actions">
@@ -680,8 +657,9 @@ interface CompleteStepProps {
 function CompleteStep(props: CompleteStepProps) {
   const { visionConfigured, languageConfigured, multimodalConfigured } = props;
 
-  // 校验逻辑：配置了至少一个 multimodal 模型，或者同时配置了 vision + language，即视为通过
-  const hasValidModelConfig = multimodalConfigured || (visionConfigured && languageConfigured);
+  // 当前主流水线依赖多模态模型；旧视觉/语言配置仅作为高级兼容保留。
+  const hasValidModelConfig = multimodalConfigured;
+  const legacyConfigured = visionConfigured || languageConfigured;
 
   return (
     <div className="onboarding__complete-step">
@@ -691,9 +669,10 @@ function CompleteStep(props: CompleteStepProps) {
       </p>
 
       <div className="onboarding__complete-summary">
-        <p><strong>视觉模型</strong>：{visionConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
-        <p><strong>语言模型</strong>：{languageConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
-        <p><strong>多模态模型</strong>：{multimodalConfigured ? "已配置（可替代视觉+语言）" : "未配置（可在设置中后续完成）"}</p>
+        <p><strong>多模态模型</strong>：{multimodalConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
+        {legacyConfigured && (
+          <p><strong>高级兼容模型</strong>：已配置视觉/语言模型，当前版本仍优先使用多模态模型。</p>
+        )}
         <p><strong>隐私规则</strong>：已加载默认黑名单</p>
         <p><strong>截图保留</strong>：当天（次日启动时自动清理）</p>
         <p><strong>桌面通知</strong>：默认关闭</p>
@@ -701,7 +680,7 @@ function CompleteStep(props: CompleteStepProps) {
 
       {!hasValidModelConfig ? (
         <p className="onboarding__hint">
-          提示：未配置可用模型时无法开始观察采集。请在「设置 - 模型配置」中配置一个多模态模型，或同时配置视觉模型与语言模型。
+          提示：未配置多模态模型时无法开始观察采集。请在「设置 - 模型配置」中配置一个支持图片输入的多模态模型。
         </p>
       ) : (
         <p className="onboarding__hint">

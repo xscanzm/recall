@@ -11,6 +11,7 @@
 // 后续 Milestone 逐步填充真实业务逻辑。
 
 import { ipcMain, BrowserWindow } from "electron";
+import { app as electronApp } from "electron";
 import type {
   AppStatus,
   PersonalReview,
@@ -195,6 +196,24 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       deps.setStatus({ observing: false, paused: true, pipelineState: "idle" });
     }
     return deps.getStatus();
+  });
+
+  ipcMain.handle("app:getLaunchAtLogin", () => {
+    return { ok: true, enabled: electronApp.getLoginItemSettings().openAtLogin };
+  });
+
+  ipcMain.handle("app:setLaunchAtLogin", (_event, input: unknown) => {
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(input);
+    if (!parsed.success) {
+      fail("schema_invalid", `app:setLaunchAtLogin 参数校验失败: ${parsed.error.message}`);
+    }
+    electronApp.setLoginItemSettings({
+      openAtLogin: parsed.data.enabled,
+      openAsHidden: true,
+      args: ["--hidden"],
+      path: process.execPath,
+    });
+    return { ok: true, enabled: electronApp.getLoginItemSettings().openAtLogin };
   });
 
   // -------------------- settings --------------------
@@ -1978,6 +1997,8 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "app:getStatus",
   "app:startObserving",
   "app:pauseObserving",
+  "app:getLaunchAtLogin",
+  "app:setLaunchAtLogin",
   "settings:get",
   "settings:update",
   "model:testConnection",

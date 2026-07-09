@@ -289,6 +289,8 @@ const api = {
     getStatus: async () => appStatus,
     startObserving: async () => appStatus,
     pauseObserving: async () => ({ ...appStatus, paused: true, observing: false }),
+    getLaunchAtLogin: async () => ({ ok: true, enabled: false }),
+    setLaunchAtLogin: async (input) => ({ ok: true, enabled: !!input.enabled }),
     onStatusChanged: () => () => undefined,
   },
   settings: {

@@ -25,6 +25,10 @@ const recallApi = {
     getStatus: (): Promise<AppStatus> => ipcRenderer.invoke("app:getStatus"),
     startObserving: (): Promise<AppStatus> => ipcRenderer.invoke("app:startObserving"),
     pauseObserving: (): Promise<AppStatus> => ipcRenderer.invoke("app:pauseObserving"),
+    getLaunchAtLogin: (): Promise<{ ok: boolean; enabled: boolean }> =>
+      ipcRenderer.invoke("app:getLaunchAtLogin"),
+    setLaunchAtLogin: (input: { enabled: boolean }): Promise<{ ok: boolean; enabled: boolean }> =>
+      ipcRenderer.invoke("app:setLaunchAtLogin", input),
     onStatusChanged: (callback: (status: AppStatus) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, status: AppStatus): void => callback(status);
       ipcRenderer.on("app:statusChanged", handler);
