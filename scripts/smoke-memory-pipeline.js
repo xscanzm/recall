@@ -20,6 +20,7 @@ const { createMemoryEdgeRepository } = requireDist("db/repositories/MemoryEdgeRe
 const { ObservationNormalizer } = requireDist("services/ObservationNormalizer.js");
 const { MemoryPipeline } = requireDist("services/MemoryPipeline.js");
 const { LinkerSceneJudgeWorker } = requireDist("services/LinkerSceneJudgeWorker.js");
+const { LinkerSceneJudgeOutputSchema } = requireDist("models/schemas.js");
 
 function resetSmokeDb() {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -42,6 +43,20 @@ function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+function assertLinkerSceneJudgeDefaults() {
+  const parsed = LinkerSceneJudgeOutputSchema.safeParse({
+    links: [],
+    newObjects: [],
+  });
+  assert(parsed.success, `linker scene judge sparse output should parse: ${JSON.stringify(parsed.error?.issues)}`);
+  assert(Array.isArray(parsed.data.linkedFacts), "linkedFacts default missing");
+  assert(Array.isArray(parsed.data.newObjects), "newObjects default missing");
+  assert(Array.isArray(parsed.data.mergedObjects), "mergedObjects default missing");
+  assert(Array.isArray(parsed.data.scenes), "scenes default missing");
+  assert(Array.isArray(parsed.data.unfinishedThreads), "unfinishedThreads default missing");
+  assert(Array.isArray(parsed.data.proactiveItems), "proactiveItems default missing");
 }
 
 function makeObservation(index) {
@@ -243,6 +258,7 @@ class StaticModelJobQueue {
 }
 
 async function main() {
+  assertLinkerSceneJudgeDefaults();
   resetSmokeDb();
   const db = new Database(dbPath);
   try {

@@ -3270,7 +3270,7 @@ const LinkerSceneJudgeOutputCoreSchema = z.object({
  */
 function normalizeLinkerSceneJudgeOutput(input: unknown): unknown {
   if (!input || typeof input !== "object") return input;
-  const obj = input as Record<string, unknown>;
+  const obj = normalizeKeysToCamel(input) as Record<string, unknown>;
   const result: Record<string, unknown> = { ...obj };
   if (obj.links !== undefined && obj.linkedFacts === undefined) {
     result.linkedFacts = obj.links;
@@ -3278,24 +3278,12 @@ function normalizeLinkerSceneJudgeOutput(input: unknown): unknown {
   if (obj.mergeSuggestions !== undefined && obj.mergedObjects === undefined) {
     result.mergedObjects = obj.mergeSuggestions;
   }
-  if (obj.linkedFacts !== undefined) {
-    result.linkedFacts = normalizeLinkerLinks(obj.linkedFacts);
-  }
-  if (obj.newObjects !== undefined) {
-    result.newObjects = normalizeLinkerNewObjects(obj.newObjects);
-  }
-  if (obj.mergedObjects !== undefined) {
-    result.mergedObjects = normalizeLinkerMergeSuggestions(obj.mergedObjects);
-  }
-  if (obj.scenes !== undefined) {
-    result.scenes = normalizeSceneBuilderScenes(obj.scenes);
-  }
-  if (obj.unfinishedThreads !== undefined) {
-    result.unfinishedThreads = normalizeUnfinishedThreads(obj.unfinishedThreads);
-  }
-  if (obj.proactiveItems !== undefined) {
-    result.proactiveItems = normalizeProactiveItemsV2(obj.proactiveItems);
-  }
+  result.linkedFacts = normalizeLinkerLinks(result.linkedFacts);
+  result.newObjects = normalizeLinkerNewObjects(result.newObjects);
+  result.mergedObjects = normalizeLinkerMergeSuggestions(result.mergedObjects);
+  result.scenes = normalizeSceneBuilderScenes(result.scenes);
+  result.unfinishedThreads = normalizeUnfinishedThreads(result.unfinishedThreads);
+  result.proactiveItems = normalizeProactiveItemsV2(result.proactiveItems);
   return result;
 }
 
