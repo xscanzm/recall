@@ -17,6 +17,7 @@ import { app, BrowserWindow, powerMonitor } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/handlers";
 import type { AppStatus } from "../shared/types";
+import type { BatchCaptureBundle } from "./models/types";
 import { APP_NAME_ZH } from "../shared/constants";
 import { getDatabase, closeDatabase } from "./db/Database";
 import { SettingsRepository } from "./db/repositories/SettingsRepository";
@@ -532,12 +533,40 @@ app.whenReady().then(async () => {
   //    - 攒满 6 帧或 5 分钟超时后 emit "batch-ready"
   //    - batch-ready 交给 MemoryPipeline.processBatchCaptureBundle 处理
   captureBatcher = new CaptureBatcher();
-  captureBatcher.on("batch-ready", (batchBundle) => {
+  captureBatcher.on("batch-ready", (batchBundle: BatchCaptureBundle) => {
     if (!memoryPipeline) return;
     // 批次处理异步执行，不阻塞 EventEmitter
-    memoryPipeline.processBatchCaptureBundle(batchBundle).catch(() => {
-      // 批次处理失败不阻断后续攒批
-    });
+    void (async () => {
+      try {
+        const batchResult = await memoryPipeline.processBatchCaptureBundle(batchBundle);
+        if (!timelineBuilderWorker) return;
+
+        const dateKeys: string[] = Array.from(
+          new Set(
+            batchBundle.frames.map((frame) => formatLocalDateKey(new Date(frame.capturedAt)))
+          )
+        );
+
+        for (const dateKey of dateKeys) {
+          try {
+            await timelineBuilderWorker.buildTimeline(dateKey);
+          } catch {
+            // 时间轴刷新失败不阻断批次落库
+          }
+        }
+
+        if (batchResult.errors.length > 0) {
+          logger.warn({
+            jobType: "batch_pipeline",
+            status: "failed",
+            errorCode: batchResult.errors[0]?.code ?? "unknown_error",
+            message: batchResult.errors[0]?.message ?? "batch pipeline failed",
+          });
+        }
+      } catch {
+        // 批次处理失败不阻断后续攒批
+      }
+    })();
   });
 
   // 6. 订阅 CaptureService 的 capture-bundle 事件
