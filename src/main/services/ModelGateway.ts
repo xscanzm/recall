@@ -107,7 +107,7 @@ export interface ModelCallInput {
   reasoningEffort?: "none" | "low" | "medium" | "high";
   /**
    * 单次调用超时覆盖（毫秒）。未指定时使用实例默认超时（120s）。
-   * 批次模式（12 帧多图）需要 180s，普通模式保持 120s。
+   * 批次模式（默认 6 帧多图）需要 180s，普通模式保持 120s。
    */
   timeoutMs?: number;
 }

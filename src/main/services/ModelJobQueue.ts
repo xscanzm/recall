@@ -41,6 +41,7 @@ export type ModelJobType =
   // 新合并类型
   | "observer_extractor"
   | "observer_extractor_batch"
+  | "observer_batch"
   | "linker_scene_judge"
   | "personal_review"
   // 兼容旧类型（迁移完成后可删除）
@@ -369,6 +370,7 @@ export class ModelJobQueue {
    */
   forgetCaptureId(captureId: string): void {
     this.submittedCaptureIds.delete(`observer:${captureId}`);
+    this.submittedCaptureIds.delete(`observer_batch:${captureId}`);
     this.submittedCaptureIds.delete(`observer_extractor:${captureId}`);
     this.submittedCaptureIds.delete(`linker_scene_judge:${captureId}`);
     // 兼容旧类型

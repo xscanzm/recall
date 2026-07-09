@@ -3211,6 +3211,42 @@ export type BatchObserverExtractorOutput = z.infer<
 >;
 
 /**
+ * 批次 Observer-only 输出 CoreSchema
+ *
+ * 记忆系统重构第一刀：批次多帧调用只产出 L0 Moment/Observation，不再同步产出
+ * L1/L2 事实。后续 Episode/Atom 由独立 worker 从已落库 observations 重建。
+ */
+const BatchObserverOutputCoreSchema = z.object({
+  observations: z.array(ObserverOutputV2CoreSchema).min(1).max(20),
+});
+
+function normalizeBatchObserverOutput(input: unknown): unknown {
+  if (!input || typeof input !== "object") return input;
+  const obj = input as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...obj };
+
+  if (!obj.observations && obj.observation) {
+    result.observations = [obj.observation];
+    delete result.observation;
+  }
+
+  if (Array.isArray(result.observations)) {
+    result.observations = result.observations.map(
+      (o) => normalizeObserverOutputV2(o) ?? o
+    );
+  }
+
+  return result;
+}
+
+export const BatchObserverOutputSchema = z.preprocess(
+  normalizeBatchObserverOutput,
+  BatchObserverOutputCoreSchema
+);
+
+export type BatchObserverOutput = z.infer<typeof BatchObserverOutputCoreSchema>;
+
+/**
  * LinkerSceneJudge 合并输出 CoreSchema
  *
  * 合并 LinkerOutput + SceneBuilderOutput + JudgeOutputV2，一次多模态调用同时产出

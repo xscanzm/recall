@@ -175,7 +175,7 @@ export class ObservationNormalizer {
   }
 
   /**
-   * 批次 normalize：循环 12 帧 observation，逐个落库
+   * 批次 normalize：循环多帧 observation，逐个落库
    *
    * 与单帧 normalize() 的差异：
    * - 输入是 observations 数组（来自批次 ObserverExtractor 返回）
@@ -183,7 +183,7 @@ export class ObservationNormalizer {
    * - 返回 observationIds 数组（供 MemoryPipeline 回填 facts.sourceObservationIds）
    * - 单帧失败不阻断其他帧
    *
-   * @param input.observations 模型返回的 12 帧 observation
+   * @param input.observations 模型返回的多帧 observation（当前默认 6 帧）
    * @param input.batchBundle 批次 CaptureBundle
    */
   normalizeBatch(input: {

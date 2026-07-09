@@ -280,17 +280,17 @@ export interface CaptureBundle {
 }
 
 /**
- * 批次 CaptureBundle（攒批 12 帧合并提交）
+ * 批次 CaptureBundle（攒批多帧合并提交，默认 6 帧）
  *
  * 由 CaptureBatcher 攒批后产出，交 MemoryPipeline.processBatchCaptureBundle 处理。
- * - frames：原始的 12 个单帧 CaptureBundle（保留帧级元数据，用于 normalizer 落 observation）
+ * - frames：原始的多条单帧 CaptureBundle（保留帧级元数据，用于 normalizer 落 observation）
  * - compressedImagePaths：每帧 resize 到 800px 宽 + JPEG q=25 的临时文件路径
  *   由 CaptureBatcher.compressImages 生成，使用后由调用方负责清理
  */
 export interface BatchCaptureBundle {
   /** 批次唯一 id */
   batchId: string;
-  /** 12 个单帧 bundle（按时间顺序） */
+  /** 多个单帧 bundle（按时间顺序；当前默认 6 帧） */
   frames: CaptureBundle[];
   /** 首帧捕获时间（UTC ISO 8601 with Z） */
   capturedAtStart: string;
@@ -304,9 +304,9 @@ export interface BatchCaptureBundle {
   windowTitle: string;
   /** 批次触发原因 */
   captureReason: CaptureBundle["captureReason"] | "batch_flush";
-  /** 12 张原始截图路径（扁平化 frames[].imagePaths） */
+  /** 原始截图路径（扁平化 frames[].imagePaths） */
   imagePaths: string[];
-  /** 12 张压缩后的 JPEG q=25 临时文件路径 */
+  /** 压缩后的 JPEG q=25 临时文件路径 */
   compressedImagePaths: string[];
   /** 截图保留策略（取首帧） */
   retentionPolicy: ScreenshotRetentionPolicy;

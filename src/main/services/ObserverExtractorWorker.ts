@@ -22,9 +22,9 @@
 import type { ModelGateway } from "./ModelGateway";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
 import type { CaptureBundle, Fact, Observation, ObserverOutputV2, BatchCaptureBundle } from "../models/types";
-import type { ObserverExtractorOutput, BatchObserverExtractorOutput } from "../models/schemas";
-import { ObserverExtractorOutputSchema, BatchObserverExtractorOutputSchema } from "../models/schemas";
-import { OBSERVER_EXTRACTOR_PROMPT_TEMPLATE, BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE } from "../models/prompts";
+import type { ObserverExtractorOutput, BatchObserverExtractorOutput, BatchObserverOutput } from "../models/schemas";
+import { ObserverExtractorOutputSchema, BatchObserverExtractorOutputSchema, BatchObserverOutputSchema } from "../models/schemas";
+import { OBSERVER_EXTRACTOR_PROMPT_TEMPLATE, BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE, BATCH_OBSERVER_PROMPT_TEMPLATE } from "../models/prompts";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
@@ -110,6 +110,20 @@ export interface BatchObserverExtractorWorkerResult {
   facts: BatchObserverExtractorOutput["facts"];
   /** 已丢弃的噪声（来自模型） */
   discardedNoise: BatchObserverExtractorOutput["discardedNoise"];
+  /** model_job id（用于追溯） */
+  modelJobId: string;
+  /** 尝试次数 */
+  attempts: number;
+}
+
+/**
+ * 批次 L0-only Worker 输出
+ *
+ * 记忆系统重构第一刀：批次多帧调用只返回 observations，不返回/不写入 facts。
+ */
+export interface BatchObserverWorkerResult {
+  /** 多帧 L0 observation（V2，含体验字段） */
+  observations: ObserverOutputV2[];
   /** model_job id（用于追溯） */
   modelJobId: string;
   /** 尝试次数 */
@@ -456,6 +470,124 @@ export class ObserverExtractorWorker {
         observations: result.data.observations,
         facts: result.data.facts,
         discardedNoise: result.data.discardedNoise,
+        modelJobId: result.modelJobId ?? "",
+        attempts: result.attempts ?? 1,
+      },
+      modelJobId: result.modelJobId,
+      attempts: result.attempts,
+    };
+  }
+
+  /**
+   * 批次 L0-only 模式：一次性处理多帧截图，只产出每帧 observation。
+   *
+   * 与 runForBatch 的关键差异：
+   * - 使用 BATCH_OBSERVER_PROMPT_TEMPLATE
+   * - 使用 BatchObserverOutputSchema
+   * - 不请求 facts / discardedNoise
+   * - 不查询 active projects/tasks/aliases，避免 L0 阶段被长期记忆上下文污染
+   */
+  async runObservationsForBatch(input: {
+    batchBundle: BatchCaptureBundle;
+    multimodalModelConfigId: string;
+  }): Promise<JobResult<BatchObserverWorkerResult>> {
+    const { batchBundle, multimodalModelConfigId } = input;
+
+    const imagePaths = batchBundle.compressedImagePaths.filter(
+      (p): p is string => !!p && p.length > 0
+    );
+
+    if (imagePaths.length === 0) {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: "没有可用的压缩截图，无法调用多模态模型",
+      };
+    }
+
+    const framesMetadata = batchBundle.frames.map((f, i) => ({
+      frameIndex: i + 1,
+      capturedAt: f.capturedAt,
+      appName: f.appName,
+      windowTitle: f.windowTitle,
+      captureReason: f.captureReason,
+    }));
+    const framesMetadataText = framesMetadata
+      .map(
+        (m) =>
+          `  #${String(m.frameIndex).padStart(2, "0")} → ${m.capturedAt} → ${m.appName} → ${m.windowTitle}`
+      )
+      .join("\n");
+
+    const recentObservations = this.fetchRecentObservations(
+      batchBundle.batchId,
+      6
+    );
+    const recentObservationsJson = JSON.stringify(
+      { recentObservations },
+      null,
+      2
+    );
+
+    const userPrompt = BATCH_OBSERVER_PROMPT_TEMPLATE.replace(
+      /\{\{frames_count\}\}/g,
+      String(imagePaths.length)
+    )
+      .replace("{{frames_metadata_array}}", framesMetadataText)
+      .replace("{{batch_start_at}}", batchBundle.capturedAtStart)
+      .replace("{{batch_end_at}}", batchBundle.capturedAtEnd)
+      .replace("{{batch_timezone}}", batchBundle.timezone)
+      .replace("{{recent_observations_json}}", recentObservationsJson);
+
+    const jobInputJson = JSON.stringify({
+      batchId: batchBundle.batchId,
+      capturedAtStart: batchBundle.capturedAtStart,
+      capturedAtEnd: batchBundle.capturedAtEnd,
+      frameCount: imagePaths.length,
+      primaryAppName: batchBundle.appName,
+      primaryWindowTitle: batchBundle.windowTitle,
+      recentObservationCount: recentObservations.length,
+      mode: "l0_only",
+    });
+
+    const result = await this.modelJobQueue.enqueueMultimodalJob<BatchObserverOutput>(
+      {
+        type: "observer_batch",
+        captureId: batchBundle.batchId,
+        executor: async () => {
+          return this.modelGateway.callMultimodal<BatchObserverOutput>(
+            {
+              kind: "multimodal",
+              configId: multimodalModelConfigId,
+              systemPrompt: "",
+              userPrompt,
+              imagePaths,
+              jobType: "observer_batch",
+              jobInputJson,
+              reasoningEffort: "none",
+              maxTokens: 8192,
+              timeoutMs: 180_000,
+            },
+            BatchObserverOutputSchema
+          );
+        },
+      }
+    );
+
+    if (!result.ok || !result.data) {
+      return {
+        ok: false,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+        modelJobId: result.modelJobId,
+        attempts: result.attempts,
+      };
+    }
+
+    return {
+      ok: true,
+      data: {
+        observations: result.data.observations,
         modelJobId: result.modelJobId ?? "",
         attempts: result.attempts ?? 1,
       },

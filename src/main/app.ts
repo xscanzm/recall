@@ -523,9 +523,9 @@ app.whenReady().then(async () => {
   });
   reportScheduler.start();
 
-  // 5. 创建 CaptureBatcher（阶段二：攒批 12 帧合并提交）
+  // 5. 创建 CaptureBatcher（L0 微批次：默认攒批 6 帧合并提交）
   //    - CaptureService 的 capture-bundle 交给 batcher 攒批（不再直接调 pipeline）
-  //    - 攒满 12 帧或 5 分钟超时后 emit "batch-ready"
+  //    - 攒满 6 帧或 5 分钟超时后 emit "batch-ready"
   //    - batch-ready 交给 MemoryPipeline.processBatchCaptureBundle 处理
   captureBatcher = new CaptureBatcher();
   captureBatcher.on("batch-ready", (batchBundle) => {
@@ -538,7 +538,7 @@ app.whenReady().then(async () => {
 
   // 6. 订阅 CaptureService 的 capture-bundle 事件
   //    - 每当 CaptureService 成功捕获一个 bundle，加入攒批队列
-  //    - 攒批由 CaptureBatcher 管理（满 12 帧 / 5 分钟超时自动 flush）
+  //    - 攒批由 CaptureBatcher 管理（满 6 帧 / 5 分钟超时自动 flush）
   //    - 暂停状态由 CaptureService.setPaused 控制（暂停时不再 emit capture-bundle）
   captureService.on("capture-bundle", (bundle) => {
     if (!captureBatcher) return;
@@ -548,16 +548,17 @@ app.whenReady().then(async () => {
   // 7. 创建 SceneScheduler（C-3 修复：长会话触发 long_session capture bundle）
   //    - 监听 ActivityService 的 capture-candidate 事件，更新窗口/项目状态
   //    - 同一窗口/项目持续工作 >= longSessionIntervalMinutes 时发出 long_session bundle
-  //    - long_session 作为 flush 信号：先冲刷攒批（提交已积累的截图），再独立处理
+  //    - long_session 作为 flush 信号：只冲刷攒批（提交已积累的截图），不再走无图单帧 pipeline
   sceneScheduler = new SceneScheduler({
     settingsService,
     activityService,
     emitCaptureBundle: async (bundle) => {
-      if (!memoryPipeline) return;
-      // long_session: 先冲刷攒批，再独立处理（long_session bundle 无截图，走单帧 pipeline）
+      // long_session: 先冲刷攒批，然后直接返回（bundle 本身无截图，不走 L0 观察）
       if (bundle.captureReason === "long_session" && captureBatcher) {
         await captureBatcher.flush();
+        return;
       }
+      if (!memoryPipeline) return;
       memoryPipeline.processCaptureBundle(bundle).catch(() => {
         // pipeline 单次失败不阻断后续调度
       });
