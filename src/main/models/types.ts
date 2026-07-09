@@ -833,6 +833,7 @@ export interface TimelineBuilderInput {
     windowTitle: string;
     sceneSummary: string;
     userFacingSummary?: string;
+    likelyWorkPurpose?: string;
     privacyRisk?: "low" | "medium" | "high";
     reportableSignal?: "yes" | "maybe" | "no";
   }>;
@@ -855,8 +856,11 @@ export interface TimelineBuilderInput {
     summary: string;
     startAt: string;
     endAt: string;
+    projectId?: string | null;
     factIds: string[];
     observationIds: string[];
+    entityNames?: string[];
+    confidence?: number;
   }>;
 }
 

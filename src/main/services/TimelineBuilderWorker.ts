@@ -324,9 +324,9 @@ export class TimelineBuilderWorker {
   /**
    * Observation 摘要（用于 TimelineBuilderInput.observations）
    *
-   * 注意：Observation 实体未持久化 V2 体验字段（userFacingSummary / privacyRisk /
-   * reportableSignal），这些字段在 ObserverOutputV2 中由 LLM 输出但未落库到
-   * observations 表。这里只传 LLM 需要且实体上可用的字段。
+   * 记忆系统重构后，Observation 已持久化用户可读摘要、工作目的、隐私风险、
+   * 报告信号等 V2 字段。TimelineBuilder 应优先消费这些面向用户的字段，
+   * 而不是只看底层 sceneSummary。
    */
   private toObservationSummary(obs: Observation): TimelineBuilderInput["observations"][number] {
     return {
@@ -335,15 +335,18 @@ export class TimelineBuilderWorker {
       appName: obs.appName,
       windowTitle: obs.windowTitle,
       sceneSummary: obs.sceneSummary,
+      userFacingSummary: obs.userFacingSummary ?? undefined,
+      likelyWorkPurpose: obs.likelyWorkPurpose ?? undefined,
+      privacyRisk: obs.privacyRisk ?? undefined,
+      reportableSignal: obs.reportableSignal ?? undefined,
     };
   }
 
   /**
    * Fact 摘要（用于 TimelineBuilderInput.facts）
    *
-   * 注意：Fact 实体未持久化 V2 体验字段（displayUse / reportable / privateRisk），
-   * 这些字段在 ExtractorOutputV2 中由 LLM 输出但未落库到 facts 表。
-   * 这里只传 LLM 需要且实体上可用的字段。
+   * Fact 的 V2 使用意图、可报告性、隐私风险已经可落库。
+   * 在 L2/L3 仍在重构时，这些字段有助于时间轴更稳地判断 block 的用途和风险。
    */
   private toFactSummary(fact: Fact): TimelineBuilderInput["facts"][number] {
     return {
@@ -354,12 +357,18 @@ export class TimelineBuilderWorker {
       projectHint: fact.projectHint ?? undefined,
       confidence: fact.confidence,
       importance: fact.importance,
+      displayUse: fact.displayUse ?? undefined,
+      reportable: fact.reportable ?? undefined,
+      privateRisk: fact.privateRisk ?? undefined,
       sourceObservationIds: fact.sourceObservationIds,
     };
   }
 
   /**
    * Scene 摘要（用于 TimelineBuilderInput.scenes）
+   *
+   * 当前 scenes 在重构期承担 L1 Episode 落库面，可能没有 factIds，
+   * 但 observationIds / entityNames 仍然足以帮助时间轴组织自然片段。
    */
   private toSceneSummary(scene: Scene): TimelineBuilderInput["scenes"][number] {
     return {
@@ -368,8 +377,11 @@ export class TimelineBuilderWorker {
       summary: scene.summary,
       startAt: scene.startAt,
       endAt: scene.endAt,
+      projectId: scene.projectId ?? undefined,
       factIds: scene.factIds,
       observationIds: scene.observationIds,
+      entityNames: scene.entityNames,
+      confidence: scene.confidence,
     };
   }
 

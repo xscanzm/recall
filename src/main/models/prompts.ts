@@ -866,6 +866,12 @@ export const TIMELINE_BUILDER_PROMPT_TEMPLATE = `任务：你是 Recall 的今�
 7. 判断该 block 是否适合进入工作日报。
 8. 判断该 block 的隐私风险。
 
+【输入理解规则】
+- observations 是最基础的瞬时记录，userFacingSummary / likelyWorkPurpose / privacyRisk / reportableSignal 比 sceneSummary 更贴近用户可读表达，优先利用。
+- scenes 在当前系统里可能来自规则化 Episode 聚合，即使 factIds 为空，也仍然可以作为组织时间轴的主骨架。
+- facts 可能为空、很少，或明显落后于 observations/scenes；不要因为 facts 稀少就拒绝整理时间轴。
+- 当 observations 与 scenes 能表达清楚时，可以产出高质量 block；不要强依赖 facts。
+
 禁止：
 - 不要使用"深海沉浸""心流年轮""今日颂歌"等词。
 - 不要输出应用占比。
