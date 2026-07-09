@@ -193,6 +193,17 @@ export class MemoryPipeline {
       errors: [],
     };
 
+    // L0 观察必须有可用图像输入。long_session 已在 app.ts 侧退化为 flush-only；
+    // 这里再加一道保险，避免未来新的无图 bundle 误入单帧多模态路径。
+    if (!this.hasVisualInput(bundle)) {
+      result.errors.push({
+        step: "observerExtractor",
+        code: "no_visual_input",
+        message: "当前 capture bundle 不含可观察图像，已跳过单帧 pipeline",
+      });
+      return result;
+    }
+
     // 调试模式：初始化 debugEvents 收集器
     const debugEvents: DebugEvent[] | undefined = this.settingsService?.isDebugMode() ? [] : undefined;
 
@@ -635,6 +646,13 @@ export class MemoryPipeline {
     if (this.setStatus) {
       this.setStatus({ pipelineState: state });
     }
+  }
+
+  private hasVisualInput(bundle: CaptureBundle): boolean {
+    if (bundle.stitchedImagePath && bundle.stitchedImagePath.length > 0) {
+      return true;
+    }
+    return Array.isArray(bundle.imagePaths) && bundle.imagePaths.some((p) => !!p && p.length > 0);
   }
 }
 
