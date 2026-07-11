@@ -1,0 +1,239 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const Database = require("better-sqlite3");
+const { CaptureInboxRepository } = require("../dist/main/db/repositories/CaptureInboxRepository");
+const { DataLifecycleService } = require("../dist/main/services/DataLifecycleService");
+const { FactRepository } = require("../dist/main/db/repositories/FactRepository");
+const { MemorySearchRepository } = require("../dist/main/db/repositories/MemorySearchRepository");
+const { ObservationRepository } = require("../dist/main/db/repositories/ObservationRepository");
+const { SceneRepository } = require("../dist/main/db/repositories/SceneRepository");
+const { MemoryEdgeRepository } = require("../dist/main/db/repositories/MemoryEdgeRepository");
+const { CorrectionLifecycleRepository } = require("../dist/main/db/repositories/CorrectionLifecycleRepository");
+const { TimelineBlockRepository } = require("../dist/main/db/repositories/TimelineBlockRepository");
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "recall-sqlite-"));
+const migrationsDir = path.join(__dirname, "..", "src", "main", "db", "migrations");
+
+function migrations() {
+  return fs.readdirSync(migrationsDir).filter((name) => name.endsWith(".sql")).sort();
+}
+
+function migrate(db, files = migrations()) {
+  db.exec("CREATE TABLE IF NOT EXISTS _migrations (version TEXT PRIMARY KEY, executed_at TEXT NOT NULL)");
+  const applied = new Set(db.prepare("SELECT version FROM _migrations").all().map((row) => row.version));
+  for (const name of files) {
+    if (applied.has(name)) continue;
+    db.transaction(() => {
+      db.exec(fs.readFileSync(path.join(migrationsDir, name), "utf8"));
+      db.prepare("INSERT INTO _migrations VALUES (?, ?)").run(name, new Date().toISOString());
+    })();
+  }
+}
+
+function capture(id, imagePath = "") {
+  return {
+    captureId: id, capturedAt: "2026-07-11T10:00:00.000Z", timezone: "UTC", appName: "Editor",
+    windowTitle: "Recall", captureReason: "manual_capture", activitySignals: {
+      keyboardActive: true, mouseActive: false, idleSeconds: 0, activeWindowStableSeconds: 30,
+    }, imagePaths: imagePath ? [imagePath] : [], retentionPolicy: "today",
+  };
+}
+
+function batch(id, frames) {
+  return {
+    batchId: id, frames, capturedAtStart: frames[0].capturedAt,
+    capturedAtEnd: frames.at(-1).capturedAt, timezone: "UTC", appName: "Editor",
+    windowTitle: "Recall", captureReason: "batch_flush", imagePaths: [],
+    compressedImagePaths: [], retentionPolicy: "today",
+  };
+}
+
+function insertObservation(db, id, captureId, capturedAt, screenshotPaths = []) {
+  db.prepare(`INSERT INTO observations
+    (id,capture_id,captured_at,app_name,window_title,capture_reason,scene_summary,visible_content_json,
+     detected_entities_json,possible_tasks_json,possible_decisions_json,sensitivity,confidence,
+     uncertainties_json,screenshot_retention,screenshot_paths_json,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+      id, captureId, capturedAt, "Editor", "Recall", "manual_capture", "summary", "[]", "[]", "[]", "[]",
+      "normal", 1, "[]", "today", JSON.stringify(screenshotPaths), capturedAt
+    );
+}
+
+function timelineBlock(id, sourceObservationIds, sourceSceneIds = []) {
+  return {
+    id, dateKey: "2026-07-11", startAt: "2026-07-11T10:00:00.000Z", endAt: "2026-07-11T10:05:00.000Z",
+    title: id, summary: id, category: "coding", projectIds: [], projectNames: [], highlights: [],
+    generatedTasks: [], generatedDecisions: [], reportable: true, privateRisk: "low",
+    sourceSceneIds, sourceFactIds: [], sourceObservationIds,
+  };
+}
+
+async function main() {
+  const dbPath = path.join(root, "integration.db");
+  const db = new Database(dbPath);
+  db.pragma("foreign_keys = ON");
+  try {
+    migrate(db);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM _migrations").get().count, migrations().length);
+
+    const timelineRepo = new TimelineBlockRepository(db);
+    timelineRepo.insertMany("2026-07-11", [timelineBlock("frozen", ["o-frozen"]), timelineBlock("mutable", [], ["scene-stable"])]);
+    db.prepare(`INSERT INTO reports
+      (id,type,date_key,title,content_json,source_fact_ids_json,source_scene_ids_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+        "timeline-report", "work_daily_report", "2026-07-11", "Report",
+        JSON.stringify({ sourceTimelineBlockIds: ["frozen"] }), "[]", "[]", new Date().toISOString(), new Date().toISOString()
+      );
+    const replaced = timelineRepo.replaceWindowAndCheckpoint({
+      dateKey: "2026-07-11", windowStart: "2026-07-11T09:00:00.000Z", windowEnd: "2026-07-11T11:00:00.000Z",
+      blocks: [timelineBlock("ignored-model-id", ["o-frozen"]), timelineBlock("another-model-id", [], ["scene-stable"])],
+      processedThrough: "2026-07-11T11:00:00.000Z",
+    });
+    assert.deepEqual(replaced.map((value) => value.id).sort(), ["frozen", "mutable"], "report references freeze cards and source overlap inherits IDs");
+    assert.equal(db.prepare("SELECT processed_through FROM timeline_build_checkpoints WHERE date_key = ?").get("2026-07-11").processed_through, "2026-07-11T11:00:00.000Z");
+
+    const beforeTimeline = timelineRepo.findByDateKey("2026-07-11");
+    assert.throws(() => timelineRepo.replaceWindowAndCheckpoint({
+      dateKey: "2026-07-11", windowStart: "2026-07-11T09:00:00.000Z", windowEnd: "2026-07-11T11:00:00.000Z",
+      blocks: [{ ...timelineBlock("invalid", ["new-source"]), title: undefined }],
+      processedThrough: "2026-07-11T12:00:00.000Z",
+    }));
+    assert.deepEqual(timelineRepo.findByDateKey("2026-07-11"), beforeTimeline, "timeline replacement rolls back deleted blocks");
+    assert.equal(db.prepare("SELECT processed_through FROM timeline_build_checkpoints WHERE date_key = ?").get("2026-07-11").processed_through, "2026-07-11T11:00:00.000Z", "checkpoint rolls back with replacement");
+
+    const inbox = new CaptureInboxRepository(db);
+    const first = capture("cap-1");
+    assert.equal(inbox.enqueueCapture(first), true);
+    assert.equal(inbox.enqueueCapture(first), false, "capture enqueue is idempotent");
+    assert.equal(inbox.createBatch(batch("batch-1", [first])), true);
+    assert.equal(inbox.createBatch(batch("batch-1", [first])), false, "batch creation is idempotent");
+    inbox.markStageRunning("batch-1", "observer");
+    inbox.markStageSucceeded("batch-1", "observer", { observationIds: ["obs-1"] });
+    const checkpointed = inbox.listProcessableBatches(3)[0];
+    assert.equal(checkpointed.stages.observer, "succeeded");
+    assert.deepEqual(checkpointed.checkpoint.observationIds, ["obs-1"]);
+    inbox.markRunning("batch-1");
+    assert.equal(inbox.recoverRunningBatches(), 1);
+    assert.equal(inbox.listProcessableBatches(3)[0].attempts, 1);
+    inbox.markRunning("batch-1");
+    inbox.checkpointRunning("batch-1");
+    assert.equal(inbox.listProcessableBatches(3)[0].status, "pending");
+    inbox.markSucceeded("batch-1");
+    assert.equal(db.prepare("SELECT status FROM capture_inbox WHERE capture_id = ?").get("cap-1").status, "succeeded");
+
+    const now = "2026-07-11T10:00:00.000Z";
+    db.prepare("INSERT INTO projects (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run("p1", "Recall project", "SQLite search", "active", "[]", "[]", now, now);
+    db.prepare("INSERT INTO facts (id,type,content,project_id,importance,confidence,inferred,source_observation_ids_json,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run("f1", "note", "fix C++ parser edge-case", "p1", 1, 1, 0, "[]", '["fts5"]', now, now);
+    db.prepare("INSERT INTO reports (id,type,date_key,title,content_json,source_fact_ids_json,source_scene_ids_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run("r1", "daily", "2026-07-11", "FTS report", '{"body":"parser progress"}', "[]", "[]", now, now);
+    const search = new MemorySearchRepository(db).search("parser", 1, 0);
+    assert.equal(search.total, 2);
+    assert.equal(search.results.length, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count >= 3, true);
+
+    const corrections = new CorrectionLifecycleRepository(db);
+    corrections.recordRevision({ targetType: "fact", targetId: "f1", feedbackType: "content_wrong", before: { content: "before" }, after: { content: "after" } });
+    const revisions = corrections.listRevisions("fact", "f1");
+    assert.equal(revisions.length, 1);
+    assert.deepEqual(revisions[0].before, { content: "before" });
+    corrections.enqueue("fact", "f1", ["timeline", "report", "search", "l3"], "correction:content_wrong");
+    corrections.enqueue("fact", "f1", ["search"], "correction:content_wrong");
+    assert.equal(corrections.listPending().length, 4, "pending invalidations are deduplicated by projection and target");
+    assert.equal(corrections.markCompleted(corrections.listPending()[0].id), true);
+    assert.equal(corrections.listPending().length, 3);
+
+    const oldFile = path.join(root, "old.png");
+    fs.writeFileSync(oldFile, "test");
+    insertObservation(db, "obs-old", "cap-old", "2020-01-01T00:00:00.000Z", [oldFile]);
+    const observationRepo = new ObservationRepository(db);
+    const factRepo = new FactRepository(db);
+    const sceneRepo = new SceneRepository(db);
+    const episodeInput = {
+      title: "Episode", summary: "summary", startAt: now, endAt: now, projectId: null,
+      confidence: 1, factIds: [], observationIds: ["obs-old"], entityNames: [], taskIds: [], decisionIds: [],
+      derivationKey: "episode:v1:obs-old", derivationVersion: 1,
+    };
+    const episode = sceneRepo.create(episodeInput);
+    assert.equal(sceneRepo.create(episodeInput).id, episode.id, "episode derivation is idempotent");
+    const atomInput = {
+      type: "note", content: "derived", status: null, projectId: null, projectHint: null,
+      importance: 1, confidence: 1, inferred: false, evidenceText: "evidence",
+      sourceObservationIds: ["obs-old"], tags: [], sourceEpisodeIds: [episode.id],
+      claimStatus: "active", generationPath: "test", generationVersion: 1, derivationKey: "atom:v1:test:0",
+    };
+    const atom = factRepo.create(atomInput);
+    assert.equal(factRepo.create(atomInput).id, atom.id, "atom derivation is idempotent");
+    const edges = new MemoryEdgeRepository(db);
+    const edgeInput = { fromType: "scene", fromId: episode.id, toType: "fact", toId: atom.id, relationType: "contains", confidence: 0.5, createdBy: "system", evidenceIds: ["obs-old"], status: "active" };
+    const edge = edges.create(edgeInput);
+    assert.equal(edges.create({ ...edgeInput, confidence: 0.9 }).id, edge.id, "edge natural key upserts");
+    assert.equal(edges.getById(edge.id).confidence, 0.9);
+    assert.throws(() => edges.create({ ...edgeInput, toId: "missing" }), /endpoint does not exist/);
+    const service = new DataLifecycleService({
+      db, observationRepo, factRepo, sceneRepo,
+      screenshotCache: {
+        deleteFiles: async (paths) => {
+          for (const file of paths) fs.rmSync(file, { force: true });
+          return { attempted: paths.length, deletedScreenshots: paths.length, failed: 0 };
+        },
+        clearAll: async () => ({ attempted: 0, deletedScreenshots: 0, failed: 0 }),
+      },
+      captureService: { drain: async () => {} }, captureBatcher: { suspendAndFlush: async () => {}, resumeAccepting: () => {} },
+      batchProcessor: { drain: async () => {} }, isObserving: () => false, pauseSources: () => {}, resumeSources: () => {},
+      cascade: () => {},
+    });
+    const forgotten = await service.forgetRecent("15m");
+    assert.equal(forgotten.deletedObservations, 0, "strict recent range preserves old observations");
+
+    const beforeRollback = db.prepare("SELECT COUNT(*) count FROM facts").get().count;
+    const failingService = new DataLifecycleService({
+      db, observationRepo, factRepo, sceneRepo, screenshotCache: { deleteFiles: async () => ({ attempted: 0, deletedScreenshots: 0, failed: 0 }) },
+      captureService: { drain: async () => {} }, captureBatcher: { suspendAndFlush: async () => {}, resumeAccepting: () => {} },
+      batchProcessor: { drain: async () => {} }, isObserving: () => false, pauseSources: () => {}, resumeSources: () => {},
+      cascade: () => { throw new Error("rollback marker"); },
+    });
+    insertObservation(db, "obs-new", "cap-new", new Date().toISOString());
+    db.prepare("UPDATE facts SET source_observation_ids_json = ? WHERE id = ?").run('["obs-new"]', "f1");
+    await assert.rejects(() => failingService.forgetRecent("15m"), /rollback marker/);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM facts").get().count, beforeRollback);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM observations WHERE id = 'obs-new'").get().count, 1);
+
+    const exportCollections = ["observations", "facts", "scenes", "tasks", "decisions", "people", "projects", "reports"];
+    const exportCounts = Object.fromEntries(exportCollections.map((table) => [table, db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count]));
+    assert.equal(exportCounts.facts, 2);
+    assert.equal(exportCounts.reports, 2);
+
+    await service.clearAll();
+    for (const table of ["observations", "facts", "scenes", "projects", "reports", "capture_inbox", "capture_batches"]) {
+      assert.equal(db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count, 0, `${table} cleared transactionally`);
+    }
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count, 0);
+  } finally {
+    db.close();
+  }
+
+  const failurePath = path.join(root, "migration-failure.db");
+  const failureDb = new Database(failurePath);
+  try {
+    const files = migrations();
+    migrate(failureDb, files.slice(0, -1));
+    failureDb.exec("CREATE TABLE preserved_user_data (value TEXT NOT NULL); INSERT INTO preserved_user_data VALUES ('keep-me');");
+    failureDb.exec("CREATE TABLE timeline_build_checkpoints (date_key TEXT PRIMARY KEY)");
+    assert.throws(() => migrate(failureDb), /already exists/);
+    assert.equal(failureDb.prepare("SELECT value FROM preserved_user_data").get().value, "keep-me");
+    assert.equal(failureDb.prepare("SELECT COUNT(*) count FROM _migrations WHERE version = ?").get(files.at(-1)).count, 0);
+  } finally {
+    failureDb.close();
+  }
+
+  console.log("SQLite integration passed: migrations/failure preservation, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
+}
+
+main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

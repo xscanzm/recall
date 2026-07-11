@@ -17,6 +17,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import sharp from "sharp";
 import type { BatchCaptureBundle, CaptureBundle } from "../models/types";
+import type { CaptureInboxRepository } from "../db/repositories/CaptureInboxRepository";
 import { logger } from "./Logger";
 
 /**
@@ -31,6 +32,7 @@ const JPEG_QUALITY = 25; // JPEG q=25（阶段一验证参数）
  * CaptureBatcher 配置
  */
 export interface CaptureBatcherConfig {
+  repository: CaptureInboxRepository;
   /**
    * 压缩图临时目录。默认用 os.tmpdir()/recall-batch
    * 压缩图使用后由调用方（ObserverExtractorWorker）清理
@@ -53,13 +55,27 @@ export class CaptureBatcher extends EventEmitter {
   private queue: CaptureBundle[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
   private readonly compressedDir: string;
+  private readonly repository: CaptureInboxRepository;
   private isFlushing = false;
+  private flushPromise: Promise<void> | null = null;
+  private accepting = true;
 
-  constructor(config: CaptureBatcherConfig = {}) {
+  constructor(config: CaptureBatcherConfig) {
     super();
+    this.repository = config.repository;
     this.compressedDir =
       config.compressedDir ?? path.join(os.tmpdir(), "recall-batch");
     fs.mkdirSync(this.compressedDir, { recursive: true });
+    this.queue = this.repository.listPendingCaptures();
+    if (this.queue.length > 0) {
+      setImmediate(() => {
+        this.flush().catch((err) => {
+          logger.error({
+            message: `CaptureBatcher 启动恢复 flush 失败: ${err instanceof Error ? err.message : String(err)}`,
+          });
+        });
+      });
+    }
   }
 
   /**
@@ -67,7 +83,9 @@ export class CaptureBatcher extends EventEmitter {
    * - 攒满 6 帧立即触发 flush
    * - 未满时启动 5 分钟超时定时器
    */
-  add(bundle: CaptureBundle): void {
+  add(bundle: CaptureBundle): boolean {
+    if (!this.accepting) return false;
+    if (!this.repository.enqueueCapture(bundle)) return true;
     this.queue.push(bundle);
     logger.info({
       message: `CaptureBatcher.add: 队列长度 ${this.queue.length}/${BATCH_SIZE} (captureId=${bundle.captureId})`,
@@ -90,6 +108,7 @@ export class CaptureBatcher extends EventEmitter {
         });
       }, FLUSH_INTERVAL_MS);
     }
+    return true;
   }
 
   /**
@@ -102,10 +121,14 @@ export class CaptureBatcher extends EventEmitter {
    * 注意：调用方应在 MemoryPipeline 处理完 batch-ready 后清理 compressedImagePaths
    */
   async flush(): Promise<void> {
-    // 防止并发 flush
-    if (this.isFlushing) {
-      return;
-    }
+    if (this.flushPromise) return this.flushPromise;
+    this.flushPromise = this.doFlush().finally(() => {
+      this.flushPromise = null;
+    });
+    return this.flushPromise;
+  }
+
+  private async doFlush(): Promise<void> {
     if (this.queue.length === 0) {
       if (this.flushTimer) {
         clearTimeout(this.flushTimer);
@@ -122,24 +145,29 @@ export class CaptureBatcher extends EventEmitter {
       this.flushTimer = null;
     }
 
-    const frames = this.queue.splice(0);
+    const frames = this.queue.splice(0, BATCH_SIZE);
+    const batchId = createBatchId(frames);
     logger.info({
       message: `CaptureBatcher.flush: 提交 ${frames.length} 帧`,
     });
 
     try {
       // 压缩所有帧为 JPEG q=25
-      const compressedImagePaths = await this.compressImages(frames);
+      const compressedImagePaths = await this.compressImages(frames, batchId);
 
-      const batchBundle = this.composeBatch(frames, compressedImagePaths);
-      this.emit("batch-ready", batchBundle);
+      const batchBundle = this.composeBatch(frames, compressedImagePaths, batchId);
+      if (this.repository.createBatch(batchBundle)) {
+        this.emit("batch-ready");
+      }
     } catch (err) {
       logger.error({
         message: `CaptureBatcher 压缩/构造批次失败: ${err instanceof Error ? err.message : String(err)}`,
       });
-      // 失败时不重入队列（避免无限循环），直接丢弃本次攽批
+      this.queue.unshift(...frames);
+      throw err;
     } finally {
       this.isFlushing = false;
+      if (this.queue.length > 0) this.scheduleFlush();
     }
   }
 
@@ -149,10 +177,32 @@ export class CaptureBatcher extends EventEmitter {
    * - 如需提交当前攽批，应先调 flush() 再调 stop()
    */
   stop(): void {
+    this.accepting = false;
     if (this.flushTimer) {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+  }
+
+  stopAccepting(): void {
+    this.accepting = false;
+  }
+
+  async suspendAndFlush(): Promise<void> {
+    this.stopAccepting();
+    while (this.flushPromise || this.queue.length > 0) await this.flush();
+  }
+
+  resumeAccepting(): void {
+    this.accepting = true;
+  }
+
+  async drain(): Promise<void> {
+    this.stopAccepting();
+    while (this.flushPromise || this.queue.length > 0) {
+      await this.flush();
+    }
+    this.stop();
   }
 
   /**
@@ -161,8 +211,7 @@ export class CaptureBatcher extends EventEmitter {
    * - 文件名：batch_<batchId>_frame_<idx>.jpg
    * - 返回压缩后的文件路径数组（与 frames 顺序对应）
    */
-  private async compressImages(frames: CaptureBundle[]): Promise<string[]> {
-    const batchId = `batch_${Date.now().toString(36)}`;
+  private async compressImages(frames: CaptureBundle[], batchId: string): Promise<string[]> {
     const paths: string[] = [];
 
     for (let i = 0; i < frames.length; i++) {
@@ -208,11 +257,12 @@ export class CaptureBatcher extends EventEmitter {
    */
   private composeBatch(
     frames: CaptureBundle[],
-    compressedImagePaths: string[]
+    compressedImagePaths: string[],
+    batchId: string
   ): BatchCaptureBundle {
     const mid = Math.floor(frames.length / 2);
     return {
-      batchId: `batch_${Date.now().toString(36)}`,
+      batchId,
       frames,
       capturedAtStart: frames[0].capturedAt,
       capturedAtEnd: frames[frames.length - 1].capturedAt,
@@ -224,6 +274,17 @@ export class CaptureBatcher extends EventEmitter {
       compressedImagePaths,
       retentionPolicy: frames[0].retentionPolicy,
     };
+  }
+
+  private scheduleFlush(): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flush().catch((err) => {
+        logger.error({
+          message: `CaptureBatcher 超时 flush 失败: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      });
+    }, FLUSH_INTERVAL_MS);
   }
 
   /**
@@ -241,4 +302,36 @@ export class CaptureBatcher extends EventEmitter {
       }
     }
   }
+
+  static async restoreCompressedImages(bundle: BatchCaptureBundle): Promise<boolean> {
+    for (let i = 0; i < bundle.frames.length; i++) {
+      const existing = bundle.compressedImagePaths[i];
+      if (existing && fs.existsSync(existing)) continue;
+      const source = bundle.frames[i].imagePaths[0];
+      if (!source || !fs.existsSync(source)) {
+        bundle.compressedImagePaths[i] = "";
+        continue;
+      }
+      const output = existing || path.join(
+        os.tmpdir(),
+        "recall-batch",
+        `${bundle.batchId}_frame_${i + 1}.jpg`
+      );
+      fs.mkdirSync(path.dirname(output), { recursive: true });
+      try {
+        await sharp(source)
+          .resize({ width: FRAME_TARGET_WIDTH })
+          .jpeg({ quality: JPEG_QUALITY })
+          .toFile(output);
+        bundle.compressedImagePaths[i] = output;
+      } catch {
+        bundle.compressedImagePaths[i] = "";
+      }
+    }
+    return bundle.compressedImagePaths.some((imagePath) => !!imagePath);
+  }
+}
+
+function createBatchId(frames: CaptureBundle[]): string {
+  return `batch_${frames.map((frame) => frame.captureId).join("_")}`;
 }

@@ -149,7 +149,7 @@ export class EpisodeFactExtractorWorker {
     }
 
     const facts: Fact[] = [];
-    for (const factInput of result.data.facts) {
+    for (const [index, factInput] of result.data.facts.entries()) {
       try {
         const fact = this.factRepo.create({
           type: factInput.type,
@@ -168,6 +168,13 @@ export class EpisodeFactExtractorWorker {
           privateRisk: factInput.privateRisk,
           userValue: factInput.userValue,
           peopleHints: factInput.peopleHints ?? null,
+          sourceEpisodeIds: scenes
+            .filter((scene) => factInput.sourceObservationIds.some((id) => scene.observationIds.includes(id)))
+            .map((scene) => scene.id),
+          claimStatus: "active",
+          generationPath: "episode_fact_extractor",
+          generationVersion: 1,
+          derivationKey: `atom:v1:${scenes.map((scene) => scene.id).sort().join(",")}:${index}`,
         });
         facts.push(fact);
       } catch {
@@ -279,12 +286,12 @@ export class EpisodeFactExtractorWorker {
     try {
       const recentFeedbackTypes = [
         "not_important",
-        "wrong_content",
-        "project_wrong",
+        "content_wrong",
+        "wrong_project",
         "task_done",
         "not_a_task",
         "do_not_record",
-        "sensitive_content",
+        "sensitive_delete",
       ];
       const summaries: string[] = [];
       for (const fbType of recentFeedbackTypes) {

@@ -50,13 +50,22 @@ export class MemoryEdgeRepository {
     const id = input.id ?? generateId("edge");
     const now = new Date().toISOString();
 
+    this.validateEndpoint(input.fromType, input.fromId);
+    this.validateEndpoint(input.toType, input.toId);
     this.db
       .prepare(
         `INSERT INTO memory_edges (
           id, from_type, from_id, to_type, to_id, relation_type,
           confidence, created_by, evidence_ids_json, status, reason,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(from_type, from_id, to_type, to_id, relation_type) DO UPDATE SET
+          confidence = excluded.confidence,
+          created_by = excluded.created_by,
+          evidence_ids_json = excluded.evidence_ids_json,
+          status = excluded.status,
+          reason = excluded.reason,
+          updated_at = excluded.updated_at`
       )
       .run(
         id,
@@ -74,7 +83,20 @@ export class MemoryEdgeRepository {
         now
       );
 
-    return this.getById(id)!;
+    return this.getByNaturalKey(input.fromType, input.fromId, input.toType, input.toId, input.relationType)!;
+  }
+
+  private getByNaturalKey(fromType: string, fromId: string, toType: string, toId: string, relationType: string): MemoryEdge | null {
+    const row = this.db.prepare(`SELECT * FROM memory_edges WHERE from_type = ? AND from_id = ? AND to_type = ? AND to_id = ? AND relation_type = ?`)
+      .get(fromType, fromId, toType, toId, relationType) as MemoryEdgeRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  private validateEndpoint(type: string, id: string): void {
+    const table = ENDPOINT_TABLES[type];
+    if (!table) return;
+    const found = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id);
+    if (!found) throw new Error(`memory edge ${type} endpoint does not exist: ${id}`);
   }
 
   getById(id: string): MemoryEdge | null {
@@ -160,6 +182,12 @@ export class MemoryEdgeRepository {
     return result.changes;
   }
 }
+
+const ENDPOINT_TABLES: Record<string, string> = {
+  observation: "observations", moment: "observations", fact: "facts", atom: "facts",
+  scene: "scenes", episode: "scenes", project: "projects", task: "tasks",
+  person: "people", decision: "decisions", report: "reports",
+};
 
 export function createMemoryEdgeRepository(db: DB): MemoryEdgeRepository {
   return new MemoryEdgeRepository(db);

@@ -111,7 +111,7 @@ const DEFAULT_CONFIG: Required<CaptureServiceConfig> = {
  * 2. 收到事件后调用 PrivacyGuard.checkBeforeCapture
  * 3. 若允许：调用 desktopCapturer 截图活动窗口
  *    - 只采活动窗口（types: ['window']）
- *    - 通过 source.name 与 windowTitle 匹配定位活动窗口
+ *    - 通过非空 windowId 和 windowTitle 严格定位活动窗口
  * 4. 保存截图到 ScreenshotCache
  * 5. 多帧采集时生成 stitched image
  * 6. 构造 CaptureBundle 并通过 'capture-bundle' 事件发出
@@ -135,6 +135,7 @@ export class CaptureService extends EventEmitter {
 
   // 事件回调引用（用于 off）
   private captureCandidateHandler: ((event: CaptureCandidateEvent) => void) | null = null;
+  private readonly activeCaptures = new Set<Promise<unknown>>();
 
   constructor(config: CaptureServiceConfig = {}) {
     super();
@@ -195,7 +196,7 @@ export class CaptureService extends EventEmitter {
     }
     const handler = (event: CaptureCandidateEvent) => {
       // 异步处理，不阻塞 EventEmitter
-      this.handleCaptureCandidate(event).catch(() => {
+      this.trackCapture(this.handleCaptureCandidate(event)).catch(() => {
         // 单次捕获失败不阻断后续
       });
     };
@@ -212,6 +213,12 @@ export class CaptureService extends EventEmitter {
       this.activityService.off("capture-candidate", this.captureCandidateHandler);
     }
     this.captureCandidateHandler = null;
+  }
+
+  async drain(): Promise<void> {
+    while (this.activeCaptures.size > 0) {
+      await Promise.allSettled([...this.activeCaptures]);
+    }
   }
 
   /**
@@ -239,7 +246,7 @@ export class CaptureService extends EventEmitter {
       triggeredAt: new Date().toISOString(),
     };
 
-    const result = await this.handleCaptureCandidate(triggerEvent);
+    const result = await this.trackCapture(this.handleCaptureCandidate(triggerEvent));
     return result?.bundle ?? null;
   }
 
@@ -398,13 +405,17 @@ export class CaptureService extends EventEmitter {
    * - 监听器（MemoryPipeline）处理失败不阻断 capture 流程
    */
   private emitCaptureBundle(bundle: CaptureBundle): void {
-    setImmediate(() => {
-      try {
-        this.emit("capture-bundle", bundle);
-      } catch {
-        // 监听器内部错误不阻断 capture 流程
-      }
-    });
+    try {
+      this.emit("capture-bundle", bundle);
+    } catch {
+      // 监听器内部错误不阻断 capture 流程
+    }
+  }
+
+  private trackCapture<T>(promise: Promise<T>): Promise<T> {
+    this.activeCaptures.add(promise);
+    void promise.finally(() => this.activeCaptures.delete(promise)).catch(() => {});
+    return promise;
   }
 
   /**
@@ -423,7 +434,7 @@ export class CaptureService extends EventEmitter {
   /**
    * 截图活动窗口（一帧或多帧）
    * - 只采活动窗口（types: ['window']）
-   * - 通过 source.name 匹配 windowTitle 定位活动窗口
+   * - 通过 windowId 和非空 windowTitle 严格定位活动窗口
    * - 多帧：间隔 frameIntervalMs 采集，最多 frameCount 帧
    *
    * 注意：desktopCapturer 必须在 app.whenReady() 之后调用
@@ -438,12 +449,12 @@ export class CaptureService extends EventEmitter {
 
     for (let i = 0; i < frameCount; i++) {
       const capturedAt = new Date();
-      const buffer = await this.captureSingleFrame(window);
-      if (buffer) {
+      const frame = await this.captureSingleFrame(window);
+      if (frame) {
         frames.push({
-          buffer,
+          buffer: frame.buffer,
           capturedAt,
-          sourceId: "", // desktopCapturer source id（不持久化）
+          sourceId: frame.sourceId,
         });
       }
 
@@ -459,13 +470,15 @@ export class CaptureService extends EventEmitter {
   /**
    * 截取单帧活动窗口
    * - desktopCapturer.getSources({ types: ['window'] })
-   * - 通过 source.name 与 windowTitle 匹配（部分匹配，避免窗口标题变化）
-   * - 若匹配不到，使用第一个 source 作为降级（仅当 source.name 接近）
+   * - windowId 可用时要求 source id 与非空 windowTitle 同时匹配
+   * - windowId 不可用时仅允许非空 windowTitle 精确匹配
+   * - 匹配失败时返回 null，禁止捕获其他窗口
    */
   private async captureSingleFrame(window: {
     appName: string;
     windowTitle: string;
-  }): Promise<Buffer | null> {
+    windowId?: number;
+  }): Promise<{ buffer: Buffer; sourceId: string } | null> {
     try {
       const sources = await desktopCapturer.getSources({
         types: ["window"],
@@ -480,21 +493,8 @@ export class CaptureService extends EventEmitter {
         return null;
       }
 
-      // 匹配活动窗口：优先使用 source.name 与 windowTitle 完全/部分匹配
-      let target = sources.find((s) => s.name === window.windowTitle);
-      if (!target) {
-        // 部分匹配：source.name 包含 windowTitle 或反之
-        target = sources.find((s) => {
-          return (
-            (window.windowTitle && s.name.includes(window.windowTitle)) ||
-            (s.name && window.windowTitle.includes(s.name))
-          );
-        });
-      }
-      // 降级：使用第一个 source（通常是最近活动的窗口）
-      if (!target) {
-        target = sources[0];
-      }
+      const target = findMatchingWindowSource(sources, window);
+      if (!target) return null;
 
       if (!target.thumbnail || target.thumbnail.isEmpty()) {
         return null;
@@ -502,7 +502,7 @@ export class CaptureService extends EventEmitter {
 
       // 将 NativeImage 转换为 PNG buffer
       const pngBuffer = target.thumbnail.toPNG();
-      return Buffer.from(pngBuffer);
+      return { buffer: Buffer.from(pngBuffer), sourceId: target.id };
     } catch {
       return null;
     }
@@ -604,6 +604,28 @@ export class CaptureService extends EventEmitter {
       return "today";
     }
   }
+}
+
+export function findMatchingWindowSource<T extends { id: string; name: string }>(
+  sources: T[],
+  window: { windowTitle: string; windowId?: number }
+): T | undefined {
+  const title = window.windowTitle.trim();
+  if (!title) return undefined;
+
+  if (window.windowId !== undefined) {
+    const windowId = String(window.windowId);
+    const byId = sources.find((source) => {
+      const sourceWindowId = source.id.split(":")[1];
+      return sourceWindowId === windowId && source.name.trim() === title;
+    });
+    if (byId) return byId;
+    return undefined;
+  }
+
+  return sources.find(
+    (source) => source.id.trim().length > 0 && source.name.trim() === title
+  );
 }
 
 /**

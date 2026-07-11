@@ -12,6 +12,8 @@
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from "electron";
 import type { AppStatus, IpcResult } from "../shared/types";
+import { invokeValidated } from "./ipc/invokeValidated";
+import type { IpcRequest } from "../shared/ipcContracts";
 
 /**
  * Renderer 调用的 IPC API 表面
@@ -22,13 +24,11 @@ import type { AppStatus, IpcResult } from "../shared/types";
 const recallApi = {
   // -------------------- app --------------------
   app: {
-    getStatus: (): Promise<AppStatus> => ipcRenderer.invoke("app:getStatus"),
-    startObserving: (): Promise<AppStatus> => ipcRenderer.invoke("app:startObserving"),
-    pauseObserving: (): Promise<AppStatus> => ipcRenderer.invoke("app:pauseObserving"),
-    getLaunchAtLogin: (): Promise<{ ok: boolean; enabled: boolean }> =>
-      ipcRenderer.invoke("app:getLaunchAtLogin"),
-    setLaunchAtLogin: (input: { enabled: boolean }): Promise<{ ok: boolean; enabled: boolean }> =>
-      ipcRenderer.invoke("app:setLaunchAtLogin", input),
+    getStatus: () => invokeValidated(ipcRenderer, "app:getStatus"),
+    startObserving: () => invokeValidated(ipcRenderer, "app:startObserving"),
+    pauseObserving: () => invokeValidated(ipcRenderer, "app:pauseObserving"),
+    getLaunchAtLogin: () => invokeValidated(ipcRenderer, "app:getLaunchAtLogin"),
+    setLaunchAtLogin: (input: IpcRequest<"app:setLaunchAtLogin">) => invokeValidated(ipcRenderer, "app:setLaunchAtLogin", input),
     onStatusChanged: (callback: (status: AppStatus) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, status: AppStatus): void => callback(status);
       ipcRenderer.on("app:statusChanged", handler);
@@ -41,7 +41,7 @@ const recallApi = {
   // -------------------- settings --------------------
   settings: {
     get: <T>(): Promise<T> => ipcRenderer.invoke("settings:get"),
-    update: (input: unknown): Promise<{ ok: true }> =>
+    update: <T>(input: unknown): Promise<{ ok: true; settings: T }> =>
       ipcRenderer.invoke("settings:update", input),
   },
 
@@ -93,8 +93,7 @@ const recallApi = {
   // -------------------- memory --------------------
   memory: {
     listToday: <T>(): Promise<T> => ipcRenderer.invoke("memory:listToday"),
-    search: <T>(input: { query: string; limit?: number; offset?: number }): Promise<{ results: T[]; total: number }> =>
-      ipcRenderer.invoke("memory:search", input),
+    search: (input: IpcRequest<"memory:search">) => invokeValidated(ipcRenderer, "memory:search", input),
     updateFact: (input: unknown): Promise<{ ok: true }> =>
       ipcRenderer.invoke("memory:updateFact", input),
     updateTask: (input: unknown): Promise<{ ok: true }> =>
@@ -223,48 +222,22 @@ const recallApi = {
 
   // -------------------- capture --------------------
   capture: {
-    forgetRecent: (input: { duration: "15m" | "30m" | "1h" | "today" }): Promise<{
-      ok: true;
-      deletedObservations: number;
-      deletedScreenshots: number;
-    }> => ipcRenderer.invoke("capture:forgetRecent", input),
+    forgetRecent: (input: IpcRequest<"capture:forgetRecent">) => invokeValidated(ipcRenderer, "capture:forgetRecent", input),
   },
 
   // -------------------- screenshot --------------------
   screenshot: {
-    clear: (): Promise<{ ok: true; deletedScreenshots: number }> =>
-      ipcRenderer.invoke("screenshot:clear"),
+    clear: () => invokeValidated(ipcRenderer, "screenshot:clear"),
   },
 
   // -------------------- data（M8 新增） --------------------
   data: {
     // JSON 导出全部结构化记忆（默认不含截图）
-    export: (input?: { includeScreenshots?: boolean }): Promise<{
-      ok: boolean;
-      export?: {
-        meta: {
-          version: string;
-          exportedAt: string;
-          includeScreenshots: boolean;
-        };
-        observations: unknown[];
-        facts: unknown[];
-        scenes: unknown[];
-        tasks: unknown[];
-        decisions: unknown[];
-        people: unknown[];
-        projects: unknown[];
-        reports: unknown[];
-      };
-      code?: string;
-      message?: string;
-    }> => ipcRenderer.invoke("data:export", input),
+    export: (input?: IpcRequest<"data:export">) => invokeValidated(ipcRenderer, "data:export", input),
     // 清空所有结构化记忆数据 + 截图缓存（保留 settings/model_configs/privacy_rules/user_feedback）
-    clearAll: (): Promise<{ ok: boolean; deletedScreenshots: number; code?: string; message?: string }> =>
-      ipcRenderer.invoke("data:clearAll"),
+    clearAll: () => invokeValidated(ipcRenderer, "data:clearAll"),
     // 查询截图缓存当前大小
-    getCacheSize: (): Promise<{ ok: true; bytes: number; fileCount: number }> =>
-      ipcRenderer.invoke("data:getCacheSize"),
+    getCacheSize: () => invokeValidated(ipcRenderer, "data:getCacheSize"),
   },
 
   // -------------------- Phase 2 新增：timeline / personalReview / workReport / unfinishedThreads --------------------
@@ -274,10 +247,9 @@ const recallApi = {
    * - get：获取当天已持久化的 timeline blocks（不调用 LLM）
    */
   timeline: {
-    build: (dateKey: string): Promise<IpcResult<unknown>> =>
-      ipcRenderer.invoke("timeline:build", dateKey),
-    get: (dateKey: string): Promise<IpcResult<unknown[]>> =>
-      ipcRenderer.invoke("timeline:get", dateKey),
+    build: (dateKey: IpcRequest<"timeline:build">) => invokeValidated(ipcRenderer, "timeline:build", dateKey),
+    reorganizeDay: (dateKey: IpcRequest<"timeline:reorganizeDay">) => invokeValidated(ipcRenderer, "timeline:reorganizeDay", dateKey),
+    get: (dateKey: IpcRequest<"timeline:get">) => invokeValidated(ipcRenderer, "timeline:get", dateKey),
   },
 
   /**
@@ -299,21 +271,9 @@ const recallApi = {
    * - saveSelection：保存用户选区（不生成日报）
    */
   workReport: {
-    generate: (input: {
-      dateKey: string;
-      selectedBlockIds: string[];
-      style: "brief" | "standard" | "formal";
-      recipientHint?: "manager" | "team" | "client" | "self";
-    }): Promise<IpcResult<unknown>> =>
-      ipcRenderer.invoke("workReport:generate", input),
-    get: (dateKey: string): Promise<IpcResult<unknown>> =>
-      ipcRenderer.invoke("workReport:get", dateKey),
-    saveSelection: (input: {
-      dateKey: string;
-      selectedBlockIds: string[];
-      excludedBlockIds: string[];
-    }): Promise<IpcResult<null>> =>
-      ipcRenderer.invoke("workReport:saveSelection", input),
+    generate: (input: IpcRequest<"workReport:generate">) => invokeValidated(ipcRenderer, "workReport:generate", input),
+    get: (dateKey: IpcRequest<"workReport:get">) => invokeValidated(ipcRenderer, "workReport:get", dateKey),
+    saveSelection: (input: IpcRequest<"workReport:saveSelection">) => invokeValidated(ipcRenderer, "workReport:saveSelection", input),
   },
 
   /**

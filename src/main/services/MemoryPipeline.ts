@@ -29,9 +29,10 @@ import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
 import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
+import type { ObservationRepository } from "../db/repositories/ObservationRepository";
+import type { BatchCheckpoint, BatchStage, BatchStageStatus } from "../db/repositories/CaptureInboxRepository";
 import type { SettingsService } from "./SettingsService";
 import type { AppStatus } from "../../shared/types";
-import { CaptureBatcher } from "./CaptureBatcher";
 import { EpisodeBuilder } from "./EpisodeBuilder";
 import { SceneRelationProjector } from "./SceneRelationProjector";
 
@@ -71,6 +72,8 @@ export interface BatchPipelineResult {
     normalizer: { ok: number; discarded: number; failed: number };
     /** facts 写入统计：已写入/跳过数 */
     factsWrite: { written: number; skipped: number };
+    episodes: boolean;
+    atoms: boolean;
     linkerSceneJudge: boolean;
   };
   /** 已写入数据库的对象 id 列表 */
@@ -131,6 +134,7 @@ export class MemoryPipeline {
   private readonly sceneRepo: SceneRepository;
   private readonly factRepo: FactRepository;
   private readonly memoryObjectRepo: MemoryObjectRepository;
+  private readonly observationRepo: ObservationRepository;
   private readonly edgeRepo: MemoryEdgeRepository | null;
   private readonly settingsService: SettingsService | null;
   private readonly modelJobRepo: ModelJobRepository | null;
@@ -148,6 +152,7 @@ export class MemoryPipeline {
     sceneRepo: SceneRepository;
     factRepo: FactRepository;
     memoryObjectRepo: MemoryObjectRepository;
+    observationRepo: ObservationRepository;
     edgeRepo?: MemoryEdgeRepository;
     settingsService?: SettingsService;
     modelJobRepo?: ModelJobRepository;
@@ -161,6 +166,7 @@ export class MemoryPipeline {
     this.sceneRepo = deps.sceneRepo;
     this.factRepo = deps.factRepo;
     this.memoryObjectRepo = deps.memoryObjectRepo;
+    this.observationRepo = deps.observationRepo;
     this.edgeRepo = deps.edgeRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
     this.modelJobRepo = deps.modelJobRepo ?? null;
@@ -352,7 +358,14 @@ export class MemoryPipeline {
    * @returns 批次处理结果
    */
   async processBatchCaptureBundle(
-    batchBundle: BatchCaptureBundle
+    batchBundle: BatchCaptureBundle,
+    progress?: {
+      stages: Record<BatchStage, BatchStageStatus>;
+      checkpoint: BatchCheckpoint;
+      markRunning(stage: BatchStage): void;
+      markSucceeded(stage: BatchStage, checkpoint?: BatchCheckpoint): void;
+      markFailed(stage: BatchStage, error: string): void;
+    }
   ): Promise<BatchPipelineResult> {
     const result: BatchPipelineResult = {
       batchId: batchBundle.batchId,
@@ -360,6 +373,8 @@ export class MemoryPipeline {
         observerExtractor: false,
         normalizer: { ok: 0, discarded: 0, failed: 0 },
         factsWrite: { written: 0, skipped: 0 },
+        episodes: false,
+        atoms: false,
         linkerSceneJudge: false,
       },
       written: {
@@ -382,118 +397,140 @@ export class MemoryPipeline {
         code: "no_multimodal_config",
         message: "未配置多模态模型，跳过批次 pipeline",
       });
-      CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
       return result;
     }
 
     // ---------------- 步骤 1：Observer（批次 L0-only 调用） ----------------
     this.updatePipelineState("observing");
-    const observerResult = await this.runBatchObserver(
-      batchBundle,
-      multimodalConfigId
-    );
-    result.steps.observerExtractor = observerResult.ok;
-    if (!observerResult.ok || !observerResult.data) {
+    if (progress?.stages.observer !== "succeeded") progress?.markRunning("observer");
+    const observerResult = progress?.stages.observer === "succeeded"
+      ? null
+      : await this.runBatchObserver(batchBundle, multimodalConfigId);
+    result.steps.observerExtractor = progress?.stages.observer === "succeeded" || observerResult?.ok === true;
+    if (!result.steps.observerExtractor || (observerResult && !observerResult.data)) {
       result.errors.push({
         step: "observerExtractor",
-        code: observerResult.errorCode,
-        message: observerResult.errorMessage,
+        code: observerResult?.errorCode,
+        message: observerResult?.errorMessage,
       });
+      progress?.markFailed("observer", observerResult?.errorMessage ?? "observer failed");
       this.updatePipelineState("idle");
-      // 失败也要清理压缩图临时文件
-      CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
       return result;
     }
 
-    const { observations } = observerResult.data;
+    const observations = observerResult?.data?.observations ?? [];
 
     // ---------------- 步骤 2：Normalizer（批量落库 12 条 observation） ----------------
-    const normalizeResult = this.normalizer.normalizeBatch({
+    const normalizeResult = progress?.stages.observer === "succeeded"
+      ? null
+      : this.normalizer.normalizeBatch({
       observations,
       batchBundle,
       debugEvents,
     });
-    result.steps.normalizer = {
+    const observationIds = normalizeResult?.observationIds ?? progress?.checkpoint.observationIds ?? [];
+    result.steps.normalizer = normalizeResult ? {
       ok: normalizeResult.observationIds.filter((id) => id !== null).length,
       discarded: normalizeResult.discardedCount,
       failed: normalizeResult.results.filter(
         (r) => !r.observation && !r.discarded
       ).length,
-    };
-    result.written.observationIds = normalizeResult.observationIds;
+    } : { ok: observationIds.filter(Boolean).length, discarded: 0, failed: 0 };
+    result.written.observationIds = observationIds;
+    if (normalizeResult) progress?.markSucceeded("observer", { observationIds });
 
     // ---------------- 步骤 3：从批次 observations 规则生成最小 Episode（写入 scenes） ----------------
-    const episodeItems = normalizeResult.results
+    if (progress?.stages.episode !== "succeeded") progress?.markRunning("episode");
+    const episodeItems = (normalizeResult?.results ?? [])
       .map((r, index) => {
         const observation = r.observation;
-        const bundle = batchBundle.frames[index];
+        const frameIndex = normalizeResult?.frameIndices[index];
+        const bundle = frameIndex === null || frameIndex === undefined
+          ? undefined
+          : batchBundle.frames[frameIndex];
         if (!observation || !bundle) return null;
         return { observation, bundle };
       })
       .filter((item): item is NonNullable<typeof item> => !!item);
-    const writtenEpisodes = this.episodeBuilder.buildFromBatch({
-      items: episodeItems,
-    });
+    const writtenEpisodes = progress?.stages.episode === "succeeded"
+      ? this.sceneRepo.listByIds(progress.checkpoint.episodeIds ?? [])
+      : this.episodeBuilder.buildFromBatch({ items: episodeItems.length > 0 ? episodeItems : observationIds.flatMap((id) => {
+          const observation = id ? this.observationRepo.getById(id) : null;
+          const bundle = observation ? batchBundle.frames.find((frame) => frame.captureId === observation.captureId) : undefined;
+          return observation && bundle ? [{ observation, bundle }] : [];
+        }) });
     result.written.sceneIds = writtenEpisodes.map((s) => s.id);
+    result.steps.episodes = true;
+    if (progress?.stages.episode !== "succeeded") progress?.markSucceeded("episode", { episodeIds: result.written.sceneIds });
 
     // ---------------- 步骤 4：从 Episode 提取 Facts（L2 atoms/claims，仍落 facts 表） ----------------
     if (writtenEpisodes.length === 0) {
       result.steps.factsWrite = { written: 0, skipped: 0 };
+      result.steps.atoms = true;
       result.steps.linkerSceneJudge = true;
+      progress?.markSucceeded("atom", { atomIds: [] });
+      progress?.markSucceeded("linker");
       if (debugEvents) {
         debugEvents.push({ layer: "L2", action: "skip", reason: "no_episode_written_for_fact_extraction" });
       }
     } else {
       this.updatePipelineState("extracting");
-      const episodeFactResult = await this.runEpisodeFactExtractor(
+      if (progress?.stages.atom !== "succeeded") progress?.markRunning("atom");
+      const episodeFactResult = progress?.stages.atom === "succeeded" ? null : await this.runEpisodeFactExtractor(
         writtenEpisodes,
         multimodalConfigId,
         debugEvents
       );
-      if (!episodeFactResult.ok || !episodeFactResult.data) {
+      if (episodeFactResult && (!episodeFactResult.ok || !episodeFactResult.data)) {
         result.steps.factsWrite = { written: 0, skipped: writtenEpisodes.length };
         result.errors.push({
           step: "episodeFactExtractor",
           code: episodeFactResult.errorCode,
           message: episodeFactResult.errorMessage,
         });
+        progress?.markFailed("atom", episodeFactResult.errorMessage ?? "atom extraction failed");
         this.updatePipelineState("idle");
-        CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
         return result;
       }
 
-      const episodeFacts = episodeFactResult.data.facts;
+      const episodeFacts = episodeFactResult?.data?.facts ?? this.factRepo.listBySourceEpisodeIds(writtenEpisodes.map((scene) => scene.id));
+      result.steps.atoms = true;
+      if (progress?.stages.atom !== "succeeded") progress?.markSucceeded("atom", { atomIds: episodeFacts.map((fact) => fact.id) });
       result.steps.factsWrite = { written: episodeFacts.length, skipped: 0 };
       result.written.factIds = episodeFacts.map((fact) => fact.id);
       this.attachFactsToEpisodes(writtenEpisodes, episodeFacts);
       this.sceneRelationProjector.projectScenes(writtenEpisodes);
-      this.persistDebugEvents(episodeFactResult.data.modelJobId, debugEvents);
+      if (episodeFactResult?.data) {
+        this.persistDebugEvents(episodeFactResult.data.modelJobId, debugEvents);
+      }
 
       // ---------------- 步骤 5：Linker/Judge（基于 Episode facts，SceneBuilder 关闭） ----------------
       this.updatePipelineState("linking");
-      const linkerResult = await this.runLinkerSceneJudge(
-        episodeFacts,
-        batchBundle.batchId,
-        multimodalConfigId,
-        false,
-        debugEvents
-      );
+      if (progress?.stages.linker !== "succeeded") progress?.markRunning("linker");
+      const linkerResult = progress?.stages.linker === "succeeded"
+        ? { ok: true as const }
+        : await this.runLinkerSceneJudge(
+            episodeFacts,
+            batchBundle.batchId,
+            multimodalConfigId,
+            false,
+            debugEvents
+          );
       result.steps.linkerSceneJudge = linkerResult.ok;
-      if (!linkerResult.ok || !linkerResult.data) {
+      if (!linkerResult.ok || (progress?.stages.linker !== "succeeded" && !linkerResult.data)) {
         result.errors.push({
           step: "linkerSceneJudge",
           code: linkerResult.errorCode,
           message: linkerResult.errorMessage,
         });
-      } else {
+        progress?.markFailed("linker", linkerResult.errorMessage ?? "linker failed");
+      } else if (linkerResult.data) {
         result.written.proactiveItemIds = linkerResult.data.proactiveItems.map((item) => item.id);
         this.sceneRelationProjector.projectScenes(writtenEpisodes);
         this.persistDebugEvents(linkerResult.data.modelJobId, debugEvents);
+        progress?.markSucceeded("linker");
       }
     }
-
-    // ---------------- 步骤 6：清理压缩图临时文件 ----------------
-    CaptureBatcher.cleanupCompressedImages(batchBundle.compressedImagePaths);
 
     this.updatePipelineState("idle");
     return result;

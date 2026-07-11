@@ -134,6 +134,8 @@ export class EpisodeBuilder {
       entityNames,
       taskIds: [],
       decisionIds: [],
+      derivationKey: `episode:v1:${group.items.map((item) => item.observation.id).join(",")}`,
+      derivationVersion: 1,
     };
   }
 

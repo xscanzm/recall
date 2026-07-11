@@ -9,7 +9,7 @@
 //
 // 选择模式时，本组件切换为选择模式提示与操作组（spec 9.2）
 
-import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Search } from "lucide-react";
 import { useState } from "react";
 import { useAppStore } from "../../state/store";
 import {
@@ -49,24 +49,24 @@ export function TimelineToolbar({
   const setPreviewModalOpen = useAppStore((s) => s.setPreviewModalOpen);
   const workReportGenerating = useAppStore((s) => s.workReportGenerating);
   const onDateChange = useAppStore((s) => s.setTodayPageDateKey);
-  const loadTodayPageData = useAppStore((s) => s.loadTodayPageData);
   const personalReview = useAppStore((s) => s.todayPageData?.personalReview);
   const generatePersonalReview = useAppStore((s) => s.generatePersonalReview);
   const personalReviewGenerating = useAppStore((s) => s.personalReviewGenerating);
   const setPage = useAppStore((s) => s.setPage);
   const setReportsTab = useAppStore((s) => s.setReportsTab);
   const todayPageDateKey = useAppStore((s) => s.todayPageDateKey);
+  const reorganizeTimelineDay = useAppStore((s) => s.reorganizeTimelineDay);
+  const timelineBuildingDateKey = useAppStore((s) => s.timelineBuildingDateKey);
 
   const [searchFocused, setSearchFocused] = useState(false);
 
   const handleDateShift = (delta: number) => {
     const next = shiftDateKey(dateKey, delta);
     onDateChange(next);
-    void loadTodayPageData(next);
   };
 
   const handleGoToday = () => {
-    void loadTodayPageData(todayDateKey());
+    onDateChange(todayDateKey());
   };
 
   const handlePersonalReview = () => {
@@ -181,16 +181,20 @@ export function TimelineToolbar({
       </div>
 
       <div className="timeline-toolbar__right">
+        <button type="button" className="tb-icon-btn" onClick={() => void reorganizeTimelineDay(dateKey)}
+          disabled={timelineBuildingDateKey === dateKey} title="重整当天时间轴" aria-label="重整当天时间轴">
+          <RefreshCw size={15} />
+        </button>
         <label className={`search-today${searchFocused ? " is-focused" : ""}`}>
           <Search size={14} />
           <input
             type="search"
-            placeholder="搜索今天"
+            placeholder="搜索记录"
             value={searchKeyword}
             onChange={(e) => onSearchKeywordChange(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setSearchFocused(false)}
-            aria-label="搜索今天"
+            aria-label="搜索记录"
           />
         </label>
 
@@ -210,7 +214,7 @@ export function TimelineToolbar({
           disabled={reportableCount === 0}
           title={
             reportableCount === 0
-              ? "今天还没有可写入日报的工作片段"
+              ? `${isToday(dateKey) ? "今天" : "这一天"}还没有可写入日报的工作片段`
               : `选择片段生成日报（${reportableCount} 个可写入）`
           }
         >
@@ -224,8 +228,8 @@ export function TimelineToolbar({
           disabled={personalReviewGenerating}
           title={
             personalReview
-              ? "查看今天的个人复盘"
-              : "生成今天的个人复盘"
+              ? `查看${isToday(dateKey) ? "今天" : "这一天"}的个人复盘`
+              : `生成${isToday(dateKey) ? "今天" : "这一天"}的个人复盘`
           }
         >
           {personalReviewGenerating

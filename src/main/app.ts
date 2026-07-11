@@ -17,9 +17,10 @@ import { app, BrowserWindow, powerMonitor } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/handlers";
 import type { AppStatus } from "../shared/types";
-import type { BatchCaptureBundle } from "./models/types";
 import { APP_NAME_ZH } from "../shared/constants";
 import { getDatabase, closeDatabase } from "./db/Database";
+import { MemorySearchRepository } from "./db/repositories/MemorySearchRepository";
+import { CorrectionLifecycleRepository } from "./db/repositories/CorrectionLifecycleRepository";
 import { SettingsRepository } from "./db/repositories/SettingsRepository";
 import { ModelJobRepository } from "./db/repositories/ModelJobRepository";
 import { ObservationRepository } from "./db/repositories/ObservationRepository";
@@ -33,6 +34,7 @@ import { ReportSelectionRepository } from "./db/repositories/ReportSelectionRepo
 import { UnfinishedThreadRepository } from "./db/repositories/UnfinishedThreadRepository";
 import { createObjectMergeRepository } from "./db/repositories/ObjectMergeRepository";
 import { createMemoryEdgeRepository } from "./db/repositories/MemoryEdgeRepository";
+import { CaptureInboxRepository } from "./db/repositories/CaptureInboxRepository";
 import { SecretService } from "./services/SecretService";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
@@ -48,13 +50,19 @@ import { EpisodeFactExtractorWorker } from "./services/EpisodeFactExtractorWorke
 import { ReporterWorker } from "./services/ReporterWorker";
 import { ReportScheduler } from "./services/ReportScheduler";
 import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
+import { TimelineBuildCheckpointRepository } from "./db/repositories/TimelineBuildCheckpointRepository";
 import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
 import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
 import { SceneScheduler } from "./services/SceneScheduler";
 import { CaptureBatcher } from "./services/CaptureBatcher";
+import { BatchProcessor } from "./services/BatchProcessor";
+import { DataLifecycleService } from "./services/DataLifecycleService";
+import { ProjectionInvalidationProcessor } from "./services/ProjectionInvalidationProcessor";
+import { SceneRelationProjector } from "./services/SceneRelationProjector";
 import { CAPTURE_CANDIDATE_EVENT } from "./services/ActivityService";
 import { MemoryPipeline, setMemoryPipeline } from "./services/MemoryPipeline";
 import { logger } from "./services/Logger";
+import { cascadeMarkAfterFactSceneDelete } from "./services/cascadeMark";
 import { trayService } from "./services/TrayService";
 import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./services/ScreenshotCacheScheduler";
 import { formatLocalDateKey } from "./utils/dateKey";
@@ -66,6 +74,7 @@ import { formatLocalDateKey } from "./utils/dateKey";
 // 由 TrayService 管理：当用户从托盘菜单"退出"时设置为 true，让 close handler 不再拦截
 // ============================================================================
 let isQuitting = false;
+let shutdownStarted = false;
 
 // ============================================================================
 // AppStatus 全局状态
@@ -132,6 +141,7 @@ let reportScheduler: ReportScheduler | null = null;
 let sceneScheduler: SceneScheduler | null = null;
 // 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
 let captureBatcher: CaptureBatcher | null = null;
+let batchProcessor: BatchProcessor | null = null;
 // Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
 let timelineBuilderTimer: NodeJS.Timeout | null = null;
 
@@ -159,10 +169,8 @@ function shouldStartHidden(): boolean {
  * - 设置 isPaused = false
  * - 更新 AppStatus
  *
- * 注意：settings.observation.enabled 在原版中未被 startObserving 检查。
- * 该字段当前仅作为设置项存在（SettingsPage 可切换），语义待产品层面重新定义。
- * 在此处检查会导致 settings 默认 enabled=false 时无法启动观察，
- * 且 lastError 会被前台 TodayPage 误判为"模型连接失败"。
+ * settings.observation.enabled 只控制下次启动时是否自动恢复观察。
+ * 手动恢复观察不能改写这项持久化偏好。
  */
 function startObserving(): void {
   if (!activityService || !captureService) return;
@@ -243,6 +251,23 @@ function createMainWindow(): BrowserWindow {
     mainWindow = null;
   });
 
+  win.webContents.on("render-process-gone", (_event, details) => {
+    logger.error({
+      status: "failed",
+      errorCode: "renderer_process_gone",
+      message: `renderer process gone: reason=${details.reason}, exitCode=${details.exitCode}`,
+    });
+  });
+
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    logger.error({
+      status: "failed",
+      errorCode: "renderer_load_failed",
+      message: `renderer load failed: code=${errorCode}, description=${errorDescription}, local=${validatedURL.startsWith("file:")}`,
+    });
+  });
+
   // 加载 renderer
   if (isDev() && process.env.VITE_DEV_SERVER_URL) {
     void win.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -310,8 +335,33 @@ app.whenReady().then(async () => {
   logger.init();
   logger.info({ message: "Recall app starting" });
 
+  process.on("uncaughtExceptionMonitor", (error, origin) => {
+    logger.error({
+      status: "failed",
+      errorCode: "uncaught_exception",
+      message: `uncaught exception: origin=${origin}, name=${error.name}, message=${error.message}`,
+    });
+  });
+  process.on("unhandledRejection", (reason) => {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    logger.error({
+      status: "failed",
+      errorCode: "unhandled_rejection",
+      message: `unhandled rejection: name=${error.name}, message=${error.message}`,
+    });
+  });
+  app.on("child-process-gone", (_event, details) => {
+    logger.error({
+      status: "failed",
+      errorCode: "child_process_gone",
+      message: `child process gone: type=${details.type}, reason=${details.reason}, exitCode=${details.exitCode}`,
+    });
+  });
+
   // 初始化数据库与服务
   const db = getDatabase();
+  const memorySearchRepo = new MemorySearchRepository(db);
+  const correctionLifecycleRepo = new CorrectionLifecycleRepository(db);
   const settingsRepo = new SettingsRepository(db);
   // 注意：modelJobRepo 提升为模块级变量（用于启动时清理卡死任务）
   modelJobRepo = new ModelJobRepository(db);
@@ -388,6 +438,7 @@ app.whenReady().then(async () => {
   const proactiveItemRepo = new ProactiveItemRepository(db);
   // Phase 2 新增：TimelineBlock / ReportSelection / UnfinishedThread Repositories
   const timelineBlockRepo = new TimelineBlockRepository(db);
+  const timelineBuildCheckpointRepo = new TimelineBuildCheckpointRepository(db);
   const reportSelectionRepo = new ReportSelectionRepository(db);
   const unfinishedThreadRepo = new UnfinishedThreadRepository(db);
   // 012 新增：ObjectMerge 审计 Repository
@@ -410,6 +461,7 @@ app.whenReady().then(async () => {
   const normalizer = new ObservationNormalizer({
     observationRepo: obsRepo,
     privacyGuard,
+    screenshotCache,
   });
   const linkerSceneJudgeWorker = new LinkerSceneJudgeWorker({
     modelGateway,
@@ -442,6 +494,7 @@ app.whenReady().then(async () => {
     sceneRepo,
     factRepo,
     memoryObjectRepo,
+    observationRepo: obsRepo,
     edgeRepo: memoryEdgeRepo,
     settingsService,
     modelJobRepo,
@@ -477,8 +530,24 @@ app.whenReady().then(async () => {
     factRepo,
     sceneRepo,
     timelineBlockRepo,
+    timelineBuildCheckpointRepo,
     settingsService,
   });
+  const projectionInvalidationProcessor = new ProjectionInvalidationProcessor({
+    correctionLifecycleRepo,
+    factRepo,
+    sceneRepo,
+    timelineBlockRepo,
+    reportRepo,
+    timelineBuilderWorker,
+    sceneRelationProjector: new SceneRelationProjector({
+      sceneRepo,
+      factRepo,
+      memoryObjectRepo,
+      edgeRepo: memoryEdgeRepo,
+    }),
+  });
+  void projectionInvalidationProcessor.processPending();
 
   // PersonalReviewWriterWorker：个人复盘撰写员
   // 职责：基于当天 TimelineBlock + UnfinishedThread + decisions 生成个人复盘
@@ -557,41 +626,49 @@ app.whenReady().then(async () => {
   //    - CaptureService 的 capture-bundle 交给 batcher 攒批（不再直接调 pipeline）
   //    - 攒满 6 帧或 5 分钟超时后 emit "batch-ready"
   //    - batch-ready 交给 MemoryPipeline.processBatchCaptureBundle 处理
-  captureBatcher = new CaptureBatcher();
-  captureBatcher.on("batch-ready", (batchBundle: BatchCaptureBundle) => {
-    if (!memoryPipeline) return;
-    // 批次处理异步执行，不阻塞 EventEmitter
-    void (async () => {
-      try {
-        const batchResult = await memoryPipeline.processBatchCaptureBundle(batchBundle);
-        if (!timelineBuilderWorker) return;
-
-        const dateKeys: string[] = Array.from(
-          new Set(
-            batchBundle.frames.map((frame) => formatLocalDateKey(new Date(frame.capturedAt)))
-          )
-        );
-
+  const captureInboxRepo = new CaptureInboxRepository(db);
+  captureBatcher = new CaptureBatcher({ repository: captureInboxRepo });
+  batchProcessor = new BatchProcessor(
+    captureInboxRepo,
+    memoryPipeline,
+    async (_result, batchBundle) => {
+      if (timelineBuilderWorker) {
+        const dateKeys = Array.from(new Set(
+          batchBundle.frames.map((frame) => formatLocalDateKey(new Date(frame.capturedAt)))
+        ));
         for (const dateKey of dateKeys) {
           try {
             await timelineBuilderWorker.buildTimeline(dateKey);
           } catch {
-            // 时间轴刷新失败不阻断批次落库
+            // 时间轴刷新失败不改变 durable batch 的成功状态
           }
         }
-
-        if (batchResult.errors.length > 0) {
-          logger.warn({
-            jobType: "batch_pipeline",
-            status: "failed",
-            errorCode: batchResult.errors[0]?.code ?? "unknown_error",
-            message: batchResult.errors[0]?.message ?? "batch pipeline failed",
-          });
-        }
-      } catch {
-        // 批次处理失败不阻断后续攒批
       }
-    })();
+      const immediatePaths = batchBundle.frames
+        .filter((frame) => frame.retentionPolicy === "delete_immediately")
+        .flatMap((frame) => [frame.stitchedImagePath, ...frame.imagePaths])
+        .filter((filePath): filePath is string => !!filePath);
+      await screenshotCache?.deleteFiles(immediatePaths);
+    }
+  );
+  captureBatcher.on("batch-ready", () => batchProcessor?.notify());
+  batchProcessor.start();
+
+  const dataLifecycleService = new DataLifecycleService({
+    db,
+    observationRepo: obsRepo,
+    factRepo,
+    sceneRepo,
+    screenshotCache,
+    captureService,
+    captureBatcher,
+    batchProcessor,
+    isObserving: () => getStatus().observing,
+    pauseSources: pauseObserving,
+    resumeSources: startObserving,
+    cascade: (facts, scenes) => cascadeMarkAfterFactSceneDelete({
+      db, factRepo, sceneRepo, memoryObjectRepo, reportRepo, memoryEdgeRepo,
+    }, facts, scenes),
   });
 
   // 6. 订阅 CaptureService 的 capture-bundle 事件
@@ -603,23 +680,15 @@ app.whenReady().then(async () => {
     captureBatcher.add(bundle);
   });
 
-  // 7. 创建 SceneScheduler（C-3 修复：长会话触发 long_session capture bundle）
+  // 7. 创建 SceneScheduler（所有 scheduler reason 仅冲刷 durable capture batch）
   //    - 监听 ActivityService 的 capture-candidate 事件，更新窗口/项目状态
   //    - 同一窗口/项目持续工作 >= longSessionIntervalMinutes 时发出 long_session bundle
   //    - long_session 作为 flush 信号：只冲刷攒批（提交已积累的截图），不再走无图单帧 pipeline
   sceneScheduler = new SceneScheduler({
     settingsService,
     activityService,
-    emitCaptureBundle: async (bundle) => {
-      // long_session: 先冲刷攒批，然后直接返回（bundle 本身无截图，不走 L0 观察）
-      if (bundle.captureReason === "long_session" && captureBatcher) {
-        await captureBatcher.flush();
-        return;
-      }
-      if (!memoryPipeline) return;
-      memoryPipeline.processCaptureBundle(bundle).catch(() => {
-        // pipeline 单次失败不阻断后续调度
-      });
+    emitCaptureBundle: async () => {
+      await captureBatcher?.flush();
     },
   });
   // 订阅 ActivityService 的 capture-candidate 事件，转发给 SceneScheduler 更新状态
@@ -681,6 +750,10 @@ app.whenReady().then(async () => {
     memoryEdgeRepo: memoryEdgeRepo,
     // 调试模式：model_jobs 查询（DebugPage 用）
     modelJobRepo,
+    dataLifecycleService,
+    memorySearchRepo,
+    correctionLifecycleRepo,
+    projectionInvalidationProcessor,
   });
 
   // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
@@ -716,9 +789,13 @@ app.whenReady().then(async () => {
 });
 
 // 应用退出前清理
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   isQuitting = true;
   trayService.notifyQuitting();
+  if (shutdownStarted) return;
+
+  event.preventDefault();
+  shutdownStarted = true;
   logger.info({ message: "Recall app quitting" });
   // 停止截图缓存定时清理
   stopScreenshotCacheScheduler();
@@ -727,20 +804,26 @@ app.on("before-quit", () => {
     clearInterval(timelineBuilderTimer);
     timelineBuilderTimer = null;
   }
-  // 停止 M3 服务
-  try {
-    activityService?.stop();
-    captureService?.stop();
-    sceneScheduler?.stop();
-    // 阶段二：冲刷并停止 CaptureBatcher（提交已积累的截图）
-    if (captureBatcher) {
-      captureBatcher.flush().catch(() => {});
-      captureBatcher.stop();
+  void (async () => {
+    try {
+      activityService?.stop();
+      captureService?.stop();
+      sceneScheduler?.stop();
+      await captureService?.drain();
+      if (captureBatcher) {
+        await captureBatcher.drain();
+      }
+    } catch (error) {
+      logger.error({
+        status: "failed",
+        errorCode: "shutdown_cleanup_failed",
+        message: `shutdown cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    } finally {
+      batchProcessor?.checkpoint();
+      trayService.destroy();
+      closeDatabase();
+      app.exit(0);
     }
-  } catch {
-    // 退出时忽略错误
-  }
-  // 销毁托盘
-  trayService.destroy();
-  closeDatabase();
+  })();
 });

@@ -33,14 +33,12 @@ export type DB = Database.Database;
 const MIGRATIONS_TABLE = "_migrations";
 
 let dbInstance: DB | null = null;
-let dbInitRetried = false;
 
 /**
  * 获取数据库实例（单例）
  * 首次调用时打开数据库并执行 migrations
  *
- * 历史 schema 漂移防护：当 migration 因 "duplicate column/table" 失败时，
- * 备份旧 db 为 recall.db.bak.<时间戳> 并从头重跑 migrations（仅一次）。
+ * 有待执行 migration 时先创建一致性备份；任何 migration 失败都保留原库并阻止启动。
  */
 export function getDatabase(): DB {
   if (dbInstance) {
@@ -50,52 +48,12 @@ export function getDatabase(): DB {
   try {
     runMigrations(dbInstance);
   } catch (err) {
-    if (err instanceof SchemaDriftError && !dbInitRetried) {
-      dbInitRetried = true;
-      backupAndRecreateDatabase();
-      // 关闭旧实例后 openDatabase() 会重新建立 dbInstance
-      return getDatabase();
-    }
+    try { dbInstance.close(); } catch { /* preserve the migration error */ }
+    dbInstance = null;
     throw err;
   }
   seedDefaultPrivacyRules(dbInstance);
   return dbInstance;
-}
-
-/**
- * 将当前 db 文件备份为带时间戳的 .bak，然后重置单例以便下次 getDatabase() 重新初始化。
- */
-function backupAndRecreateDatabase(): void {
-  if (!dbInstance) return;
-  try {
-    dbInstance.close();
-  } catch {
-    // 忽略关闭错误（db 可能已部分损坏）
-  }
-  dbInstance = null;
-
-  const userData = app.getPath("userData");
-  const dbPath = path.join(userData, DATA_DIR, DATABASE_FILENAME);
-  if (!fs.existsSync(dbPath)) {
-    return;
-  }
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupPath = path.join(userData, DATA_DIR, `${DATABASE_FILENAME}.bak.${stamp}`);
-  try {
-    // SQLite WAL 模式可能还有 -wal/-shm 副作用文件，尝试一起重命名
-    for (const suffix of ["", "-wal", "-shm"]) {
-      const src = dbPath + suffix;
-      if (fs.existsSync(src)) {
-        fs.renameSync(src, backupPath + suffix);
-      }
-    }
-    logger.warn({
-      message: `检测到历史 schema 漂移，已备份旧数据库到 ${backupPath} 并重建数据库`,
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`备份旧数据库失败: ${msg}`);
-  }
 }
 
 function openDatabase(): DB {
@@ -150,6 +108,22 @@ export function runMigrations(db: DB): void {
     throw new Error("migrations 目录为空，未找到任何 .sql 文件");
   }
 
+  const pending = sqlFiles.filter((file) => !executed.has(file));
+  let backupPath: string | null = null;
+  const existingBusinessTables = (db.prepare(
+    "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> ?"
+  ).get(MIGRATIONS_TABLE) as { count: number }).count;
+  if (pending.length > 0 && existingBusinessTables > 0) {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    backupPath = path.join(app.getPath("userData"), DATA_DIR, `${DATABASE_FILENAME}.pre-migration.${stamp}.bak`);
+    try {
+      db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
+      logger.info({ message: `数据库迁移前备份已创建: ${backupPath}` });
+    } catch (err) {
+      throw new Error(`迁移前一致性备份失败（未执行 migration）: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // 4. 按序执行未执行的 migration（每个文件一个事务）
   for (const file of sqlFiles) {
     if (executed.has(file)) {
@@ -171,10 +145,7 @@ export function runMigrations(db: DB): void {
       const msg = err instanceof Error ? err.message : String(err);
       // 历史 schema 漂移防护：当 migration 因列/表已存在失败时（如旧版手动建表后未登记到 _migrations），
       // 备份当前 db 并从头重跑 migrations。旧数据以 .bak 形式保留，但不加载到主程序。
-      if (looksLikeSchemaDrift(msg)) {
-        throw new SchemaDriftError(file, msg);
-      }
-      throw new Error(`migration ${file} 执行失败: ${msg}`);
+      throw new Error(`migration ${file} 执行失败（原库保留，备份: ${backupPath ?? "首次建库无历史数据"}）: ${msg}`);
     }
   }
 }
@@ -183,21 +154,6 @@ export function runMigrations(db: DB): void {
  * 判定 migration 失败是否由历史 schema 漂移引起。
  * SQLite 的 "duplicate column name: X" / "table X already exists" 即典型表现。
  */
-function looksLikeSchemaDrift(msg: string): boolean {
-  const lower = msg.toLowerCase();
-  return (
-    lower.includes("duplicate column name") ||
-    lower.includes("already exists") ||
-    lower.includes("duplicate key name")
-  );
-}
-
-class SchemaDriftError extends Error {
-  constructor(public file: string, public cause: string) {
-    super(`schema drift at ${file}: ${cause}`);
-  }
-}
-
 /**
  * 解析 migrations 目录路径
  * - 开发模式：从 dist/main/db/ 指向 src/main/db/migrations/

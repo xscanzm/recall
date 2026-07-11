@@ -102,19 +102,21 @@ export class ObjectMergeRepository {
   listRecent(opts: {
     objectType?: "project" | "task" | "person" | "decision";
     limit?: number;
+    offset?: number;
   } = {}): ObjectMerge[] {
     const limit = opts.limit ?? 100;
+    const offset = opts.offset ?? 0;
     if (opts.objectType) {
       const rows = this.db
         .prepare(
-          `SELECT * FROM object_merges WHERE object_type = ? ORDER BY created_at DESC LIMIT ?`
+          `SELECT * FROM object_merges WHERE object_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`
         )
-        .all(opts.objectType, limit) as ObjectMergeRow[];
+        .all(opts.objectType, limit, offset) as ObjectMergeRow[];
       return rows.map(mapRow);
     }
     const rows = this.db
-      .prepare(`SELECT * FROM object_merges ORDER BY created_at DESC LIMIT ?`)
-      .all(limit) as ObjectMergeRow[];
+      .prepare(`SELECT * FROM object_merges ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .all(limit, offset) as ObjectMergeRow[];
     return rows.map(mapRow);
   }
 

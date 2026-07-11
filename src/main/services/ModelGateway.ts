@@ -454,27 +454,6 @@ export class ModelGateway {
         // 8. zod schema 校验
         const schemaResult = schema.safeParse(parseResult.data);
         if (schemaResult.success) {
-          // 校验通过 + safety 检查
-          const safetyCheck = checkSafety(parseResult.data);
-          if (safetyCheck.blocked) {
-            // 敏感内容视为 safety_blocked，不写入正式表
-            this.modelJobRepo.markFailed(
-              job.id,
-              "safety_blocked",
-              safetyCheck.reason ?? "high sensitive content",
-              attempts,
-              rawOutput,
-              rawInputJsonForDebug
-            );
-            return {
-              ok: false,
-              errorCode: "safety_blocked",
-              errorMessage: safetyCheck.reason,
-              jobId: job.id,
-              attempts,
-              usage,
-            };
-          }
           // 成功
           this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
           return {
@@ -518,24 +497,6 @@ export class ModelGateway {
           if (parseResult2.ok) {
             const schemaResult2 = schema.safeParse(parseResult2.data);
             if (schemaResult2.success) {
-              const safetyCheck = checkSafety(parseResult2.data);
-              if (safetyCheck.blocked) {
-                this.modelJobRepo.markFailed(
-                  job.id,
-                  "safety_blocked",
-                  safetyCheck.reason ?? "high sensitive content",
-                  attempts,
-                  rawOutput
-                );
-                return {
-                  ok: false,
-                  errorCode: "safety_blocked",
-                  errorMessage: safetyCheck.reason,
-                  jobId: job.id,
-                  attempts,
-                  usage,
-                };
-              }
               this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
               return {
                 ok: true,
@@ -1080,23 +1041,6 @@ function sanitizeErrorMessage(message: string | undefined | null): string {
     return sanitized.slice(0, 500) + "...(truncated)";
   }
   return sanitized;
-}
-
-/**
- * 检查输出是否包含敏感内容（high_sensitive）
- * 视觉模型返回 high_sensitive 时视为 safety_blocked
- */
-function checkSafety(data: unknown): { blocked: boolean; reason?: string } {
-  if (data && typeof data === "object") {
-    const obj = data as { sensitivity?: string; sensitivityReason?: string };
-    if (obj.sensitivity === "high_sensitive") {
-      return {
-        blocked: true,
-        reason: obj.sensitivityReason ?? "vision output marked as high_sensitive",
-      };
-    }
-  }
-  return { blocked: false };
 }
 
 /**

@@ -14,6 +14,7 @@ import { Check, Clock, Copy, Pencil, RefreshCw, FileText, Edit3 } from "lucide-r
 import type { TodayPageData, PersonalReview, WorkReport } from "../../../shared/types";
 import { useAppStore } from "../../state/store";
 import { Button } from "../../components/Button";
+import { isToday } from "./helpers";
 
 interface TodaySidePanelProps {
   data: TodayPageData;
@@ -30,19 +31,20 @@ export function TodaySidePanel({ data }: TodaySidePanelProps) {
     tomorrowStartHere,
     dateKey,
   } = data;
+  const historical = !isToday(dateKey);
 
   return (
     <aside className="today-side-panel" aria-label="今日结果面板">
-      <MainThreadSection dayMainThread={dayMainThread} />
+      <MainThreadSection dayMainThread={dayMainThread} historical={historical} />
 
       <UnfinishedSection
         threads={unfinishedThreads}
         dateKey={dateKey}
       />
 
-      <HighlightsSection highlights={highlights} />
+      <HighlightsSection highlights={highlights} historical={historical} />
 
-      <DecisionsSection decisions={decisions} />
+      <DecisionsSection decisions={decisions} historical={historical} />
 
       <PersonalReviewSection
         review={personalReview}
@@ -63,11 +65,11 @@ export function TodaySidePanel({ data }: TodaySidePanelProps) {
 // 1. 今日主线
 // ============================================================================
 
-function MainThreadSection({ dayMainThread }: { dayMainThread: string }) {
+function MainThreadSection({ dayMainThread, historical }: { dayMainThread: string; historical: boolean }) {
   return (
     <section className="side-section">
-      <h2 className="side-section__title">今日主线</h2>
-      <p className="side-section__text">{dayMainThread || "今天还没有整理出主线。"}</p>
+      <h2 className="side-section__title">{historical ? "当天主线" : "今日主线"}</h2>
+      <p className="side-section__text">{dayMainThread || `${historical ? "当天" : "今天"}还没有整理出主线。`}</p>
     </section>
   );
 }
@@ -98,7 +100,7 @@ function UnfinishedSection({
     <section className="side-section">
       <h2 className="side-section__title">待收尾</h2>
       {visible.length === 0 ? (
-        <p className="side-section__empty">今天没有待收尾的事项。</p>
+        <p className="side-section__empty">{isToday(dateKey) ? "今天" : "当天"}没有待收尾的事项。</p>
       ) : (
         <ul className="unfinished-list">
           {visible.map((t) => (
@@ -147,17 +149,17 @@ function UnfinishedSection({
 }
 
 // ============================================================================
-// 3. 今日成果（最多 4 条 reportable highlights）
+// 3. 今日成果（最多 4 条自用 highlights；不受对外日报 reportable 约束）
 // ============================================================================
 
-function HighlightsSection({ highlights }: { highlights: TodayPageData["highlights"] }) {
+function HighlightsSection({ highlights, historical }: { highlights: TodayPageData["highlights"]; historical: boolean }) {
   const visible = highlights.slice(0, 4);
   return (
     <section className="side-section">
-      <h2 className="side-section__title">今日成果</h2>
+      <h2 className="side-section__title">{historical ? "当天成果" : "今日成果"}</h2>
       {visible.length === 0 ? (
         <p className="side-section__empty">
-          今天还没有整理出明确成果。继续工作一会儿后，Recall 会自动补充。
+          {historical ? "当天" : "今天"}还没有整理出明确成果。
         </p>
       ) : (
         <ul className="highlight-list">
@@ -176,7 +178,7 @@ function HighlightsSection({ highlights }: { highlights: TodayPageData["highligh
 // 4. 今日决策（最多 3 条，可点击查看来源）
 // ============================================================================
 
-function DecisionsSection({ decisions }: { decisions: TodayPageData["decisions"] }) {
+function DecisionsSection({ decisions, historical }: { decisions: TodayPageData["decisions"]; historical: boolean }) {
   const [viewingSourceFor, setViewingSourceFor] = useState<string | null>(null);
   const visible = decisions.slice(0, 3);
   const viewingDecision = viewingSourceFor
@@ -185,9 +187,9 @@ function DecisionsSection({ decisions }: { decisions: TodayPageData["decisions"]
 
   return (
     <section className="side-section">
-      <h2 className="side-section__title">今日决策</h2>
+      <h2 className="side-section__title">{historical ? "当天决策" : "今日决策"}</h2>
       {visible.length === 0 ? (
-        <p className="side-section__empty">今天还没有识别到决策。</p>
+        <p className="side-section__empty">{historical ? "当天" : "今天"}还没有识别到决策。</p>
       ) : (
         <ul className="decision-list">
           {visible.map((d) => (
@@ -263,7 +265,7 @@ function PersonalReviewSection({
     <section className="side-section">
       <h2 className="side-section__title">我的复盘</h2>
       <p className="side-section__hint">
-        给自己看的真实回顾，帮助你知道今天做了什么、明天从哪里继续。
+        给自己看的真实回顾，帮助你知道这一天做了什么、接下来从哪里继续。
       </p>
       {error && <p className="side-section__error">{error}</p>}
       {review ? (
@@ -274,7 +276,7 @@ function PersonalReviewSection({
               <p>{review.overview}</p>
               {review.mainThreads && review.mainThreads.length > 0 && (
                 <div className="review-block__group">
-                  <span className="review-block__group-label">今天主要在做什么</span>
+                  <span className="review-block__group-label">这一天主要在做什么</span>
                   <ul>
                     {review.mainThreads.map((m, i) => (
                       <li key={i}>{m}</li>

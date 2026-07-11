@@ -24,6 +24,11 @@ import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRe
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { ObjectMergeRepository } from "../db/repositories/ObjectMergeRepository";
 import type { MemoryEdgeRepository } from "../db/repositories/MemoryEdgeRepository";
+import type {
+  CorrectionLifecycleRepository,
+  CorrectionTargetType,
+  ProjectionType,
+} from "../db/repositories/CorrectionLifecycleRepository";
 import type { Fact, Scene } from "../models/types";
 
 /**
@@ -39,6 +44,7 @@ export interface CascadeMarkDeps {
   reportRepo?: ReportRepository;
   objectMergeRepo?: ObjectMergeRepository; // 012 新增：合并审计
   memoryEdgeRepo?: MemoryEdgeRepository;
+  correctionLifecycleRepo?: CorrectionLifecycleRepository;
   db?: DB;
 }
 
@@ -87,7 +93,10 @@ export function applyCorrection(
       // 内容错了 -> 更新 content（fact）/ title+summary（task/project）/ title+decision（decision）
       if (targetType === "fact" && deps.factRepo) {
         if (typeof objectPatch?.content === "string") {
-          deps.factRepo.update(targetId, { content: objectPatch.content });
+          deps.factRepo.update(targetId, {
+            content: objectPatch.content,
+            claimStatus: "corrected",
+          });
         }
       } else if (targetType === "task" && deps.memoryObjectRepo) {
         const patch: Record<string, unknown> = {};
@@ -176,6 +185,9 @@ export function applyCorrection(
     case "do_not_record": {
       // 这不是任务 / 不要记这类内容 -> soft delete
       // 后续 Judge 和 Linker 调用时通过 user_feedback 摘要学习
+      if (targetType === "fact") {
+        deps.factRepo?.update(targetId, { claimStatus: "rejected" });
+      }
       softDeleteByType(deps, targetType, targetId);
       break;
     }
@@ -190,6 +202,13 @@ export function applyCorrection(
       // 未知 feedbackType 不执行对象更新，仅写入 user_feedback
     }
   }
+
+  deps.correctionLifecycleRepo?.enqueue(
+    targetType,
+    targetId,
+    projectionsForCorrection(targetType, feedbackType),
+    `correction:${feedbackType}`
+  );
 }
 
 /**
@@ -226,6 +245,7 @@ export function softDeleteByType(
       break;
   }
   markEdgesForNode(deps, targetType, targetId, "superseded", "source_deleted");
+  deps.correctionLifecycleRepo?.enqueue(targetType, targetId, projectionsForTarget(targetType), "source_deleted");
 }
 
 /**
@@ -262,6 +282,7 @@ export function hardDeleteByType(
       break;
   }
   markEdgesForNode(deps, targetType, targetId, "rejected", "hard_deleted");
+  deps.correctionLifecycleRepo?.enqueue(targetType, targetId, projectionsForTarget(targetType), "hard_deleted");
 }
 
 /**
@@ -517,13 +538,21 @@ export function cascadeMarkAfterFactSceneDelete(
 
   // 1. 处理 facts：L3 反向影响 + reports stale
   for (const fact of facts) {
+    deps.factRepo?.update(fact.id, { claimStatus: "retracted" });
+    deps.correctionLifecycleRepo?.enqueue("fact", fact.id, projectionsForTarget("fact"), STALE_REASON);
     markEdgesForNode(deps, "fact", fact.id, "superseded", STALE_REASON);
     // 1a. L3 反向影响
     if (deps.memoryObjectRepo) {
       // 仅由该 fact 支撑的对象 -> markOrphaned
       const orphans = deps.memoryObjectRepo.findOrphansByFactId(fact.id);
       for (const orphan of orphans) {
-        deps.memoryObjectRepo.markOrphaned(orphan.type, orphan.id, "source_deleted");
+        if (orphan.type === "person") {
+          deps.memoryObjectRepo.softDeletePerson(orphan.id);
+          markEdgesForNode(deps, "person", orphan.id, "superseded", STALE_REASON);
+        } else {
+          deps.memoryObjectRepo.markOrphaned(orphan.type, orphan.id, "source_deleted");
+          markEdgesForNode(deps, orphan.type, orphan.id, "superseded", STALE_REASON);
+        }
       }
 
       // 多来源对象 -> removeFactFromSourceLinks
@@ -531,9 +560,10 @@ export function cascadeMarkAfterFactSceneDelete(
       // 通过 listByProjectId / 全量扫描的成本较高，这里复用一个简单的查询：
       // 遍历 projects / tasks / decisions，找出 sourceFactIds 包含该 fact 且长度 > 1 的对象
       if (deps.db) {
-        const tables: Array<{ type: "project" | "task" | "decision"; table: string; activeFilter: string }> = [
+        const tables: Array<{ type: "project" | "task" | "person" | "decision"; table: string; activeFilter: string }> = [
           { type: "project", table: "projects", activeFilter: "archived_at IS NULL" },
           { type: "task", table: "tasks", activeFilter: "deleted_at IS NULL" },
+          { type: "person", table: "people", activeFilter: "deleted_at IS NULL" },
           { type: "decision", table: "decisions", activeFilter: "deleted_at IS NULL" },
         ];
         for (const t of tables) {
@@ -576,6 +606,7 @@ export function cascadeMarkAfterFactSceneDelete(
 
   // 2. 处理 scenes：reports stale
   for (const scene of scenes) {
+    deps.correctionLifecycleRepo?.enqueue("scene", scene.id, projectionsForTarget("scene"), STALE_REASON);
     markEdgesForNode(deps, "scene", scene.id, "superseded", STALE_REASON);
     if (deps.reportRepo) {
       const reports = deps.reportRepo.findReportsReferencingScene(scene.id);
@@ -593,6 +624,23 @@ export function cascadeMarkAfterFactSceneDelete(
   // 触发 factIds/sceneIds 已使用，避免 lint 警告（保留以备后续扩展）
   void factIds;
   void sceneIds;
+}
+
+function projectionsForCorrection(targetType: CorrectionTargetType, feedbackType: string): ProjectionType[] {
+  if (feedbackType === "task_done") return ["timeline", "report", "search"];
+  return projectionsForTarget(targetType);
+}
+
+function projectionsForTarget(targetType: CorrectionTargetType): ProjectionType[] {
+  switch (targetType) {
+    case "fact": return ["timeline", "report", "search", "l3"];
+    case "scene": return ["timeline", "report", "search", "l3"];
+    case "project": return ["timeline", "report", "search", "l3"];
+    case "task":
+    case "decision":
+    case "person": return ["report", "search", "l3"];
+    case "reminder": return ["timeline", "report"];
+  }
 }
 
 function markEdgesForNode(

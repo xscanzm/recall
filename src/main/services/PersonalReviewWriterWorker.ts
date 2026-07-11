@@ -125,7 +125,7 @@ export class PersonalReviewWriterWorker {
     //    buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks。
     if (this.timelineBuilderWorker) {
       try {
-        await this.timelineBuilderWorker.buildTimeline(dateKey);
+        await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
       } catch {
         // buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks
       }

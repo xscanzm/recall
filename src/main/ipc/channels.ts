@@ -66,6 +66,7 @@ export type IpcChannel =
   | "data:getCacheSize"
   // Phase 2 新增：时间轴 / 个人复盘 / 工作日报 / 待收尾
   | "timeline:build"
+  | "timeline:reorganizeDay"
   | "timeline:get"
   | "personalReview:generate"
   | "personalReview:get"
@@ -135,6 +136,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "data:getCacheSize",
   // Phase 2 新增
   "timeline:build",
+  "timeline:reorganizeDay",
   "timeline:get",
   "personalReview:generate",
   "personalReview:get",

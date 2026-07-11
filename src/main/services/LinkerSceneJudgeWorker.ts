@@ -528,12 +528,12 @@ export class LinkerSceneJudgeWorker {
     try {
       const feedbackTypes = [
         "not_important",
-        "wrong_content",
-        "project_wrong",
+        "content_wrong",
+        "wrong_project",
         "task_done",
         "not_a_task",
         "do_not_record",
-        "sensitive_content",
+        "sensitive_delete",
       ];
       const summaries: string[] = [];
       for (const fbType of feedbackTypes) {

@@ -13,9 +13,10 @@ import { getStatusPillConfig } from "./helpers";
 interface TimelineHeaderProps {
   dayMainThread: string;
   dateLabel: string;
+  historical: boolean;
 }
 
-export function TimelineHeader({ dayMainThread, dateLabel }: TimelineHeaderProps) {
+export function TimelineHeader({ dayMainThread, dateLabel, historical }: TimelineHeaderProps) {
   const appStatus = useAppStore((s) => s.appStatus);
   const forgetRecent = useAppStore((s) => s.forgetRecent);
   const refreshTodayPageData = useAppStore((s) => s.refreshTodayPageData);
@@ -56,7 +57,7 @@ export function TimelineHeader({ dayMainThread, dateLabel }: TimelineHeaderProps
     <header className="timeline-header">
       <div className="timeline-header__titles">
         <h1 className="timeline-header__title">
-          今日
+          {historical ? "历史" : "今日"}
           <span className="timeline-header__date">{dateLabel}</span>
         </h1>
         <p className="timeline-header__sub">{dayMainThread}</p>

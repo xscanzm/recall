@@ -401,6 +401,11 @@ export interface Fact {
   userValue?: "low" | "medium" | "high" | null;
   /** 011 新增：抽取到的人物名候选数组（Linker 触发 person 入库的关键输入） */
   peopleHints?: string[] | null;
+  sourceEpisodeIds: string[];
+  claimStatus: "candidate" | "active" | "corrected" | "rejected" | "superseded" | "retracted";
+  generationPath: string | null;
+  generationVersion: number;
+  derivationKey: string | null;
 }
 
 /**
@@ -422,6 +427,8 @@ export interface Scene {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  derivationKey: string | null;
+  derivationVersion: number;
 }
 
 /**
@@ -613,14 +620,21 @@ export type CreateObservationInput = Omit<Observation, "id" | "createdAt"> & {
   id?: string;
 };
 
-export type CreateFactInput = Omit<Fact, "id" | "createdAt" | "updatedAt" | "deletedAt"> & {
+export type CreateFactInput = Omit<Fact, "id" | "createdAt" | "updatedAt" | "deletedAt" | "sourceEpisodeIds" | "claimStatus" | "generationPath" | "generationVersion" | "derivationKey"> & {
   id?: string;
+  sourceEpisodeIds?: string[];
+  claimStatus?: Fact["claimStatus"];
+  generationPath?: string | null;
+  generationVersion?: number;
+  derivationKey?: string | null;
 };
 
 export type UpdateFactInput = Partial<Omit<Fact, "id" | "createdAt" | "updatedAt" | "deletedAt">>;
 
-export type CreateSceneInput = Omit<Scene, "id" | "createdAt" | "updatedAt" | "deletedAt"> & {
+export type CreateSceneInput = Omit<Scene, "id" | "createdAt" | "updatedAt" | "deletedAt" | "derivationKey" | "derivationVersion"> & {
   id?: string;
+  derivationKey?: string | null;
+  derivationVersion?: number;
 };
 
 export type CreateReportInput = Omit<Report, "id" | "createdAt" | "updatedAt"> & {
@@ -696,8 +710,8 @@ export type TimelineBlockCategory =
  */
 export interface TimelineBlockOutputItem {
   id?: string;
-  startAt: string;
-  endAt: string;
+  startAt?: string;
+  endAt?: string;
   title: string;
   summary: string;
   category: TimelineBlockCategory;
@@ -726,6 +740,8 @@ export interface TimelineBlockOutputItem {
  * - sensitivity：内容敏感度
  */
 export interface ObserverOutputV2 {
+  /** 批次模型输出对应的输入图片序号（1-based）；单帧输出可省略 */
+  frameIndex?: number;
   sceneSummary: string;
   userFacingSummary: string;
   likelyWorkPurpose: string;
@@ -826,6 +842,7 @@ export interface ExtractorOutputV2 {
  */
 export interface TimelineBuilderInput {
   dateKey: string;
+  existingBlocks?: TimelineBlock[];
   observations: Array<{
     id: string;
     capturedAt: string;

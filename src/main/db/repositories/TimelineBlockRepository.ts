@@ -24,6 +24,14 @@
 import type { DB } from "../Database";
 import type { TimelineBlock } from "../../../shared/types";
 
+export interface TimelineWindowReplacement {
+  dateKey: string;
+  windowStart: string;
+  windowEnd: string;
+  blocks: TimelineBlock[];
+  processedThrough: string;
+}
+
 interface TimelineBlockRow {
   id: string;
   date_key: string;
@@ -203,6 +211,63 @@ export class TimelineBlockRepository {
     return rows.map((row) => this.rowToTimelineBlock(row));
   }
 
+  findOverlapping(dateKey: string, start: string, end: string): TimelineBlock[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM timeline_blocks WHERE date_key = ? AND end_at >= ? AND start_at < ? ORDER BY start_at ASC"
+    ).all(dateKey, start, end) as TimelineBlockRow[];
+    return rows.map((row) => this.rowToTimelineBlock(row));
+  }
+
+  getProtectedIds(dateKey: string): Set<string> {
+    const ids = new Set<string>();
+    const collect = (sql: string, ...args: unknown[]) => {
+      for (const row of this.db.prepare(sql).all(...args) as Array<{ id: string }>) ids.add(row.id);
+    };
+    collect(`SELECT DISTINCT value AS id FROM report_selections, json_each(selected_timeline_block_ids_json)
+      WHERE date_key = ? UNION SELECT DISTINCT value AS id FROM report_selections, json_each(excluded_timeline_block_ids_json) WHERE date_key = ?`, dateKey, dateKey);
+    collect(`SELECT DISTINCT value AS id FROM reports,
+      json_each(CASE WHEN json_valid(content_json) THEN json_extract(content_json, '$.sourceTimelineBlockIds') ELSE '[]' END)
+      WHERE date_key = ?`, dateKey);
+    collect(`SELECT DISTINCT value AS id FROM unfinished_threads, json_each(source_timeline_block_ids_json) WHERE date_key = ?`, dateKey);
+    return ids;
+  }
+
+  /** Replace mutable overlapping blocks and advance the checkpoint atomically. */
+  replaceWindowAndCheckpoint(input: TimelineWindowReplacement): TimelineBlock[] {
+    const result: TimelineBlock[] = [];
+    this.db.transaction(() => {
+      const existing = this.findOverlapping(input.dateKey, input.windowStart, input.windowEnd);
+      const protectedIds = this.getProtectedIds(input.dateKey);
+      const mutable = existing.filter((block) => !protectedIds.has(block.id));
+      const protectedBlocks = existing.filter((block) => protectedIds.has(block.id));
+      const usedIds = new Set<string>();
+      const inherited = input.blocks.filter((block) =>
+        !protectedBlocks.some((protectedBlock) => sourceOverlap(block, protectedBlock) > 0)
+      ).map((block) => {
+        let best: TimelineBlock | undefined;
+        let bestOverlap = 0;
+        for (const old of mutable) {
+          if (usedIds.has(old.id)) continue;
+          const overlap = sourceOverlap(block, old);
+          if (overlap > bestOverlap) { best = old; bestOverlap = overlap; }
+        }
+        const id = best ? best.id : generateId("tb");
+        if (best) usedIds.add(best.id);
+        return { ...block, id };
+      });
+      if (mutable.length > 0) {
+        const placeholders = mutable.map(() => "?").join(",");
+        this.db.prepare(`DELETE FROM timeline_blocks WHERE id IN (${placeholders})`).run(...mutable.map((block) => block.id));
+      }
+      this.insertMany(input.dateKey, inherited);
+      this.db.prepare(`INSERT INTO timeline_build_checkpoints (date_key, processed_through, updated_at)
+        VALUES (?, ?, ?) ON CONFLICT(date_key) DO UPDATE SET processed_through=excluded.processed_through, updated_at=excluded.updated_at`)
+        .run(input.dateKey, input.processedThrough, new Date().toISOString());
+      result.push(...protectedBlocks, ...inherited);
+    })();
+    return result.sort((a, b) => a.startAt.localeCompare(b.startAt));
+  }
+
   /**
    * 删除某天的所有 timeline blocks
    */
@@ -278,4 +343,15 @@ function safeParseArray<T = unknown>(json: string): T[] {
 
 function generateId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function sourceOverlap(a: TimelineBlock, b: TimelineBlock): number {
+  return intersectionSize(a.sourceObservationIds, b.sourceObservationIds)
+    + intersectionSize(a.sourceSceneIds, b.sourceSceneIds)
+    + intersectionSize(a.sourceFactIds, b.sourceFactIds);
+}
+
+function intersectionSize(a: string[], b: string[]): number {
+  const values = new Set(a);
+  return b.reduce((count, value) => count + (values.has(value) ? 1 : 0), 0);
 }

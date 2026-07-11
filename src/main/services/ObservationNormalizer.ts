@@ -26,6 +26,7 @@ import type { CaptureBundle, ScreenshotRetentionPolicy, BatchCaptureBundle } fro
 import type { DebugEvent } from "../models/types";
 import { TEXT_LIMITS } from "../models/schemas";
 import type { PrivacyGuard } from "./PrivacyGuard";
+import type { ScreenshotCache } from "./ScreenshotCache";
 
 /**
  * Normalizer 输出
@@ -49,6 +50,8 @@ export interface BatchNormalizeResult {
   observationIds: (string | null)[];
   /** 每帧的清洗结果 */
   results: NormalizeResult[];
+  /** results 中每项对应 batchBundle.frames 的原始下标 */
+  frameIndices: Array<number | null>;
   /** 总 warning 数 */
   totalWarnings: number;
   /** 丢弃的帧数 */
@@ -75,13 +78,16 @@ export interface BatchNormalizeResult {
 export class ObservationNormalizer {
   private readonly observationRepo: ObservationRepository;
   private readonly privacyGuard: PrivacyGuard | null;
+  private readonly screenshotCache: ScreenshotCache | null;
 
   constructor(deps: {
     observationRepo: ObservationRepository;
     privacyGuard?: PrivacyGuard;
+    screenshotCache?: ScreenshotCache;
   }) {
     this.observationRepo = deps.observationRepo;
     this.privacyGuard = deps.privacyGuard ?? null;
+    this.screenshotCache = deps.screenshotCache ?? null;
   }
 
   /**
@@ -108,6 +114,7 @@ export class ObservationNormalizer {
       if (this.privacyGuard) {
         const postCheck = this.privacyGuard.checkPostVision(visionOutput.sensitivity);
         if (!postCheck.allowed && postCheck.action === "delete_observation") {
+          this.deleteBundleScreenshots(captureBundle);
           if (input.debugEvents) {
             input.debugEvents.push({ layer: "L0", action: "discard", reason: "high_sensitive_privacy_guard", frameIndex: input.frameIndex });
           }
@@ -120,6 +127,7 @@ export class ObservationNormalizer {
         }
       } else {
         // 没有 PrivacyGuard 时，保守地丢弃 high_sensitive 内容
+        this.deleteBundleScreenshots(captureBundle);
         if (input.debugEvents) {
           input.debugEvents.push({ layer: "L0", action: "discard", reason: "high_sensitive_no_guard", frameIndex: input.frameIndex });
         }
@@ -136,7 +144,12 @@ export class ObservationNormalizer {
     const cleanedVisionOutput = this.truncateLongFields(visionOutput, warnings);
 
     // 3. 附加 capture metadata + 截图状态
-    const screenshotPaths = this.collectScreenshotPaths(captureBundle);
+    if (captureBundle.retentionPolicy === "delete_immediately") {
+      this.deleteBundleScreenshots(captureBundle);
+    }
+    const screenshotPaths = captureBundle.retentionPolicy === "delete_immediately"
+      ? []
+      : this.collectScreenshotPaths(captureBundle);
     const screenshotRetention = this.mapRetentionPolicy(captureBundle.retentionPolicy);
 
     // 4. 构造 observation 并写入数据库
@@ -194,21 +207,45 @@ export class ObservationNormalizer {
     const { observations, batchBundle } = input;
     const results: NormalizeResult[] = [];
     const observationIds: (string | null)[] = [];
+    const frameIndices: Array<number | null> = [];
     let totalWarnings = 0;
     let discardedCount = 0;
 
+    const availableFrameIndices = batchBundle.compressedImagePaths.length === 0
+      ? batchBundle.frames.map((_frame, frameIndex) => frameIndex)
+      : batchBundle.compressedImagePaths
+          .map((imagePath, frameIndex) => imagePath ? frameIndex : -1)
+          .filter((frameIndex) => frameIndex >= 0);
+
     for (let i = 0; i < observations.length; i++) {
       const obs = observations[i];
-      // 用对应单帧 bundle 落 observation（帧级元数据：captureId/capturedAt/appName/windowTitle）
-      // 如果 observations 数量多于 frames（模型多输出了），用最后一帧兜底
-      const frameBundle = batchBundle.frames[i] ?? batchBundle.frames[batchBundle.frames.length - 1];
+      // Older batch outputs omitted frameIndex and relied on response order.
+      const submittedFrameIndex = obs.frameIndex ?? i + 1;
+      const originalFrameIndex = availableFrameIndices[submittedFrameIndex - 1];
+      const frameBundle = originalFrameIndex === undefined
+        ? undefined
+        : batchBundle.frames[originalFrameIndex];
+
+      if (!frameBundle) {
+        results.push({
+          observation: null,
+          discarded: false,
+          discardReason: `帧 ${submittedFrameIndex ?? "?"} 无对应截图`,
+          warnings: [],
+        });
+        observationIds.push(null);
+        frameIndices.push(null);
+        continue;
+      }
+
+      frameIndices.push(originalFrameIndex ?? null);
 
       try {
         const result = this.normalize({
           visionOutput: obs,
           captureBundle: frameBundle,
           debugEvents: input.debugEvents,
-          frameIndex: i,
+          frameIndex: originalFrameIndex,
         });
         results.push(result);
         observationIds.push(result.observation?.id ?? null);
@@ -232,6 +269,7 @@ export class ObservationNormalizer {
     return {
       observationIds,
       results,
+      frameIndices,
       totalWarnings,
       discardedCount,
     };
@@ -421,6 +459,13 @@ export class ObservationNormalizer {
       }
     }
     return paths;
+  }
+
+  private deleteBundleScreenshots(bundle: CaptureBundle): void {
+    if (!this.screenshotCache) return;
+    for (const filePath of this.collectScreenshotPaths(bundle)) {
+      this.screenshotCache.deleteFileSync(filePath);
+    }
   }
 
   /**

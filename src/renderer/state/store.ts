@@ -15,6 +15,8 @@ import type {
   UnfinishedThread,
 } from "../../shared/types";
 import { getIpc, fetchTodayPageData } from "./ipc";
+import { isCurrentTodayPageRequest, shouldRollOverTodayDate } from "./todayNavigation";
+import { clearAllDataAction, clearScreenshotsOnlyAction, exportDataAction, forgetRecentAction, getCacheSizeAction, searchMemoryAction } from "./searchDataActions";
 
 export type PageKey =
   | "today"
@@ -254,6 +256,8 @@ export interface ProjectDetail {
     /** 003 字段：stale 标记时间 */
     staleAt?: string | null;
   }>;
+  /** Dedicated unfinished threads, when the IPC aggregate provides them. */
+  unfinishedThreads?: UnfinishedThread[];
 }
 
 /**
@@ -415,9 +419,12 @@ export interface DebugEventItem {
  */
 export interface DataExportResult {
   meta: {
-    version: string;
+    schemaVersion: string;
+    appVersion: string;
     exportedAt: string;
     includeScreenshots: boolean;
+    screenshotSemantics: "references" | "excluded";
+    counts: Record<string, number>;
   };
   observations: unknown[];
   facts: unknown[];
@@ -427,6 +434,12 @@ export interface DataExportResult {
   people: unknown[];
   projects: unknown[];
   reports: unknown[];
+  proactiveItems: unknown[];
+  timelineBlocks: unknown[];
+  unfinishedThreads: unknown[];
+  reportSelections: unknown[];
+  objectMerges: unknown[];
+  memoryEdges: unknown[];
 }
 
 /**
@@ -524,6 +537,7 @@ interface AppState {
   timelineBuildingDateKey: string | null;
   lastTimelineBuildAt: number;
   todayPageDateKey: string;
+  todayPageFollowingToday: boolean;
   workReportSelectionMode: boolean;
   selectedBlockIds: string[];
   ignoredBlockIds: string[];
@@ -726,6 +740,7 @@ interface AppState {
    */
   rollOverTodayDateKeyIfNeeded: () => boolean;
   buildTimeline: (dateKey: string) => Promise<void>;
+  reorganizeTimelineDay: (dateKey: string) => Promise<void>;
   generatePersonalReview: (dateKey: string) => Promise<void>;
   generateWorkReport: (params: {
     dateKey: string;
@@ -844,6 +859,8 @@ interface AppState {
   clearDebugState: () => void;
 }
 
+let latestTodayPageRequestId = 0;
+
 /**
  * 默认 AppStatus（与 main 进程 createInitialAppStatus 保持一致）
  */
@@ -957,6 +974,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   timelineBuildingDateKey: null,
   lastTimelineBuildAt: 0,
   todayPageDateKey: todayDateKey(),
+  todayPageFollowingToday: true,
   workReportSelectionMode: false,
   selectedBlockIds: [],
   ignoredBlockIds: [],
@@ -1099,27 +1117,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * - 每条结果显示：类型/标题摘要/时间/项目/来源跳转
    */
   searchMemory: async (query: string, limit = 50, offset = 0) => {
-    if (!query.trim()) return;
-    set({
-      searchLoading: true,
-      searchError: null,
-      searchQuery: query,
-    });
-    try {
-      const result = await getIpc().memory.search<SearchResultItem>({
-        query: query.trim(),
-        limit,
-        offset,
-      });
-      set({
-        searchResults: result?.results ?? [],
-        searchLoading: false,
-        searchSearched: true,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      set({ searchLoading: false, searchError: message, searchSearched: true });
-    }
+    await searchMemoryAction(set as never, query, limit, offset);
   },
 
   /**
@@ -1356,13 +1354,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * - 删除或 soft delete 关联 facts/scenes（由 main 端实现）
    */
   forgetRecent: async (duration) => {
-    const result = await getIpc().capture.forgetRecent({ duration });
-    // 忘掉最近后重新加载今日数据
-    await get().loadToday();
-    return {
-      deletedObservations: result.deletedObservations,
-      deletedScreenshots: result.deletedScreenshots,
-    };
+    return forgetRecentAction(set as never, get as never, EMPTY_TODAY, duration);
   },
 
   // ============================================================================
@@ -1544,26 +1536,27 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 更新应用设置（浅合并：observation/screenshot/notification/dailyReport/onboardingCompleted）
    */
   updateSettings: async (patch) => {
+    const previous = get().settings;
+    if (previous) {
+      set({
+        settings: {
+          observation: patch.observation ?? previous.observation,
+          screenshot: patch.screenshot ?? previous.screenshot,
+          notification: patch.notification ?? previous.notification,
+          dailyReport: patch.dailyReport ?? previous.dailyReport,
+          onboardingCompleted: patch.onboardingCompleted ?? previous.onboardingCompleted,
+          debug: patch.debug ?? previous.debug,
+        },
+        settingsError: null,
+      });
+    }
     try {
-      await getIpc().settings.update(patch);
-      // 乐观更新本地设置
-      const current = get().settings;
-      if (current) {
-        set({
-          settings: {
-            observation: patch.observation ?? current.observation,
-            screenshot: patch.screenshot ?? current.screenshot,
-            notification: patch.notification ?? current.notification,
-            dailyReport: patch.dailyReport ?? current.dailyReport,
-            onboardingCompleted:
-              patch.onboardingCompleted ?? current.onboardingCompleted,
-            debug: patch.debug ?? current.debug,
-          },
-        });
-      }
+      const result = await getIpc().settings.update<AppSettingsState>(patch);
+      set({ settings: result.settings, settingsError: null });
       return { ok: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      set({ settings: previous, settingsError: message });
       return { ok: false, error: message };
     }
   },
@@ -1572,19 +1565,7 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 数据导出（JSON，默认不含截图）
    */
   exportData: async (input) => {
-    try {
-      const result = await getIpc().data.export(input);
-      if (result.ok && result.export) {
-        return { ok: true, data: result.export as DataExportResult };
-      }
-      return {
-        ok: false,
-        error: result.message ?? "导出失败",
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
-    }
+    return exportDataAction(input);
   },
 
   /**
@@ -1592,21 +1573,9 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 保留 settings / model_configs / privacy_rules / user_feedback
    */
   clearAllData: async () => {
-    try {
-      const result = await getIpc().data.clearAll();
-      if (result.ok) {
-        // 清空后重新加载今日数据
-        await get().loadToday();
-        return { ok: true, deletedScreenshots: result.deletedScreenshots };
-      }
-      return {
-        ok: false,
-        error: result.message ?? "清空失败",
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
-    }
+    const result = await clearAllDataAction(set as never);
+    if (result.ok) set({ todayData: EMPTY_TODAY });
+    return result;
   },
 
   /**
@@ -1614,24 +1583,14 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 不删除结构化记忆（观察/线索/工作片段等保留）。
    */
   clearScreenshotsOnly: async () => {
-    try {
-      const result = await getIpc().screenshot.clear();
-      return { ok: true, deletedScreenshots: result.deletedScreenshots };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
-    }
+    return clearScreenshotsOnlyAction();
   },
 
   /**
    * 查询截图缓存当前大小（字节数和文件数）
    */
   getCacheSize: async () => {
-    try {
-      return await getIpc().data.getCacheSize();
-    } catch {
-      return { ok: true, bytes: 0, fileCount: 0 };
-    }
+    return getCacheSizeAction();
   },
 
   // ============================================================================
@@ -1642,11 +1601,12 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 加载今日页完整数据（并行 4 个 IPC + 派生 dayMainThread/highlights/decisions/tomorrowStartHere）
    */
   loadTodayPageData: async (dateKey: string) => {
-    if (get().todayPageLoading) return;
+    const requestId = ++latestTodayPageRequestId;
     set({ todayPageLoading: true, todayPageError: null, todayPageDateKey: dateKey });
     try {
       const appStatus = get().appStatus;
       const data = await fetchTodayPageData(dateKey, appStatus);
+      if (!isCurrentTodayPageRequest(requestId, latestTodayPageRequestId, dateKey, get().todayPageDateKey)) return;
       // 进入时清理上一次的选择模式与忽略列表
       set({
         todayPageData: data,
@@ -1657,6 +1617,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         previewModalOpen: false,
       });
     } catch (err) {
+      if (!isCurrentTodayPageRequest(requestId, latestTodayPageRequestId, dateKey, get().todayPageDateKey)) return;
       const message = err instanceof Error ? err.message : String(err);
       set({ todayPageLoading: false, todayPageError: message });
     }
@@ -1667,8 +1628,6 @@ export const useAppStore = create<AppState>((set, get) => ({
    */
   refreshTodayPageData: async () => {
     const dateKey = get().todayPageDateKey;
-    // 临时清除 loading 守卫，强制刷新
-    set({ todayPageLoading: false });
     await get().loadTodayPageData(dateKey);
     const state = get();
     const data = state.todayPageData;
@@ -1711,7 +1670,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setTodayPageDateKey: (dateKey: string) => set({ todayPageDateKey: dateKey }),
+  setTodayPageDateKey: (dateKey: string) => set({
+    todayPageDateKey: dateKey,
+    todayPageFollowingToday: dateKey === todayDateKey(),
+  }),
 
   /**
    * 跨日检测：如果当前 todayPageDateKey 已经不再是"今天"（本地时区），
@@ -1722,10 +1684,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   rollOverTodayDateKeyIfNeeded: () => {
     const current = get().todayPageDateKey;
     const today = todayDateKey();
-    if (current !== today) {
-      set({ todayPageDateKey: today });
-      // 异步触发数据重载（不 await，避免阻塞调用方）
-      void get().loadTodayPageData(today);
+    if (shouldRollOverTodayDate(current, today, get().todayPageFollowingToday)) {
+      set({ todayPageDateKey: today, todayPageFollowingToday: true });
       return true;
     }
     return false;
@@ -1749,6 +1709,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (get().timelineBuildingDateKey === dateKey) {
         set({ timelineBuildingDateKey: null });
       }
+    }
+  },
+
+  reorganizeTimelineDay: async (dateKey: string) => {
+    if (get().timelineBuildingDateKey === dateKey) return;
+    set({ todayPageLoading: true, todayPageError: null, timelineBuildingDateKey: dateKey });
+    try {
+      const res = await getIpc().timeline.reorganizeDay(dateKey);
+      if (!res.ok) throw new Error(res.error ?? "时间轴重整失败");
+      await get().loadTodayPageData(dateKey);
+    } catch (err) {
+      set({ todayPageError: err instanceof Error ? err.message : String(err) });
+    } finally {
+      set({ todayPageLoading: false });
+      if (get().timelineBuildingDateKey === dateKey) set({ timelineBuildingDateKey: null });
     }
   },
 

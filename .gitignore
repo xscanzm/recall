@@ -58,6 +58,8 @@ scripts/inspect-db.js
 scripts/verify-*.js
 scripts/explore-dbs.js
 scripts/output/
+test-results/
+playwright-report/
 scripts/prototype-batch-capture.ts
 scripts/read-db-config.js
 scripts/run-persist-electron.js
@@ -74,4 +76,3 @@ scripts/write-model-config.js
 
 # 发布仓库构建临时目录（用于推送到 recall-releases）
 __publish_release/
-

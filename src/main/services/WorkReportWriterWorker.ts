@@ -153,7 +153,7 @@ export class WorkReportWriterWorker {
     //    buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks。
     if (this.timelineBuilderWorker) {
       try {
-        await this.timelineBuilderWorker.buildTimeline(dateKey);
+        await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
       } catch {
         // buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks
       }
@@ -178,16 +178,17 @@ export class WorkReportWriterWorker {
       };
     }
 
-    // 4. 严格过滤 privateRisk=high block（不传入 LLM）
-    //    spec 要求"严格过滤 privateRisk=high 内容"，即使用户选中也需过滤
-    const safeBlocks = selectedBlocks.filter((b) => b.privateRisk !== "high");
+    // 4. 严格过滤不可报告或 privateRisk=high block（不传入 LLM）
+    const safeBlocks = selectedBlocks.filter(
+      (b) => b.reportable !== false && b.privateRisk !== "high"
+    );
     const omittedBlockCount = selectedBlocks.length - safeBlocks.length;
     if (safeBlocks.length === 0) {
       return {
         ok: false,
         errorCode: "all_blocked_for_privacy",
         errorMessage:
-          "选中的所有 TimelineBlock 均为高隐私风险，已全部过滤，无法生成工作日报。",
+          "选中的所有 TimelineBlock 均不可报告或为高隐私风险，已全部过滤，无法生成工作日报。",
       };
     }
 
@@ -276,15 +277,25 @@ export class WorkReportWriterWorker {
       .filter((b) => !selectedBlockIdSet.has(b.id))
       .map((b) => b.id);
 
+    const allowedBlockIds = new Set(safeBlocks.map((block) => block.id));
+    const allowedFactIds = new Set(reportableFacts.map((fact) => fact.id));
+    const usedBlockIds = Array.from(
+      new Set(parsed.sourceTimelineBlockIds.filter((id) => allowedBlockIds.has(id)))
+    );
+    const usedFactIds = Array.from(
+      new Set(parsed.sourceFactIds.filter((id) => allowedFactIds.has(id)))
+    );
+
     // 13. 构造持久化的 WorkReport 实体
     const now = new Date().toISOString();
     const workReportId = `wr_${dateKey}_${Date.now().toString(36)}`;
 
-    // 合并 worker 级 + LLM 级隐私省略计数
-    const totalOmittedForPrivacy = parsed.omittedForPrivacy + omittedBlockCount;
+    const highPrivacyBlockCount = selectedBlocks.filter((block) => block.privateRisk === "high").length;
+    // 仅将高隐私 block 计入隐私省略数；reportable=false 仍会在模型调用前排除。
+    const totalOmittedForPrivacy = parsed.omittedForPrivacy + highPrivacyBlockCount;
     const warnings = [...parsed.warnings];
     if (omittedBlockCount > 0) {
-      warnings.push(`已省略 ${omittedBlockCount} 个高隐私风险时间段。`);
+      warnings.push(`已省略 ${omittedBlockCount} 个不可报告或高隐私风险时间段。`);
     }
 
     const report: WorkReport = {
@@ -293,8 +304,8 @@ export class WorkReportWriterWorker {
       title: parsed.title || `${dateKey} 工作日报`,
       plainText: parsed.plainText,
       sections: parsed.sections,
-      sourceTimelineBlockIds: selectedBlockIds,
-      sourceFactIds: parsed.sourceFactIds,
+      sourceTimelineBlockIds: usedBlockIds,
+      sourceFactIds: usedFactIds,
       omittedForPrivacy: totalOmittedForPrivacy,
       warnings,
       createdAt: now,

@@ -8,7 +8,7 @@ import type { RecallApi } from "../../main/preload";
 import type {
   AppStatus,
   IpcResult,
-  TimelineBlock,
+  TodayTimelineProjection,
   UnfinishedThread,
   PersonalReview,
   WorkReport,
@@ -27,7 +27,9 @@ declare global {
 /**
  * IPC 客户端单例
  */
-export const ipc = (window as unknown as { recallAPI: RecallApi }).recallAPI;
+export const ipc = typeof window === "undefined"
+  ? undefined
+  : (window as unknown as { recallAPI: RecallApi }).recallAPI;
 
 /**
  * 安全获取 IPC 客户端，preload 未注入时给出明确错误
@@ -46,24 +48,24 @@ export function getIpc(): RecallApi {
 // preload 暴露的 API 返回 IpcResult<unknown>，这里负责解包并转换为具体类型。
 // ============================================================================
 
-/** 安全解包：失败或 null 时返回空数组（用于列表查询） */
-function unwrapList<T>(result: IpcResult<unknown>): T[] {
-  if (!result.ok) return [];
+/** 解包列表查询；失败时保留 IPC 错误语义。 */
+export function unwrapList<T>(result: IpcResult<unknown>): T[] {
+  if (!result.ok) throw new Error(result.error || "IPC 查询失败");
   const data = result.data;
   return Array.isArray(data) ? (data as T[]) : [];
 }
 
-/** 安全解包：失败或 null 时返回 undefined（用于单对象查询） */
-function unwrapOptional<T>(result: IpcResult<unknown>): T | undefined {
-  if (!result.ok) return undefined;
+/** 解包可选对象；成功的 null 表示对象尚不存在。 */
+export function unwrapOptional<T>(result: IpcResult<unknown>): T | undefined {
+  if (!result.ok) throw new Error(result.error || "IPC 查询失败");
   const data = result.data;
   return data ? (data as T) : undefined;
 }
 
-/** 获取当日时间轴 blocks（不调用 LLM） */
-export async function fetchTimeline(dateKey: string): Promise<TimelineBlock[]> {
+/** 获取由已存 Episode / Atom / Moment 派生的当日展示投影（不调用 LLM） */
+export async function fetchTimeline(dateKey: string): Promise<TodayTimelineProjection[]> {
   const res = await getIpc().timeline.get(dateKey);
-  return unwrapList<TimelineBlock>(res);
+  return unwrapList<TodayTimelineProjection>(res);
 }
 
 /** 获取待收尾列表 */
@@ -96,7 +98,8 @@ export async function fetchWorkReport(
  * 派生规则：
  * - dayMainThread: 优先 personalReview.overview；否则从 timeline blocks 的 projectNames 派生；
  *   再否则用首个 block 标题；都没有则 "今天还没有整理出主线。"
- * - highlights: 从 reportable timeline blocks 的 highlights 字段聚合，最多 8 条
+ * - highlights: 从全部 timeline projections 的 highlights 字段聚合，最多 8 条；
+ *   reportable 只约束对外日报，不约束给用户自己的 Today 页面
  * - decisions: 从 timeline blocks 的 generatedDecisions 聚合，最多 8 条
  * - tomorrowStartHere: 优先 personalReview.tomorrowStartHere；
  *   否则从 open 状态的 unfinishedThreads 的 suggestedNextAction 取前 3 条
@@ -113,10 +116,9 @@ export async function fetchTodayPageData(
       fetchWorkReport(dateKey),
     ]);
 
-  // 派生 highlights（仅 reportable blocks）
+  // Today 是自用视图；reportable 只用于对外日报选择。
   const highlights: Array<{ id: string; content: string }> = [];
   for (const block of timelineBlocks) {
-    if (!block.reportable) continue;
     for (const h of block.highlights) {
       if (!h) continue;
       highlights.push({ id: `${block.id}__h${highlights.length}`, content: h });

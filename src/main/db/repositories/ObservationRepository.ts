@@ -60,6 +60,8 @@ export class ObservationRepository {
    * 来自 008 迁移，均可空。V1 写入路径不传这些字段时落库为 NULL。
    */
   create(input: CreateObservationInput): Observation {
+    const existing = this.getByCaptureId(input.captureId);
+    if (existing) return existing;
     const id = input.id ?? generateId("obs");
     const createdAt = new Date().toISOString();
 
@@ -130,7 +132,7 @@ export class ObservationRepository {
       params.push(opts.from);
     }
     if (opts.to) {
-      conditions.push("captured_at <= ?");
+      conditions.push("captured_at < ?");
       params.push(opts.to);
     }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -151,7 +153,7 @@ export class ObservationRepository {
    */
   listByTimeRange(startAt: string, endAt: string): Observation[] {
     const stmt = this.db.prepare(
-      "SELECT * FROM observations WHERE captured_at >= ? AND captured_at <= ? ORDER BY captured_at DESC"
+      "SELECT * FROM observations WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at DESC"
     );
     const rows = stmt.all(startAt, endAt) as ObservationRow[];
     return rows.map(mapRow);
@@ -192,7 +194,7 @@ export class ObservationRepository {
   deleteByCapturedAt(from: string, to?: string): number {
     if (to) {
       const result = this.db
-        .prepare("DELETE FROM observations WHERE captured_at >= ? AND captured_at <= ?")
+        .prepare("DELETE FROM observations WHERE captured_at >= ? AND captured_at < ?")
         .run(from, to);
       return result.changes;
     }

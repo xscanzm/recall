@@ -243,8 +243,9 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
       .sort((a, b) => b.startAt.localeCompare(a.startAt));
   }, [todayPageData, ignoredBlockIds, onlyWork, searchKeyword]);
 
-  const dayMainThread = todayPageData?.dayMainThread ?? "今天还没有整理出主线。";
+  const dayMainThread = todayPageData?.dayMainThread ?? "还没有整理出这一天的主线。";
   const dateLabel = friendlyDateLabel(todayPageDateKey);
+  const isHistorical = todayPageDateKey !== todayDateKey();
 
   const showSkeleton = todayPageLoading && !todayPageData;
   const showError = !todayPageLoading && todayPageError && !todayPageData;
@@ -256,7 +257,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
       }`}
     >
       <main className="timeline-main" aria-label="今日时间轴">
-        <TimelineHeader dayMainThread={dayMainThread} dateLabel={dateLabel} />
+        <TimelineHeader dayMainThread={dayMainThread} dateLabel={dateLabel} historical={isHistorical} />
 
         <TimelineToolbar
           dateKey={todayPageDateKey}
@@ -277,7 +278,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
 
         {showError ? (
           <ErrorState
-            title="加载今日数据失败"
+            title="加载记录失败"
             description={todayPageError ?? ""}
             primaryAction={{ label: "重试", onClick: onRetry }}
             secondaryAction={{ label: "去设置", onClick: onGoSettings }}
@@ -299,7 +300,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
           ).length === 0 &&
           todayPageData.timelineBlocks.length > 0 && (
             <div className="timeline-hint timeline-hint--warn">
-              今天还没有适合写进工作日报的片段。你也可以手动选择时间轴中的工作内容。
+              {isHistorical ? "这一天" : "今天"}还没有适合写进工作日报的片段。你也可以手动选择时间轴中的工作内容。
             </div>
           )}
       </main>

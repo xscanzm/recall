@@ -451,7 +451,7 @@ candidatePeople 为空
   "mergeSuggestions": []
 }
 
-【示例 2 — 创建 project + 同时关联到 candidateProject】
+【示例 2 — 创建 candidateProjects 中不存在的 project】
 输入包含 fact: "在 CUN.ai 完成账户注册和邮箱验证"，projectHint: "CUN.ai"
 candidateProjects 已有 "Recall" 但无 "CUN.ai"
 输出：
@@ -511,7 +511,7 @@ Scene 应该表达一段工作的主题、目的、结果和相关事实。
 - 输入 JSON 顶层会给出 systemTimezone（如 "Asia/Shanghai"）和 systemTimezoneOffset（如 "+08:00"）
 - 所有 fact.createdAt 都是 UTC ISO 字符串（带 Z 后缀），如 "2026-07-07T08:30:00.000Z" 表示 UTC 08:30
 - 输出 startAt/endAt 必须用 UTC ISO 字符串（带 Z 后缀），不要带 ±HH:MM 也不要省略时区
-- 计算"本地几点几分"时：用 UTC ISO 的小时减 systemTimezoneOffset
+- 计算"本地几点几分"时：用 UTC ISO 的时间加上 systemTimezoneOffset
   - 例：UTC 00:30 + systemTimezoneOffset +08:00 → 本地 08:30
 - 写中文时间词（凌晨/上午/下午/晚上）必须基于本地小时，禁止把 6:00-11:00 写成"凌晨/清晨"
   - 凌晨 00:00-05:59、清晨/上午 06:00-11:59、中午 12:00-12:59、下午 13:00-17:59、晚上/夜间 18:00-23:59
@@ -849,20 +849,23 @@ export const JSON_REPAIR_PROMPT_TEMPLATE = `下面的模型输出不是合法 JS
  */
 export const TIMELINE_BUILDER_PROMPT_TEMPLATE = `任务：你是 Recall 的今日时间轴整理员。请把输入 JSON 中给定时间窗口内的 observations、facts、scenes 聚合为用户可读的 TimelineBlock。
 
-【重要：增量落盘机制】
+【重要：可变尾部重组机制】
 - 输入 JSON 顶层包含 windowStart 和 windowEnd 两个字段，定义本次处理的时间范围
 - 你只处理 [windowStart, windowEnd] 范围内的数据，不要涉及范围外的内容
-- 已落盘的历史 blocks 不会再次传入，你不需要保留或合并它们
-- 输出的 blocks 只覆盖 [windowStart, windowEnd] 范围，startAt 必须 >= windowStart
+- existingBlocks 是窗口内已有的可变 blocks；它们及其来源 observations 会一并传入
+- 你必须根据全部输入重新组织窗口，可拆分、合并或改写 existingBlocks，不必保持原结构
+- 输出的 blocks 共同替换窗口内未受保护的旧 blocks
 - 如果窗口内数据很少或都是噪声，可以输出空 blocks 数组（但 dayStartSummary/dayMainThread 仍需填写）
 
 目标：
 1. 让普通用户一眼看懂这段时间发生了什么。
 2. 不要机械按半小时切分。
 3. 相近主题、相近项目、连续工作应该合并成自然工作片段。
+3a. 常规片段目标长度为 8-15 分钟；同一事项跨应用切换仍可合并。
+3b. 遇到明确事项切换、会议起止、长时间中断或隐私边界时必须拆分，不为凑时长合并。
 4. 标题必须清楚、务实，不诗化。
 5. 摘要要温和但事实优先。
-6. 每个 block 必须保留 source ids。
+6. 每个 block 必须保留 source ids，且 id 必须逐字来自本次输入，禁止猜测或编造。后端只根据这些来源 observation 的 capturedAt 计算展示时间，会忽略你输出的 startAt/endAt。
 7. 判断该 block 是否适合进入工作日报。
 8. 判断该 block 的隐私风险。
 
@@ -882,7 +885,7 @@ export const TIMELINE_BUILDER_PROMPT_TEMPLATE = `任务：你是 Recall 的今�
 - 输入 JSON 顶层会给出 systemTimezone（如 "Asia/Shanghai"）和 systemTimezoneOffset（如 "+08:00"）
 - 所有 capturedAt / createdAt / startAt / endAt 都是 UTC ISO 字符串（带 Z 后缀）
 - 输出 blocks[].startAt / endAt 必须用 UTC ISO 字符串（带 Z 后缀），不要带 ±HH:MM 也不要省略时区
-- 计算"本地几点几分"时：用 UTC ISO 的小时减 systemTimezoneOffset
+- 计算"本地几点几分"时：用 UTC ISO 的时间加上 systemTimezoneOffset
   - 例：UTC 00:30 + systemTimezoneOffset +08:00 → 本地 08:30
 - 写中文时间词（凌晨/上午/下午/晚上）必须基于本地小时，禁止把 6:00-11:00 写成"凌晨/清晨"
   - 凌晨 00:00-05:59、清晨/上午 06:00-11:59、中午 12:00-12:59、下午 13:00-17:59、晚上/夜间 18:00-23:59
@@ -1949,7 +1952,7 @@ Scene 应该表达一段工作的主题、目的、结果和相关事实。
 - 输入 JSON 顶层会给出 systemTimezone（如 "Asia/Shanghai"）和 systemTimezoneOffset（如 "+08:00"）
 - 所有 fact.createdAt 都是 UTC ISO 字符串（带 Z 后缀），如 "2026-07-07T08:30:00.000Z" 表示 UTC 08:30
 - 输出 startAt/endAt 必须用 UTC ISO 字符串（带 Z 后缀），不要带 ±HH:MM 也不要省略时区
-- 计算"本地几点几分"时：用 UTC ISO 的小时减 systemTimezoneOffset
+- 计算"本地几点几分"时：用 UTC ISO 的时间加上 systemTimezoneOffset
   - 例：UTC 00:30 + systemTimezoneOffset +08:00 → 本地 08:30
 - 写中文时间词（凌晨/上午/下午/晚上）必须基于本地小时，禁止把 6:00-11:00 写成"凌晨/清晨"
   - 凌晨 00:00-05:59、清晨/上午 06:00-11:59、中午 12:00-12:59、下午 13:00-17:59、晚上/夜间 18:00-23:59
@@ -2097,7 +2100,7 @@ candidatePeople 为空，should_trigger_scene_builder = "false"
   "unfinishedThreads": []
 }
 
-【示例 2 — should_trigger_scene_builder=false，创建 project + 同时关联到 candidateProject】
+【示例 2 — should_trigger_scene_builder=false，创建候选列表中不存在的 project】
 
 输入包含 fact: "在 CUN.ai 完成账户注册和邮箱验证"，projectHint: "CUN.ai"
 candidateProjects 已有 "Recall" 但无 "CUN.ai"，should_trigger_scene_builder = "false"

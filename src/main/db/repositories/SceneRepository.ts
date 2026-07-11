@@ -27,6 +27,8 @@ interface SceneRow {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  derivation_key: string | null;
+  derivation_version: number;
 }
 
 export class SceneRepository {
@@ -36,6 +38,10 @@ export class SceneRepository {
    * 创建 scene
    */
   create(input: CreateSceneInput): Scene {
+    if (input.derivationKey) {
+      const existing = this.getByDerivationKey(input.derivationKey);
+      if (existing) return existing;
+    }
     const id = input.id ?? generateId("scene");
     const now = new Date().toISOString();
 
@@ -45,8 +51,8 @@ export class SceneRepository {
           id, title, summary, start_at, end_at, project_id,
           confidence, fact_ids_json, observation_ids_json, entity_names_json,
           task_ids_json, decision_ids_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, derivation_key, derivation_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -62,10 +68,31 @@ export class SceneRepository {
         JSON.stringify(input.taskIds ?? []),
         JSON.stringify(input.decisionIds ?? []),
         now,
-        now
+        now,
+        input.derivationKey ?? null,
+        input.derivationVersion ?? 1
       );
 
     return this.getById(id)!;
+  }
+
+  getByDerivationKey(key: string): Scene | null {
+    const row = this.db.prepare("SELECT * FROM scenes WHERE derivation_key = ?").get(key) as SceneRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  listByIds(ids: string[]): Scene[] {
+    if (ids.length === 0) return [];
+    const rows = this.db.prepare(`SELECT * FROM scenes WHERE id IN (${ids.map(() => "?").join(",")})`).all(...ids) as SceneRow[];
+    const byId = new Map(rows.map((row) => [row.id, mapRow(row)]));
+    return ids.map((id) => byId.get(id)).filter((scene): scene is Scene => !!scene);
+  }
+
+  listByFactId(factId: string): Scene[] {
+    const rows = this.db.prepare(`SELECT * FROM scenes WHERE EXISTS (
+      SELECT 1 FROM json_each(scenes.fact_ids_json) WHERE json_each.value = ?
+    ) ORDER BY start_at ASC`).all(factId) as SceneRow[];
+    return rows.map(mapRow);
   }
 
   /**
@@ -408,6 +435,8 @@ function mapRow(row: SceneRow): Scene {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    derivationKey: row.derivation_key,
+    derivationVersion: row.derivation_version,
   };
 }
 

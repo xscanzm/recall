@@ -390,3 +390,31 @@ npm run smoke:renderer
 - 用真实模型输出验证 prompt 质量、失败降级和异常输出修复。
 - 在真实数据库和真实采集数据下复核今日、待收尾、项目、人物、报告的展示质量。
 - 根据真实数据再校正 L1 切片边界和 L2 抽取粒度。
+
+## 8. 可靠性闭环检查点
+
+在上述主链基础上，当前实现进一步补齐了记忆系统的工程闭环：
+
+- 批次按 Observer、Episode、Atom、Linker 四个阶段分别记录状态和 checkpoint。下游失败不会再把整批误标为完成，重试会从最近成功阶段继续。
+- Episode、Atom 和 Edge 使用稳定推导键或自然关系键，重复执行不会重复写入同一派生结果。
+- Atom 明确保存 `sourceEpisodeIds`、`claimStatus`、`generationPath`、`generationVersion` 和 `derivationKey`。运行时新数据只走批次主链，旧单帧直出 Fact 的路径不再由调度器调用。
+- Edge 写入会校验已支持节点的存在性，并按来源、目标和关系类型 upsert。
+- 用户纠错会在同一事务中保存修改前后快照、更新 Claim 生命周期、记录反馈，并写入 Timeline、Report、Search、L3 投影失效队列。
+- 投影失效处理器会重建受影响日期的 Timeline、标记相关 Report stale、重新投影 L3 关系；单项失败会保留错误状态。
+- Memory Q&A 的来源由后端限定在本次检索结果中，并由后端重建来源标题和摘要。
+- 工作报告和旧报告路径在调用模型前执行确定性的 reportable / privacy 过滤，模型返回的来源 ID 也会再次经过白名单校验。
+- 忘记最近数据会同时清理 L0-L3 派生数据、关联边和对应 Capture Ledger；清空全部数据也会删除用户反馈与持久化模型 I/O。
+- Today 的 TimelineBlock 被明确视为 L1 Episode 的派生展示投影，来源入口可以展示 Episode、Atom 和 Moment ID；Today 自用摘要不再提前套用对外报告过滤。
+
+当前自动化验证覆盖：
+
+```powershell
+npm run typecheck
+npm test
+npm run test:sqlite
+npm run build
+npm run smoke:memory
+npm run smoke:renderer
+```
+
+这些验证证明结构契约、迁移、幂等恢复、纠错失效、隐私清理和前台消费链可以工作，但不替代真实模型质量验收。发布前仍需使用真实应用数据连续运行，评估 L0 识别准确率、L1 切片边界、L2 主张粒度、L3 误创建率、提醒打扰率、报告隐私边界和不同 OpenAI-compatible provider 的结构化输出兼容性。

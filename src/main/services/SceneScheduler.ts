@@ -3,9 +3,9 @@
 //
 // 职责：
 // - 监听持续工作时长，当同一窗口/项目持续工作 ≥ longSessionIntervalMinutes 时
-//   发出 captureReason="long_session" 的 CaptureBundle，触发 SceneBuilder
+//   发出 captureReason="long_session" 的调度信号，由上游冲刷当前 capture batch
 // - 当 observing=false（暂停）时停止计时；恢复时重新开始
-// - 不负责截图，发出的 bundle 中 imagePaths 为空数组（由 ObserverWorker 处理元数据）
+// - 不负责截图，发出的 bundle 中 imagePaths 为空数组且不会进入 legacy Fact pipeline
 //
 // 触发条件（来自 spec.md SceneBuilder）：
 // 1. 同一窗口/项目持续工作 10 分钟以上 -> long_session
@@ -38,7 +38,7 @@ export interface SceneSchedulerActivityInfo {
 export interface SceneSchedulerDeps {
   settingsService: SettingsService;
   activityService: ActivityService;
-  /** 发出 capture bundle 的回调（由 app.ts 接到 MemoryPipeline.processCaptureBundle） */
+  /** 发出 scheduler 信号的回调（由 app.ts 接到 CaptureBatcher.flush） */
   emitCaptureBundle: (bundle: CaptureBundle) => void;
 }
 

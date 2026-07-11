@@ -246,11 +246,13 @@ export class ScreenshotCache {
    * - 不删除 cacheRoot 本身（保留以便后续写入）
    * - 返回删除文件数
    */
-  async clearAll(): Promise<{ deletedScreenshots: number }> {
+  async clearAll(): Promise<{ deletedScreenshots: number; attempted: number; failed: number }> {
     let deletedScreenshots = 0;
+    let attempted = 0;
+    let failed = 0;
 
     if (!fs.existsSync(this.cacheRoot)) {
-      return { deletedScreenshots };
+      return { deletedScreenshots, attempted, failed };
     }
 
     const entries = await fsp.readdir(this.cacheRoot, { withFileTypes: true });
@@ -260,20 +262,21 @@ export class ScreenshotCache {
         if (entry.isDirectory()) {
           const files = await this.listFiles(fullPath);
           for (const file of files) {
-            await fsp.unlink(path.join(fullPath, file));
-            deletedScreenshots++;
+            attempted++;
+            try { await fsp.unlink(path.join(fullPath, file)); deletedScreenshots++; } catch { failed++; }
           }
-          await fsp.rmdir(fullPath);
+          try { await fsp.rmdir(fullPath); } catch { /* failed files keep the directory retryable */ }
         } else if (entry.isFile()) {
+          attempted++;
           await fsp.unlink(fullPath);
           deletedScreenshots++;
         }
       } catch {
-        // 忽略
+        failed++;
       }
     }
 
-    return { deletedScreenshots };
+    return { deletedScreenshots, attempted, failed };
   }
 
   /**
@@ -281,21 +284,26 @@ export class ScreenshotCache {
    * - 用于删除单次 capture 的截图（如 high_sensitive 触发删除）
    * - 文件不存在时忽略
    */
-  async deleteFiles(filePaths: string[]): Promise<{ deletedScreenshots: number }> {
+  async deleteFiles(filePaths: string[]): Promise<{ deletedScreenshots: number; attempted: number; failed: number }> {
     let deletedScreenshots = 0;
+    let attempted = 0;
+    let failed = 0;
     for (const filePath of filePaths) {
       // 安全检查：只允许在 cacheRoot 内删除
       if (!this.isPathInsideCache(filePath)) {
+        attempted++;
+        failed++;
         continue;
       }
+      attempted++;
       try {
         await fsp.unlink(filePath);
         deletedScreenshots++;
-      } catch {
-        // 文件不存在则忽略
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") failed++;
       }
     }
-    return { deletedScreenshots };
+    return { deletedScreenshots, attempted, failed };
   }
 
   /**

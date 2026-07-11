@@ -39,6 +39,11 @@ interface FactRow {
   user_value: string | null;
   // 011 新增
   people_hints_json: string | null;
+  source_episode_ids_json: string;
+  claim_status: string;
+  generation_path: string | null;
+  generation_version: number;
+  derivation_key: string | null;
 }
 
 export class FactRepository {
@@ -53,6 +58,10 @@ export class FactRepository {
    * V1 写入路径不传这些字段时落库为 NULL。
    */
   create(input: CreateFactInput): Fact {
+    if (input.derivationKey) {
+      const existing = this.getByDerivationKey(input.derivationKey);
+      if (existing) return existing;
+    }
     const id = input.id ?? generateId("fact");
     const now = new Date().toISOString();
 
@@ -64,8 +73,9 @@ export class FactRepository {
           source_observation_ids_json, tags_json,
           created_at, updated_at,
           display_use, reportable, private_risk, user_value,
-          people_hints_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          people_hints_json, source_episode_ids_json, claim_status,
+          generation_path, generation_version, derivation_key
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -89,10 +99,29 @@ export class FactRepository {
         // 011 新增：peopleHints 入库
         input.peopleHints && input.peopleHints.length > 0
           ? JSON.stringify(input.peopleHints)
-          : null
+          : null,
+        JSON.stringify(input.sourceEpisodeIds ?? []),
+        input.claimStatus ?? "active",
+        input.generationPath ?? null,
+        input.generationVersion ?? 1,
+        input.derivationKey ?? null
       );
 
     return this.getById(id)!;
+  }
+
+  getByDerivationKey(key: string): Fact | null {
+    const row = this.db.prepare("SELECT * FROM facts WHERE derivation_key = ?").get(key) as FactRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  listBySourceEpisodeIds(episodeIds: string[]): Fact[] {
+    if (episodeIds.length === 0) return [];
+    const rows = this.db.prepare(`SELECT * FROM facts WHERE deleted_at IS NULL AND EXISTS (
+      SELECT 1 FROM json_each(facts.source_episode_ids_json)
+      WHERE json_each.value IN (${episodeIds.map(() => "?").join(",")})
+    ) ORDER BY created_at ASC`).all(...episodeIds) as FactRow[];
+    return rows.map(mapRow);
   }
 
   /**
@@ -449,6 +478,10 @@ export class FactRepository {
           : null
       );
     }
+    if (patch.claimStatus !== undefined) {
+      sets.push("claim_status = ?");
+      params.push(patch.claimStatus);
+    }
 
     if (sets.length === 0) {
       return this.getById(id);
@@ -651,6 +684,11 @@ function mapRow(row: FactRow): Fact {
     peopleHints: row.people_hints_json
       ? safeParseArray<string>(row.people_hints_json)
       : null,
+    sourceEpisodeIds: safeParseArray<string>(row.source_episode_ids_json),
+    claimStatus: row.claim_status as Fact["claimStatus"],
+    generationPath: row.generation_path,
+    generationVersion: row.generation_version,
+    derivationKey: row.derivation_key,
   };
 }
 

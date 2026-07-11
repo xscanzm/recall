@@ -189,6 +189,15 @@ export class UnfinishedThreadRepository {
     return rows.map(mapRow);
   }
 
+  findByDateKeyAndStatus(dateKey: string, status: string): UnfinishedThread[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM unfinished_threads WHERE date_key = ? AND status = ? ORDER BY ${PRIORITY_ORDER_CASE}, created_at ASC`
+      )
+      .all(dateKey, status) as UnfinishedThreadRow[];
+    return rows.map(mapRow);
+  }
+
   /**
    * 按 id 查询
    */

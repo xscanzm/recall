@@ -67,6 +67,10 @@ function buildProjectReport(detail: ProjectDetail): {
   nextSteps: string[];
 } {
   const openTasks = detail.tasks.filter((t) => t.status !== "done");
+  const dedicatedThreads = (detail.unfinishedThreads ?? []).filter((t) => t.status === "open");
+  const unfinishedTitles = dedicatedThreads.length > 0
+    ? dedicatedThreads.map((thread) => thread.title)
+    : openTasks.map((task) => task.title);
   const recentScenes = detail.scenes.slice(0, 3);
 
   return {
@@ -79,14 +83,16 @@ function buildProjectReport(detail: ProjectDetail): {
     keyDecisions: detail.decisions.length
       ? detail.decisions.map((d) => `${d.title}：${d.decision}`)
       : ["暂无关键决策记录"],
-    unfinished: openTasks.length
-      ? openTasks.map((t) => t.title)
+    unfinished: unfinishedTitles.length
+      ? unfinishedTitles
       : ["暂无未收尾事项"],
-    risks: openTasks.length
-      ? [`有 ${openTasks.length} 项未收尾任务，建议关注进展`]
+    risks: unfinishedTitles.length
+      ? [`有 ${unfinishedTitles.length} 项未收尾事项，建议关注进展`]
       : ["暂无明显风险"],
-    nextSteps: openTasks.length
-      ? openTasks.slice(0, 3).map((t) => t.title)
+    nextSteps: dedicatedThreads.length
+      ? dedicatedThreads.slice(0, 3).map((thread) => thread.suggestedNextAction || thread.title)
+      : openTasks.length
+        ? openTasks.slice(0, 3).map((t) => t.title)
       : ["可继续推进项目相关工作"],
   };
 }
@@ -104,6 +110,8 @@ export function ProjectsPage() {
   const clearProjectDetail = useAppStore((s) => s.clearProjectDetail);
   const deleteObject = useAppStore((s) => s.deleteObject);
   const updateTask = useAppStore((s) => s.updateTask);
+  const unfinishedThreads = useAppStore((s) => s.unfinishedThreads);
+  const loadUnfinishedThreads = useAppStore((s) => s.loadUnfinishedThreads);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   // 012 新增：合并对话框状态
@@ -114,12 +122,38 @@ export function ProjectsPage() {
   } | null>(null);
   const [reportExpanded, setReportExpanded] = useState(false);
 
+  const selectedProjectThreads = useMemo(() => {
+    if (!projectDetail) return [];
+    return unfinishedThreads.filter(
+      (thread) => thread.status === "open" && thread.projectName === projectDetail.project.name
+    );
+  }, [projectDetail, unfinishedThreads]);
+
+  const projectUnfinishedItems = useMemo(() => {
+    if (!projectDetail) return [];
+    if (selectedProjectThreads.length > 0) {
+      return selectedProjectThreads.map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        summary: thread.suggestedNextAction || thread.reason,
+        task: null,
+      }));
+    }
+    return projectDetail.tasks
+      .filter((task) => task.status !== "done")
+      .map((task) => ({ id: task.id, title: task.title, summary: task.summary, task }));
+  }, [projectDetail, selectedProjectThreads]);
+
   // 进入页面时加载今日数据
   useEffect(() => {
     if (isReady && todayData.projects.length === 0) {
       void loadToday();
     }
   }, [isReady, loadToday, todayData.projects.length]);
+
+  useEffect(() => {
+    if (isReady) void loadUnfinishedThreads();
+  }, [isReady, loadUnfinishedThreads]);
 
   // 选中项目时加载详情
   useEffect(() => {
@@ -316,7 +350,10 @@ export function ProjectsPage() {
                 </div>
               </div>
               {reportExpanded && (() => {
-                const report = buildProjectReport(projectDetail);
+                const report = buildProjectReport({
+                  ...projectDetail,
+                  unfinishedThreads: selectedProjectThreads,
+                });
                 return (
                   <div className="card__body project-report">
                     <section className="project-report__section-inner">
@@ -412,37 +449,31 @@ export function ProjectsPage() {
               <h3 className="card__title">
                 待收尾
                 <span className="project-detail__count">
-                  {projectDetail.tasks.filter((t) => t.status !== "done").length}
+                  {projectUnfinishedItems.length}
                 </span>
               </h3>
               <div className="card__body">
-                {projectDetail.tasks.filter((t) => t.status !== "done").length === 0 ? (
+                {projectUnfinishedItems.length === 0 ? (
                   <p className="project-detail__empty">没有待收尾事项。</p>
                 ) : (
                   <ul className="project-detail__list">
-                    {projectDetail.tasks
-                      .filter((t) => t.status !== "done")
-                      .map((task) => (
-                        <li key={task.id} className="project-detail__list-item">
+                    {projectUnfinishedItems.map((item) => (
+                        <li key={item.id} className="project-detail__list-item">
                           <div className="project-detail__list-title">
-                            {task.title}
-                            <span
-                              className="project-detail__status"
-                              style={{
-                                color:
-                                  task.status === "done" ? "var(--recall-accent)" : "var(--recall-text-muted)",
-                              }}
-                            >
-                              {TASK_STATUS_LABELS[task.status] ?? task.status}
-                            </span>
+                            {item.title}
+                            {item.task && (
+                              <span className="project-detail__status">
+                                {TASK_STATUS_LABELS[item.task.status] ?? item.task.status}
+                              </span>
+                            )}
                           </div>
-                          {task.summary && (
-                            <div className="project-detail__list-summary">{task.summary}</div>
+                          {item.summary && (
+                            <div className="project-detail__list-summary">{item.summary}</div>
                           )}
-                          <div className="project-detail__list-actions">
+                          {item.task && <div className="project-detail__list-actions">
                             <button
                               type="button"
-                              onClick={() => void handleCompleteTask(task.id)}
+                              onClick={() => void handleCompleteTask(item.task!.id)}
                             >
                               标记完成
                             </button>
@@ -451,13 +482,13 @@ export function ProjectsPage() {
                               onClick={() =>
                                 setCorrectionTarget({
                                   targetType: "task",
-                                  targetId: task.id,
+                                  targetId: item.task!.id,
                                 })
                               }
                             >
                               纠错
                             </button>
-                          </div>
+                          </div>}
                         </li>
                       ))}
                   </ul>

@@ -1,0 +1,61 @@
+import { test, expect, _electron as electron, type ElectronApplication } from "@playwright/test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+let userDataDir: string;
+let app: ElectronApplication | undefined;
+
+async function launch() {
+  app = await electron.launch({
+    args: [".", `--user-data-dir=${userDataDir}`],
+    env: { ...process.env, NODE_ENV: "production", RECALL_OPEN_DEVTOOLS: "0" },
+  });
+  const page = await app.firstWindow();
+  await page.waitForLoadState("domcontentloaded");
+  return page;
+}
+
+async function closeApp() {
+  if (!app) return;
+  const closing = app;
+  await Promise.all([
+    new Promise<void>((resolve) => closing.once("close", resolve)),
+    closing.close(),
+  ]);
+  app = undefined;
+}
+
+test.beforeAll(() => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-e2e-"));
+});
+
+test.afterEach(async () => {
+  await closeApp().catch(() => undefined);
+});
+
+test.afterAll(() => fs.rmSync(userDataDir, { recursive: true, force: true }));
+
+test("first-run choice persists, observation intent restores, and core renderer pages load", async () => {
+  let page = await launch();
+  await expect(page.getByRole("heading", { name: "欢迎使用 Recall" })).toBeVisible();
+  await page.getByRole("button", { name: "跳过引导" }).first().click();
+  await expect(page.getByRole("button", { name: "今日" })).toBeVisible();
+
+  await page.getByRole("button", { name: "设置" }).click();
+  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible();
+  const autoResume = page.getByLabel("开机后自动恢复观察");
+  await autoResume.check();
+  await expect(autoResume).toBeChecked();
+  await expect(page.getByText("登录 Windows 后自动启动 Recall")).toBeVisible();
+
+  await closeApp();
+  page = await launch();
+  await expect(page.locator(".app-shell__topbar").getByRole("button", { name: "暂停观察" })).toBeVisible();
+  await page.getByRole("button", { name: "记忆库" }).click();
+  await expect(page.locator("body")).toContainText("记忆");
+  await page.getByRole("button", { name: "报告" }).click();
+  await expect(page.locator("body")).toContainText("报告");
+  await page.getByRole("button", { name: "今日" }).click();
+  await expect(page.getByRole("main", { name: "今日时间轴" })).toBeVisible();
+});

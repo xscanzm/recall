@@ -26,6 +26,29 @@ export function localTodayKey(): string {
   return formatLocalDateKey(new Date());
 }
 
+export interface UtcIsoRange {
+  start: string;
+  end: string;
+}
+
+/** 本地自然日的半开 UTC ISO 范围 [start, end)，正确处理 DST。 */
+export function localDayUtcRange(date: Date = new Date()): UtcIsoRange {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+/** 从 YYYY-MM-DD 构造本地自然日的半开 UTC ISO 范围 [start, end)。 */
+export function localDateKeyUtcRange(dateKey: string): UtcIsoRange {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) throw new Error(`Invalid date key: ${dateKey}`);
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (formatLocalDateKey(date) !== dateKey) throw new Error(`Invalid date key: ${dateKey}`);
+  return localDayUtcRange(date);
+}
+
 /**
  * 日期键 + N 天（本地时区切日）
  * - 用于补跑机制："从 lastRunDate + 1 天" 顺序跑回今天

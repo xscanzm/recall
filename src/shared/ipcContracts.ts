@@ -1,0 +1,111 @@
+import { z } from "zod";
+
+const dateKey = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const stringArray = z.array(z.string());
+
+export const AppStatusSchema = z.object({
+  observing: z.boolean(),
+  paused: z.boolean(),
+  currentWindow: z.object({
+    appName: z.string(),
+    windowTitle: z.string(),
+    privacyState: z.enum(["allowed", "blocked", "sensitive", "unknown"]),
+  }).optional(),
+  pipelineState: z.enum(["idle", "capturing", "observing", "extracting", "linking", "judging", "reporting", "error"]),
+  lastError: z.string().optional(),
+});
+
+export const MemorySearchItemSchema = z.object({
+  id: z.string(),
+  type: z.enum(["fact", "scene", "task", "project", "decision", "report", "person"]),
+  title: z.string(),
+  summary: z.string().optional(),
+  createdAt: z.string(),
+  projectName: z.string().optional(),
+  projectId: z.string().nullable().optional(),
+  sourceType: z.enum(["observation", "fact", "scene", "project", "report"]).optional(),
+  sourceId: z.string().nullable().optional(),
+  relevance: z.number().optional(),
+});
+
+const fileCleanup = z.object({
+  status: z.enum(["complete", "partial", "failed"]),
+  attempted: z.number().int().nonnegative(),
+  deleted: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+});
+const lifecycleSuccess = z.object({
+  ok: z.literal(true),
+  deletedObservations: z.number().int().nonnegative().optional(),
+  deletedScreenshots: z.number().int().nonnegative(),
+  fileCleanup: fileCleanup.optional(),
+});
+const operationFailure = z.object({ ok: z.literal(false), code: z.string(), message: z.string() });
+const ipcFailure = z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() });
+const ipcResult = <T extends z.ZodTypeAny>(data: T) => z.union([
+  z.object({ ok: z.literal(true), data }),
+  ipcFailure,
+]);
+
+/** IPC shape for the derived Today timeline projection. */
+export const TodayTimelineProjectionSchema = z.object({
+  id: z.string(), dateKey, startAt: z.string(), endAt: z.string(), title: z.string(), summary: z.string(),
+  category: z.enum(["focus_work", "communication", "research", "writing", "coding", "design", "meeting", "admin", "break", "mixed", "unknown"]),
+  projectIds: stringArray, projectNames: stringArray, highlights: stringArray, generatedTasks: stringArray,
+  generatedDecisions: stringArray, reportable: z.boolean(), privateRisk: z.enum(["low", "medium", "high"]),
+  privateRiskReason: z.string().optional(), sourceSceneIds: stringArray, sourceFactIds: stringArray,
+  sourceObservationIds: stringArray, confidence: z.number().optional(), createdAt: z.string().optional(), updatedAt: z.string().optional(),
+});
+
+/** @deprecated Use TodayTimelineProjectionSchema for new contracts. */
+export const TimelineBlockSchema = TodayTimelineProjectionSchema;
+
+export const WorkReportSchema = z.object({
+  id: z.string(), dateKey, title: z.string(), plainText: z.string(),
+  sections: z.object({ completed: stringArray, projectProgress: stringArray, risks: stringArray, tomorrowPlan: stringArray }),
+  sourceTimelineBlockIds: stringArray, sourceFactIds: stringArray, omittedForPrivacy: z.number(), warnings: stringArray,
+  createdAt: z.string().optional(), updatedAt: z.string().optional(),
+});
+
+const dataExport = z.object({
+  meta: z.object({
+    schemaVersion: z.string(), appVersion: z.string(), exportedAt: z.string(), includeScreenshots: z.boolean(),
+    screenshotSemantics: z.enum(["references", "excluded"]), counts: z.record(z.string(), z.number()),
+  }),
+  observations: z.array(z.unknown()), facts: z.array(z.unknown()), scenes: z.array(z.unknown()), tasks: z.array(z.unknown()),
+  decisions: z.array(z.unknown()), people: z.array(z.unknown()), projects: z.array(z.unknown()), reports: z.array(z.unknown()),
+  proactiveItems: z.array(z.unknown()), timelineBlocks: z.array(z.unknown()), unfinishedThreads: z.array(z.unknown()),
+  reportSelections: z.array(z.unknown()), objectMerges: z.array(z.unknown()), memoryEdges: z.array(z.unknown()),
+});
+
+export const ipcContracts = {
+  "app:getStatus": { request: z.undefined(), response: AppStatusSchema },
+  "app:startObserving": { request: z.undefined(), response: AppStatusSchema },
+  "app:pauseObserving": { request: z.undefined(), response: AppStatusSchema },
+  "app:getLaunchAtLogin": { request: z.undefined(), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
+  "app:setLaunchAtLogin": { request: z.object({ enabled: z.boolean() }), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
+  "memory:search": {
+    request: z.object({ query: z.string().min(1).max(500), limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }),
+    response: z.object({ results: z.array(MemorySearchItemSchema), total: z.number().int().nonnegative() }),
+  },
+  "capture:forgetRecent": { request: z.object({ duration: z.enum(["15m", "30m", "1h", "today", "all"]) }), response: lifecycleSuccess },
+  "screenshot:clear": { request: z.undefined(), response: lifecycleSuccess },
+  "data:export": { request: z.object({ includeScreenshots: z.boolean().optional() }).default({}), response: z.union([z.object({ ok: z.literal(true), export: dataExport }), operationFailure]) },
+  "data:clearAll": { request: z.undefined(), response: z.union([lifecycleSuccess, operationFailure]) },
+  "data:getCacheSize": { request: z.undefined(), response: z.object({ ok: z.literal(true), bytes: z.number().nonnegative(), fileCount: z.number().int().nonnegative() }) },
+  "timeline:build": { request: dateKey, response: ipcResult(z.unknown()) },
+  "timeline:reorganizeDay": { request: dateKey, response: ipcResult(z.unknown()) },
+  "timeline:get": { request: dateKey, response: ipcResult(z.array(TodayTimelineProjectionSchema)) },
+  "workReport:generate": {
+    request: z.object({ dateKey, selectedBlockIds: stringArray, style: z.enum(["brief", "standard", "formal"]), recipientHint: z.enum(["manager", "team", "client", "self"]).optional() }),
+    response: ipcResult(z.unknown()),
+  },
+  "workReport:get": { request: dateKey, response: ipcResult(WorkReportSchema.nullable()) },
+  "workReport:saveSelection": { request: z.object({ dateKey, selectedBlockIds: stringArray, excludedBlockIds: stringArray }), response: ipcResult(z.null()) },
+} as const;
+
+export type ValidatedIpcChannel = keyof typeof ipcContracts;
+export type IpcRequest<C extends ValidatedIpcChannel> = z.input<(typeof ipcContracts)[C]["request"]>;
+export type IpcResponse<C extends ValidatedIpcChannel> = z.output<(typeof ipcContracts)[C]["response"]>;
+
+export const validatedIpcChannels = Object.keys(ipcContracts) as ValidatedIpcChannel[];

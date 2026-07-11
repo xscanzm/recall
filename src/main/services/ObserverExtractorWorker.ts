@@ -311,6 +311,10 @@ export class ObserverExtractorWorker {
           userValue: factInput.userValue,
           // 011 新增：把 peopleHints 写进 fact，Linker 才能看到人名候选
           peopleHints: factInput.peopleHints ?? null,
+          sourceEpisodeIds: [],
+          claimStatus: "candidate",
+          generationPath: "legacy_single_capture",
+          generationVersion: 1,
         });
         facts.push(fact);
       } catch {
@@ -356,9 +360,10 @@ export class ObserverExtractorWorker {
     const { batchBundle, multimodalModelConfigId } = input;
 
     // 1. 收集压缩图路径（过滤空路径，跳过压缩失败的帧）
-    const imagePaths = batchBundle.compressedImagePaths.filter(
-      (p): p is string => !!p && p.length > 0
-    );
+    const availableFrames = batchBundle.compressedImagePaths
+      .map((imagePath, frameIndex) => ({ imagePath, frameIndex }))
+      .filter((item) => item.imagePath.length > 0);
+    const imagePaths = availableFrames.map((item) => item.imagePath);
 
     if (imagePaths.length === 0) {
       return {
@@ -369,13 +374,16 @@ export class ObserverExtractorWorker {
     }
 
     // 2. 构造每帧元数据数组（frameIndex + capturedAt + appName + windowTitle）
-    const framesMetadata = batchBundle.frames.map((f, i) => ({
-      frameIndex: i + 1,
-      capturedAt: f.capturedAt,
-      appName: f.appName,
-      windowTitle: f.windowTitle,
-      captureReason: f.captureReason,
-    }));
+    const framesMetadata = availableFrames.map(({ frameIndex: originalIndex }, i) => {
+      const frame = batchBundle.frames[originalIndex];
+      return {
+        frameIndex: i + 1,
+        capturedAt: frame.capturedAt,
+        appName: frame.appName,
+        windowTitle: frame.windowTitle,
+        captureReason: frame.captureReason,
+      };
+    });
     const framesMetadataText = framesMetadata
       .map(
         (m) =>
@@ -493,9 +501,10 @@ export class ObserverExtractorWorker {
   }): Promise<JobResult<BatchObserverWorkerResult>> {
     const { batchBundle, multimodalModelConfigId } = input;
 
-    const imagePaths = batchBundle.compressedImagePaths.filter(
-      (p): p is string => !!p && p.length > 0
-    );
+    const availableFrames = batchBundle.compressedImagePaths
+      .map((imagePath, frameIndex) => ({ imagePath, frameIndex }))
+      .filter((item) => item.imagePath.length > 0);
+    const imagePaths = availableFrames.map((item) => item.imagePath);
 
     if (imagePaths.length === 0) {
       return {
@@ -505,13 +514,16 @@ export class ObserverExtractorWorker {
       };
     }
 
-    const framesMetadata = batchBundle.frames.map((f, i) => ({
-      frameIndex: i + 1,
-      capturedAt: f.capturedAt,
-      appName: f.appName,
-      windowTitle: f.windowTitle,
-      captureReason: f.captureReason,
-    }));
+    const framesMetadata = availableFrames.map(({ frameIndex: originalIndex }, i) => {
+      const frame = batchBundle.frames[originalIndex];
+      return {
+        frameIndex: i + 1,
+        capturedAt: frame.capturedAt,
+        appName: frame.appName,
+        windowTitle: frame.windowTitle,
+        captureReason: frame.captureReason,
+      };
+    });
     const framesMetadataText = framesMetadata
       .map(
         (m) =>
@@ -722,12 +734,12 @@ export class ObserverExtractorWorker {
     try {
       const recentFeedbackTypes = [
         "not_important",
-        "wrong_content",
-        "project_wrong",
+        "content_wrong",
+        "wrong_project",
         "task_done",
         "not_a_task",
         "do_not_record",
-        "sensitive_content",
+        "sensitive_delete",
       ];
       const summaries: string[] = [];
       for (const fbType of recentFeedbackTypes) {

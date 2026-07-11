@@ -122,6 +122,7 @@ export function SettingsPage() {
 
   // 观察状态切换 loading
   const [observationToggling, setObservationToggling] = useState(false);
+  const [autoResumeSaving, setAutoResumeSaving] = useState(false);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [launchAtLoginLoading, setLaunchAtLoginLoading] = useState(true);
   const [launchAtLoginSaving, setLaunchAtLoginSaving] = useState(false);
@@ -228,15 +229,23 @@ export function SettingsPage() {
       longSessionIntervalMinutes: 5,
       idleThresholdSeconds: 120,
     };
-    const result = await updateSettings({
-      observation: { ...current, enabled: checked },
-    });
-    if (!result.ok) {
-      setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+    setAutoResumeSaving(true);
+    setActionMessage(null);
+    try {
+      const result = await updateSettings({
+        observation: { ...current, enabled: checked },
+      });
+      if (!result.ok) {
+        setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
+      }
+    } finally {
+      setAutoResumeSaving(false);
     }
   };
 
   const handleLaunchAtLoginChange = async (checked: boolean) => {
+    const previous = launchAtLogin;
+    setLaunchAtLogin(checked);
     setLaunchAtLoginSaving(true);
     setActionMessage(null);
     try {
@@ -247,6 +256,7 @@ export function SettingsPage() {
         setActionMessage({ kind: "err", text: "保存 Windows 自启动设置失败" });
       }
     } catch (err) {
+      setLaunchAtLogin(previous);
       setActionMessage({
         kind: "err",
         text: err instanceof Error ? err.message : "保存 Windows 自启动设置失败",
@@ -629,7 +639,7 @@ export function SettingsPage() {
               type="checkbox"
               checked={settings?.observation.enabled ?? false}
               onChange={(e) => handleAutoResumeChange(e.target.checked)}
-              disabled={settingsLoading}
+              disabled={settingsLoading || autoResumeSaving}
             />
             <div className="settings-section__toggle-text">
               <span className="settings-section__toggle-label">开机后自动恢复观察</span>

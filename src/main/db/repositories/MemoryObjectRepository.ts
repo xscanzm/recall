@@ -668,12 +668,12 @@ export class MemoryObjectRepository {
    * @returns 数组：{ type, id, sourceFactIds }
    */
   findOrphansByFactId(factId: string): Array<{
-    type: "project" | "task" | "decision";
+    type: "project" | "task" | "person" | "decision";
     id: string;
     sourceFactIds: string[];
   }> {
     const result: Array<{
-      type: "project" | "task" | "decision";
+      type: "project" | "task" | "person" | "decision";
       id: string;
       sourceFactIds: string[];
     }> = [];
@@ -702,6 +702,16 @@ export class MemoryObjectRepository {
       }
     }
 
+    const personRows = this.db
+      .prepare(`SELECT id, source_fact_ids_json FROM people WHERE deleted_at IS NULL`)
+      .all() as Array<{ id: string; source_fact_ids_json: string }>;
+    for (const row of personRows) {
+      const ids = safeParseArray<string>(row.source_fact_ids_json);
+      if (ids.length === 1 && ids[0] === factId) {
+        result.push({ type: "person", id: row.id, sourceFactIds: ids });
+      }
+    }
+
     // decisions（仅未删除）
     const decisionRows = this.db
       .prepare(`SELECT id, source_fact_ids_json FROM decisions WHERE deleted_at IS NULL`)
@@ -722,11 +732,11 @@ export class MemoryObjectRepository {
    * @returns 是否成功更新
    */
   removeFactFromSourceLinks(
-    type: "project" | "task" | "decision",
+    type: "project" | "task" | "person" | "decision",
     id: string,
     factId: string
   ): boolean {
-    const table = type === "project" ? "projects" : type === "task" ? "tasks" : "decisions";
+    const table = type === "project" ? "projects" : type === "task" ? "tasks" : type === "person" ? "people" : "decisions";
     const row = this.db
       .prepare(`SELECT source_fact_ids_json FROM ${table} WHERE id = ?`)
       .get(id) as { source_fact_ids_json: string } | undefined;

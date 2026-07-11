@@ -111,10 +111,34 @@ export const PrivacyRuleIdSchema = z.object({
   id: z.string().min(1),
 });
 
-/**
- * 设置更新 IPC 参数 schema（宽松结构，运行时再细化）
- */
-export const SettingsUpdateSchema = z.record(z.string(), z.unknown());
+/** 设置更新 IPC 参数 schema。每个分区按 SettingsService 的浅合并语义整体替换。 */
+export const SettingsUpdateSchema = z.object({
+  observation: z.object({
+    enabled: z.boolean(),
+    activeWindowStableSeconds: z.number().nonnegative(),
+    contentChangeMinIntervalSeconds: z.number().nonnegative(),
+    longSessionIntervalMinutes: z.number().nonnegative(),
+    idleThresholdSeconds: z.number().nonnegative(),
+  }).optional(),
+  screenshot: z.object({
+    retentionPolicy: z.enum(["delete_immediately", "1h", "6h", "today", "3d", "7d"]),
+  }).optional(),
+  notification: z.object({
+    inAppReminders: z.boolean(),
+    desktopNotifications: z.boolean(),
+    dailyReportTime: z.string(),
+    weeklyReportTime: z.string(),
+  }).optional(),
+  dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
+  personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
+  schedule: z.object({
+    lastDailyReportDate: z.string().nullable(),
+    lastWeeklyReportWeekStart: z.string().nullable(),
+    lastPersonalReviewDate: z.string().nullable(),
+  }).optional(),
+  onboardingCompleted: z.boolean().optional(),
+  debug: z.object({ enabled: z.boolean(), verboseModelIO: z.boolean() }).optional(),
+}).strict();
 
 /**
  * 模型配置测试 IPC 参数 schema
@@ -156,8 +180,8 @@ export const ModelDeleteConfigInputSchema = z.object({
 
 /**
  * M8 新增：数据导出 IPC 参数 schema
- * - includeScreenshots：是否包含截图（默认 false）
- *   注意：截图以文件路径形式导出，不会嵌入 JSON；包含截图时仅导出 observation.screenshotPaths
+ * - includeScreenshots：是否保留截图路径引用（默认 false）
+ *   注意：JSON 导出不打包截图文件；true 仅保留 observation.screenshotPaths。
  */
 export const DataExportInputSchema = z.object({
   includeScreenshots: z.boolean().optional(),
@@ -307,6 +331,7 @@ export const MemoryAskInputSchema = z.object({
  */
 export const MemoryAskOutputSchema = z.object({
   answer: z.string().max(2000),
+  sourceIds: z.array(z.string()).optional(),
   sources: z.array(
     z.object({
       id: z.string(),
@@ -314,7 +339,9 @@ export const MemoryAskOutputSchema = z.object({
       title: z.string(),
       summary: z.string().optional(),
     })
-  ),
+  ).optional(),
+}).refine((value) => value.sourceIds !== undefined || value.sources !== undefined, {
+  message: "sourceIds or sources is required",
 });
 
 /**
@@ -2056,6 +2083,7 @@ function normalizeObserverOutputV2(data: unknown): unknown {
  * ObserverOutputV2 CoreSchema（用于类型推导）
  */
 const ObserverOutputV2CoreSchema = z.object({
+  frameIndex: z.coerce.number().int().positive().optional(),
   sceneSummary: SummarySchema,
   userFacingSummary: z.string().max(TEXT_LIMITS.summary),
   likelyWorkPurpose: z.string().max(TEXT_LIMITS.title),
@@ -2382,11 +2410,9 @@ function normalizeTimelineBlocks(raw: unknown): unknown[] {
         : "";
     if (!title.trim()) continue;
 
-    // startAt/endAt 是核心字段，缺失或非合法 ISO 时跳过该 block
-    // （避免单个坏 block 的空时间字段被 IsoDateTimeWithOffsetSchema 拒绝，拖垮整批）
+    // Model times are compatibility-only; backend source observations are authoritative.
     const startAtRaw = typeof obj.startAt === "string" ? obj.startAt : "";
     const endAtRaw = typeof obj.endAt === "string" ? obj.endAt : "";
-    if (!isValidIsoish(startAtRaw) || !isValidIsoish(endAtRaw)) continue;
 
     const summary =
       typeof obj.summary === "string"
@@ -2442,8 +2468,8 @@ function normalizeTimelineBlocks(raw: unknown): unknown[] {
     const confidence = normalizeNumber(obj.confidence, 0.5);
 
     const normalized: Record<string, unknown> = {
-      startAt: startAtRaw,
-      endAt: endAtRaw,
+      startAt: isValidIsoish(startAtRaw) ? startAtRaw : undefined,
+      endAt: isValidIsoish(endAtRaw) ? endAtRaw : undefined,
       title: title.slice(0, TEXT_LIMITS.title),
       summary: summary.slice(0, TEXT_LIMITS.summary),
       category,
@@ -2544,8 +2570,8 @@ const TimelineBuilderOutputCoreSchema = z.object({
   blocks: z.array(
     z.object({
       id: z.string().optional(),
-      startAt: IsoDateTimeWithOffsetSchema,
-      endAt: IsoDateTimeWithOffsetSchema,
+      startAt: IsoDateTimeWithOffsetSchema.optional(),
+      endAt: IsoDateTimeWithOffsetSchema.optional(),
       title: TitleSchema,
       summary: SummarySchema,
       category: z.enum([

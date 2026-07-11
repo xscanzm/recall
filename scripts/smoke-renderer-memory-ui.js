@@ -188,11 +188,12 @@ const timelineBlocks = [
     category: "work",
     projectIds: ["project_recall"],
     projectNames: ["Recall 记忆系统重构"],
-    highlights: ["L0 降低判断负担", "关系层用 Edges 承接证据链"],
+    highlights: ["L0 降低判断负担", "关系层用 Edges 承接证据链", "保留完整证据链", "前台使用自然语言"],
     generatedTasks: ["收束 L0 为低判断观察层"],
     generatedDecisions: ["Edges 不作为 L4 页面"],
     reportable: true,
-    privateRisk: "low",
+    privateRisk: "medium",
+    privateRiskReason: "讨论中提到了协作者和内部方案，分享前需要检查。",
     sourceSceneIds: ["scene_wechat_memory"],
     sourceFactIds: ["fact_task", "fact_decision"],
     sourceObservationIds: observations.map((item) => item.id),
@@ -504,6 +505,24 @@ async function run() {
     "确认 L0 批量观察边界",
     "我的复盘",
   ]);
+  await clickByLabel(win, "细节");
+  await assertTexts(win, [
+    "前台使用自然语言",
+    "接下来要做",
+    "收束 L0 为低判断观察层",
+    "形成的决定",
+    "Edges 不作为 L4 页面",
+    "整理把握",
+    "把握较高，记录之间相互印证",
+    "隐私提醒",
+    "讨论中提到了协作者和内部方案，分享前需要检查。",
+    "6 个活动瞬间",
+    "2 条记忆线索",
+    "1 个工作片段",
+  ]);
+  await clickByLabel(win, "来自今天 18:00 的记录");
+  await assertTexts(win, ["工作片段 (1)", "scene_wechat_memory", "记忆线索 (2)", "fact_task", "活动瞬间 (6)", "obs_1"]);
+  await clickByLabel(win, "关闭");
 
   await clickByLabel(win, "待收尾");
   await assertTexts(win, ["待收尾", "确认 L0 批量观察边界", "先用 6 帧批量观察验证低判断输出"]);

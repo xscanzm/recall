@@ -28,7 +28,7 @@ export class SceneRelationProjector {
     }
   }
 
-  private projectScene(scene: Scene): void {
+  projectScene(scene: Scene): void {
     const latestScene = this.sceneRepo.getByIdActive(scene.id) ?? scene;
     const facts = this.factRepo
       .listByIds(latestScene.factIds)

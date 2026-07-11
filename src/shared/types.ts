@@ -96,14 +96,14 @@ export type TimelineBlockCategory =
   | "unknown";
 
 /**
- * TimelineBlock：今日时间轴片段（doc 19 第 12.1 节 / doc 20 第 5 节）
+ * TodayTimelineProjection：由 Episode / Atom / Moment 派生的今日时间轴投影。
  *
  * 持久化在 timeline_blocks 表（003 迁移）。
  * 同一 dateKey 重复生成时由应用层先删除旧 blocks 再写入新 blocks。
  *
  * createdAt / updatedAt 设为可选：renderer 接收时可能未填充（例如 LLM 刚输出还未落库）。
  */
-export interface TimelineBlock {
+export interface TodayTimelineProjection {
   id: string;
   dateKey: string;
   startAt: string;
@@ -133,6 +133,9 @@ export interface TimelineBlock {
   createdAt?: string;
   updatedAt?: string;
 }
+
+/** @deprecated Use TodayTimelineProjection for new renderer and IPC code. */
+export type TimelineBlock = TodayTimelineProjection;
 
 /**
  * UnfinishedThread：未收尾事项（doc 20 第 6 节 / spec.md 行 813-821）
@@ -231,7 +234,8 @@ export interface TodayPageData {
   dateKey: string;
   appStatus: AppStatus;
   dayMainThread: string;
-  timelineBlocks: TimelineBlock[];
+  /** 派生展示投影，不是新的记忆层级或来源记录。 */
+  timelineBlocks: TodayTimelineProjection[];
   unfinishedThreads: UnfinishedThread[];
   highlights: Array<{ id: string; content: string }>;
   decisions: Array<{ id: string; content: string }>;

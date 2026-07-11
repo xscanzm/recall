@@ -27,9 +27,9 @@ export function TimelineList({ blocks, loading, organizing = false, viewMode }: 
       return (
         <div className="timeline-list timeline-list--empty">
           <div className="timeline-empty">
-            <p className="timeline-empty__title">正在整理时间轴。</p>
+            <p className="timeline-empty__title">正在整理这一天的时间轴。</p>
             <p className="timeline-empty__sub">
-              Recall 正在把今天的记录整理成片段，稍等一下就会出现在这里。
+              Recall 正在把记录整理成片段，稍等一下就会出现在这里。
             </p>
           </div>
         </div>
@@ -39,7 +39,7 @@ export function TimelineList({ blocks, loading, organizing = false, viewMode }: 
     return (
       <div className="timeline-list timeline-list--empty">
         <div className="timeline-empty">
-          <p className="timeline-empty__title">今天还没有时间轴片段。</p>
+          <p className="timeline-empty__title">这一天还没有时间轴片段。</p>
           <p className="timeline-empty__sub">
             继续工作一会儿，Recall 会把你的电脑工作整理成时间轴。
           </p>

@@ -196,8 +196,8 @@ export class ReporterWorker {
 
     // 2. 查询今日数据
     const { startOfDay, endOfDay } = getDateRange(date);
-    const scenes = this.fetchScenesByDateRange(startOfDay, endOfDay);
-    const facts = this.fetchFactsByDateRange(startOfDay, endOfDay);
+    const scenes = filterReportableSources(this.fetchScenesByDateRange(startOfDay, endOfDay));
+    const facts = filterReportableSources(this.fetchFactsByDateRange(startOfDay, endOfDay));
     const projects = this.fetchActiveProjects();
     const tasks = this.fetchOpenTasks();
     const decisions = this.fetchDecisionsByDateRange(startOfDay, endOfDay);
@@ -324,12 +324,12 @@ export class ReporterWorker {
     // 4. 查询本周 scenes/facts/projects/tasks/decisions
     const weekStartIso = `${weekStart}T00:00:00.000Z`;
     const weekEndIso = `${weekEnd}T23:59:59.999Z`;
-    const scenes = this.sceneRepo.listByStartAt({
+    const scenes = filterReportableSources(this.sceneRepo.listByStartAt({
       from: weekStartIso,
       to: weekEndIso,
       limit: 200,
-    });
-    const facts = this.fetchFactsByDateRange(weekStartIso, weekEndIso);
+    }));
+    const facts = filterReportableSources(this.fetchFactsByDateRange(weekStartIso, weekEndIso));
     const projects = this.fetchActiveProjects();
     const tasks = this.fetchOpenTasks();
     const decisions = this.memoryObjectRepo.listDecisions({ limit: 50 });
@@ -856,3 +856,11 @@ function extractOverview(report: Report): string {
  * 兼容 JobResult 类型导入（避免未使用 import 警告）
  */
 export type { JobResult };
+
+export function filterReportableSources<T>(items: T[]): T[] {
+  return items.filter((item) => {
+    if (!item || typeof item !== "object") return true;
+    const source = item as { reportable?: boolean | null; privateRisk?: string | null };
+    return source.reportable !== false && source.privateRisk !== "high";
+  });
+}

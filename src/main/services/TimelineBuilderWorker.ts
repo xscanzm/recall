@@ -42,9 +42,14 @@ import type { ObservationRepository } from "../db/repositories/ObservationReposi
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
+import type { TimelineBuildCheckpointRepository } from "../db/repositories/TimelineBuildCheckpointRepository";
 import type { SettingsService } from "./SettingsService";
 import { getSystemTimezone, getSystemTimezoneOffset } from "../utils/timezone";
-import { normalizeIsoToZ } from "../utils/isoTime";
+import { localDateKeyUtcRange } from "../utils/dateKey";
+
+export type TimelineBuildMode = "normal" | "forceFinalizeTail" | "reorganizeDay";
+const MATURITY_MS = 10 * 60 * 1000;
+const MUTABLE_TAIL_MS = 30 * 60 * 1000;
 
 /**
  * TimelineBuilderWorker 运行结果
@@ -89,6 +94,7 @@ export class TimelineBuilderWorker {
   private readonly factRepo: FactRepository;
   private readonly sceneRepo: SceneRepository;
   private readonly timelineBlockRepo: TimelineBlockRepository;
+  private readonly timelineBuildCheckpointRepo: TimelineBuildCheckpointRepository;
   private readonly settingsService: SettingsService | null;
 
   constructor(deps: {
@@ -98,6 +104,7 @@ export class TimelineBuilderWorker {
     factRepo: FactRepository;
     sceneRepo: SceneRepository;
     timelineBlockRepo: TimelineBlockRepository;
+    timelineBuildCheckpointRepo: TimelineBuildCheckpointRepository;
     settingsService?: SettingsService;
   }) {
     this.modelGateway = deps.modelGateway;
@@ -106,6 +113,7 @@ export class TimelineBuilderWorker {
     this.factRepo = deps.factRepo;
     this.sceneRepo = deps.sceneRepo;
     this.timelineBlockRepo = deps.timelineBlockRepo;
+    this.timelineBuildCheckpointRepo = deps.timelineBuildCheckpointRepo;
     this.settingsService = deps.settingsService ?? null;
   }
 
@@ -115,7 +123,15 @@ export class TimelineBuilderWorker {
    * @param dateKey 日期 YYYY-MM-DD
    * @returns 构建结果（ok=true 时包含已写入的 blocks 和日总结）
    */
-  async buildTimeline(dateKey: string): Promise<TimelineBuilderResult> {
+  async buildTimeline(dateKey: string, mode: TimelineBuildMode = "normal"): Promise<TimelineBuilderResult> {
+    return this.runBuild(dateKey, mode);
+  }
+
+  async reorganizeDay(dateKey: string): Promise<TimelineBuilderResult> {
+    return this.runBuild(dateKey, "reorganizeDay");
+  }
+
+  private async runBuild(dateKey: string, mode: TimelineBuildMode): Promise<TimelineBuilderResult> {
     // 1. 获取启用的多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
     if (!multimodalModelConfigId) {
@@ -133,11 +149,19 @@ export class TimelineBuilderWorker {
     // - 如果有 lastEndAt，只处理 (lastEndAt, now] 的新数据
     // - 如果没有（当天首次），从当天 00:00 开始处理到 now
     // - 历史已落盘的 blocks 永不改动（增量落盘策略，2026-07-07）
-    const lastEndAt = this.timelineBlockRepo.getLastEndAt(dateKey);
-    const isInitialBuild = lastEndAt === null;
-    const { startOfDay } = getDateRange(dateKey);
-    const windowStart = lastEndAt ?? startOfDay;
-    const windowEnd = new Date().toISOString();
+    const checkpoint = this.timelineBuildCheckpointRepo.get(dateKey);
+    const isInitialBuild = checkpoint === null;
+    const day = localDateKeyUtcRange(dateKey);
+    const nowMs = Date.now();
+    const todayEndMs = Math.min(nowMs, Date.parse(day.end));
+    const matureEndMs = mode === "normal" ? todayEndMs - MATURITY_MS : todayEndMs;
+    const processedMs = checkpoint ? Date.parse(checkpoint) : Date.parse(day.start);
+    if (mode !== "reorganizeDay" && matureEndMs <= processedMs) return noop("insufficient_mature_window", "尚未形成 10 分钟成熟窗口。");
+    const windowStart = mode === "reorganizeDay"
+      ? day.start
+      : new Date(Math.max(Date.parse(day.start), processedMs - MUTABLE_TAIL_MS)).toISOString();
+    const windowEnd = new Date(Math.max(Date.parse(day.start), matureEndMs)).toISOString();
+    const existingBlocks = this.timelineBlockRepo.findOverlapping(dateKey, windowStart, windowEnd);
 
     // 3. 查询增量窗口内的数据
     const observations = this.fetchObservationsByDateRange(windowStart, windowEnd);
@@ -146,14 +170,8 @@ export class TimelineBuilderWorker {
 
     // 数据量过少时给出明确提示，不浪费模型调用
     if (observations.length === 0 && facts.length === 0 && scenes.length === 0) {
-      return {
-        ok: false,
-        blocks: [],
-        dayStartSummary: "",
-        dayMainThread: "",
-        errorCode: "insufficient_data",
-        errorMessage: "增量窗口内没有新的记忆数据。",
-      };
+      this.timelineBlockRepo.replaceWindowAndCheckpoint({ dateKey, windowStart, windowEnd, blocks: existingBlocks, processedThrough: windowEnd });
+      return { ok: true, blocks: [], dayStartSummary: "", dayMainThread: "" };
     }
 
     // 4. 构造 TimelineBuilderInput
@@ -161,6 +179,7 @@ export class TimelineBuilderWorker {
     // - windowStart/windowEnd 明确告知 LLM 本次只处理这个时间范围
     const baseInput: TimelineBuilderInput = {
       dateKey,
+      existingBlocks,
       observations: observations.map(this.toObservationSummary),
       facts: facts.map(this.toFactSummary),
       scenes: scenes.map(this.toSceneSummary),
@@ -195,7 +214,9 @@ export class TimelineBuilderWorker {
       observationCount: observations.length,
       factCount: facts.length,
       sceneCount: scenes.length,
-      isIncremental: lastEndAt !== null,
+      isIncremental: checkpoint !== null,
+      mode,
+      existingBlockCount: existingBlocks.length,
     });
 
     // 7. 提交 LLM 任务
@@ -235,11 +256,14 @@ export class TimelineBuilderWorker {
     const output = result.data;
 
     // 8. 映射 blocks 到 TimelineBlock 并增量持久化（只追加，不删除旧的）
-    const blocks = this.persistBlocks(dateKey, output, windowStart, windowEnd);
+    if (output.blocks.length === 0) return noop("empty_model_output", "模型未返回可用时间轴片段。", result);
+    const blocks = this.mapBlocks(dateKey, output, observations, facts, scenes);
+    if (blocks.length === 0) return noop("invalid_model_output", "模型输出没有可验证来源。", result);
+    const persisted = this.timelineBlockRepo.replaceWindowAndCheckpoint({ dateKey, windowStart, windowEnd, blocks, processedThrough: windowEnd });
 
     return {
       ok: true,
-      blocks,
+      blocks: persisted,
       dayStartSummary: output.dayStartSummary,
       dayMainThread: output.dayMainThread,
       modelJobId: result.modelJobId,
@@ -392,67 +416,26 @@ export class TimelineBuilderWorker {
   /**
    * 映射 LLM 输出的 blocks 到 TimelineBlock 并增量持久化
    *
-   * 2026-07-07 重大变更：
-   * - 之前用 upsertMany（先 DELETE 当天全部，再 INSERT），历史会被覆盖
-   * - 现在用 insertMany（只追加，不删除），历史不可变
-   * - clamp startAt：防止 LLM 输出的 startAt 早于 windowStart（避免与已落盘 blocks 时间重叠）
-   * - 过滤空 blocks：LLM 返回空数组时不写入（保护已有数据）
+   * 时间只来自本次输入中可验证的 Moment.capturedAt。模型返回的时间、
+   * 模型执行时间和数据库写入时间都不能成为用户活动时间。
    *
    * block.id 若 LLM 未提供则自动生成
    * createdAt/updatedAt 由 Repository 统一填充
    */
-  private persistBlocks(
+  private mapBlocks(
     dateKey: string,
     output: TimelineBuilderOutput,
-    windowStart: string,
-    windowEnd: string
+    observations: Observation[],
+    facts: Fact[],
+    scenes: Scene[]
   ): TimelineBlock[] {
-    if (output.blocks.length === 0) {
-      // LLM 返回空数组：插入一条 break 占位 block 推进增量窗口
-      // 避免下次 build 重复处理同一窗口，同时给用户可见反馈
-      const placeholderBlock: TimelineBlock = {
-        id: generateBlockId(dateKey),
-        dateKey,
-        startAt: windowStart,
-        endAt: windowEnd,
-        title: "（这段时间没有产生可记录的片段）",
-        summary: "",
-        category: "break",
-        projectIds: [],
-        projectNames: [],
-        highlights: [],
-        generatedTasks: [],
-        generatedDecisions: [],
-        reportable: false,
-        privateRisk: "low",
-        sourceSceneIds: [],
-        sourceFactIds: [],
-        sourceObservationIds: [],
-      };
-      try {
-        this.timelineBlockRepo.insertMany(dateKey, [placeholderBlock]);
-      } catch {
-        // 持久化失败静默
-      }
-      return [placeholderBlock];
-    }
-
+    const observationsById = new Map(observations.map((value) => [value.id, value]));
+    const factsById = new Map(facts.map((value) => [value.id, value]));
+    const scenesById = new Map(scenes.map((value) => [value.id, value]));
     const blocks: TimelineBlock[] = output.blocks
-      .map((item) => this.toTimelineBlock(dateKey, item))
-      .map((block) => {
-        // clamp startAt：不早于 windowStart（避免与已落盘 blocks 时间重叠）
-        if (block.startAt < windowStart) {
-          return { ...block, startAt: windowStart };
-        }
-        return block;
-      });
+      .map((item) => this.toTimelineBlock(dateKey, item, observationsById, factsById, scenesById))
+      .filter((block): block is TimelineBlock => block !== null);
 
-    try {
-      this.timelineBlockRepo.insertMany(dateKey, blocks);
-    } catch {
-      // 持久化失败不阻断返回（调用方仍可拿到 blocks 数据）
-      // 错误已在 model_job 层面记录，此处静默
-    }
     return blocks;
   }
 
@@ -466,15 +449,45 @@ export class TimelineBuilderWorker {
    */
   private toTimelineBlock(
     dateKey: string,
-    item: TimelineBlockOutputItem
-  ): TimelineBlock {
+    item: TimelineBlockOutputItem,
+    observationsById: Map<string, Observation>,
+    factsById: Map<string, Fact>,
+    scenesById: Map<string, Scene>
+  ): TimelineBlock | null {
+    const sourceObservationIds = new Set<string>();
+    for (const id of item.sourceObservationIds) {
+      if (observationsById.has(id)) sourceObservationIds.add(id);
+    }
+    const sourceSceneIds = item.sourceSceneIds.filter((id) => scenesById.has(id));
+    for (const id of sourceSceneIds) {
+      for (const observationId of scenesById.get(id)!.observationIds) {
+        if (observationsById.has(observationId)) sourceObservationIds.add(observationId);
+      }
+    }
+    const sourceFactIds = item.sourceFactIds.filter((id) => factsById.has(id));
+    for (const id of sourceFactIds) {
+      const fact = factsById.get(id)!;
+      for (const observationId of fact.sourceObservationIds) {
+        if (observationsById.has(observationId)) sourceObservationIds.add(observationId);
+      }
+      for (const episodeId of fact.sourceEpisodeIds) {
+        const scene = scenesById.get(episodeId);
+        if (!scene) continue;
+        for (const observationId of scene.observationIds) {
+          if (observationsById.has(observationId)) sourceObservationIds.add(observationId);
+        }
+      }
+    }
+    const sourceObservations = [...sourceObservationIds].map((id) => observationsById.get(id)!);
+    if (sourceObservations.length === 0) return null;
+    const capturedTimes = sourceObservations.map((observation) => observation.capturedAt);
+    const startAt = capturedTimes.reduce((min, value) => Date.parse(value) < Date.parse(min) ? value : min);
+    const endAt = capturedTimes.reduce((max, value) => Date.parse(value) > Date.parse(max) ? value : max);
     return {
-      id: item.id ?? generateBlockId(dateKey),
+      id: "",
       dateKey,
-      // 入库前 normalize：把任何 ISO 字符串统一成 UTC Z 后缀
-      // 修复：之前 LLM 可能输出无时区 / +08:00 / Z 三种格式混用，导致渲染端错位
-      startAt: normalizeIsoToZ(item.startAt),
-      endAt: normalizeIsoToZ(item.endAt),
+      startAt,
+      endAt,
       title: item.title,
       summary: item.summary,
       category: item.category,
@@ -486,9 +499,9 @@ export class TimelineBuilderWorker {
       reportable: item.reportable,
       privateRisk: item.privateRisk,
       privateRiskReason: item.privateRiskReason,
-      sourceSceneIds: item.sourceSceneIds,
-      sourceFactIds: item.sourceFactIds,
-      sourceObservationIds: item.sourceObservationIds,
+      sourceSceneIds,
+      sourceFactIds,
+      sourceObservationIds: [...sourceObservationIds],
       confidence: item.confidence,
     };
   }
@@ -505,42 +518,6 @@ export class TimelineBuilderWorker {
  * - 现在复用 _helpers.getLocalTodayStartIso 的本地时区逻辑
  * - 端点用 endOfDay 包含全天本地时间到 23:59:59.999
  */
-function getDateRange(date: string): { startOfDay: string; endOfDay: string } {
-  const from = getLocalTodayStartIsoFromDateKey(date);
-  // endOfDay：从 startOfDay 加 24 小时，再 -1ms，得到当天本地 23:59:59.999 对应 UTC
-  const startDate = new Date(from);
-  const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000 - 1);
-  return {
-    startOfDay: from,
-    endOfDay: endDate.toISOString(),
-  };
-}
-
-/**
- * 从 dateKey (YYYY-MM-DD) 构造本地 00:00:00.000 的 ISO 字符串（带本地时区偏移）
- * - 与 _helpers.getLocalTodayStartIso 等价逻辑，但接受指定日期而非"今天"
- */
-function getLocalTodayStartIsoFromDateKey(dateKey: string): string {
-  const [y, m, d] = dateKey.split("-").map(Number);
-  if (!y || !m || !d) {
-    // 兜底：非法 dateKey 时回退到 UTC（与旧行为一致）
-    return `${dateKey}T00:00:00.000Z`;
-  }
-  const local = new Date(y, m - 1, d, 0, 0, 0, 0);
-  const offsetMinutes = -local.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const abs = Math.abs(offsetMinutes);
-  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-  const mm = String(abs % 60).padStart(2, "0");
-  return `${dateKey}T00:00:00.000${sign}${hh}:${mm}`;
-}
-
-/**
- * 生成 timeline block id（LLM 未提供 id 时使用）
- * 格式：tb_<dateKey>_<base36时间>_<随机>
- */
-function generateBlockId(dateKey: string): string {
-  return `tb_${dateKey}_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+function noop(errorCode: string, errorMessage: string, job?: { modelJobId?: string; attempts?: number }): TimelineBuilderResult {
+  return { ok: true, blocks: [], dayStartSummary: "", dayMainThread: "", errorCode, errorMessage, modelJobId: job?.modelJobId, attempts: job?.attempts };
 }

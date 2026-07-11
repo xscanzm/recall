@@ -22,6 +22,7 @@
 import { useEffect, useState } from "react";
 import { ModelConfigForm } from "./ModelConfigForm";
 import { useAppStore } from "../state/store";
+import { getIpc } from "../state/ipc";
 
 type OnboardingStep =
   | "welcome"
@@ -96,9 +97,18 @@ export function Onboarding(props: OnboardingProps) {
   /**
    * 完成引导
    */
-  const handleComplete = async () => {
-    const result = await updateSettings({ onboardingCompleted: true });
+  const handleComplete = async (startObserving: boolean) => {
+    const observation = settings?.observation;
+    const result = await updateSettings({
+      onboardingCompleted: true,
+      ...(observation
+        ? { observation: { ...observation, enabled: startObserving } }
+        : {}),
+    });
     if (result.ok) {
+      if (startObserving) {
+        await getIpc().app.startObserving();
+      }
       onComplete();
     } else {
       // 即使设置失败也进入主界面
@@ -651,7 +661,7 @@ interface CompleteStepProps {
   visionConfigured: boolean;
   languageConfigured: boolean;
   multimodalConfigured: boolean;
-  onComplete: () => void;
+  onComplete: (startObserving: boolean) => void;
 }
 
 function CompleteStep(props: CompleteStepProps) {
@@ -684,13 +694,21 @@ function CompleteStep(props: CompleteStepProps) {
         </p>
       ) : (
         <p className="onboarding__hint">
-          点击下方按钮进入主界面。顶部状态栏可一键开始或暂停观察。
+          选择开始观察后，Recall 会在本次运行和后续重启时自动恢复观察。暂停只在本次运行生效。
         </p>
       )}
 
       <div className="onboarding__actions">
-        <button type="button" className="primary" onClick={props.onComplete}>
-          进入主界面
+        <button type="button" className="secondary" onClick={() => props.onComplete(false)}>
+          暂不观察
+        </button>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => props.onComplete(true)}
+          disabled={!hasValidModelConfig}
+        >
+          开始观察
         </button>
       </div>
     </div>
