@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TimelineBuilderWorker } from "./TimelineBuilderWorker";
 import type { Fact, Observation, Scene, TimelineBuilderOutput } from "../models/types";
+import { localDateKeyUtcRange } from "../utils/dateKey";
 
 const observation = (id: string, capturedAt: string) => ({
   id, capturedAt, appName: "Editor", windowTitle: "Recall", sceneSummary: id,
@@ -85,6 +86,8 @@ describe("TimelineBuilderWorker", () => {
     expect(forced.replaceWindowAndCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ windowEnd: "2026-07-11T12:00:00.000Z" }));
     const reorganized = makeWorker(output, { observations: [obs], checkpoint: "2026-07-11T11:50:00.000Z" });
     await reorganized.worker.reorganizeDay("2026-07-11");
-    expect(reorganized.replaceWindowAndCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ windowStart: "2026-07-10T16:00:00.000Z" }));
+    expect(reorganized.replaceWindowAndCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      windowStart: localDateKeyUtcRange("2026-07-11").start,
+    }));
   });
 });
