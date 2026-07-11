@@ -5,7 +5,8 @@ node_modules/
 
 # 构建产物
 dist/
-release/
+release/*
+!release/Recall-0.1.0-setup.exe
 build/
 out/
 
