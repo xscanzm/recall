@@ -11,14 +11,11 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 ## 直接下载（用户版）
 
-当前版本可直接从本仓库下载：
+最新可执行文件统一从 **[xscanzm/recall-releases](https://github.com/xscanzm/recall-releases)** 获取：
 
-- **[NSIS 安装包（推荐）](./release/Recall-0.1.0-setup.exe)**：`Recall-0.1.0-setup.exe`，约 92 MB
-- **SHA-256**：`7E7C41AC669937C32D757D4128245CC95B04DDC2BCC41571D8B01920F57A8897`
-
-发布归档也可前往 **[xscanzm/recall-releases](https://github.com/xscanzm/recall-releases)** 获取：
-
+- **NSIS 安装包（推荐）**：`Recall-0.1.0-setup.exe`，约 92 MB
 - **绿色版**（免安装）：`Recall.exe`，约 178 MB
+- **SHA-256**：见发布仓库的 [`SHA256SUMS.txt`](https://github.com/xscanzm/recall-releases/blob/main/SHA256SUMS.txt)
 
 下载后请用发布仓库 `SHA256SUMS.txt` 校验文件完整性。
 
@@ -72,7 +69,7 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 ## 快速开始（用户视角）
 
-1. 从本仓库下载 [`Recall-0.1.0-setup.exe`](./release/Recall-0.1.0-setup.exe)。
+1. 前往 [recall-releases](https://github.com/xscanzm/recall-releases) 下载 `Recall-0.1.0-setup.exe`。
 2. 双击安装，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
