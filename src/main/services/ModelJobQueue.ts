@@ -78,7 +78,9 @@ export interface JobResult<T = unknown> {
   errorMessage?: string;
   /** model_job id（由 ModelGateway 创建） */
   modelJobId?: string;
-  /** 尝试次数 */
+  /** ModelGateway 的原始字段，队列会归一化为 modelJobId */
+  jobId?: string;
+  /** 队列逻辑任务的总尝试次数 */
   attempts?: number;
 }
 
@@ -126,7 +128,11 @@ function computeBackoffMs(errorCode: string | undefined, attempts: number): numb
     const longBackoffs = [10000, 30000, 60000];
     return longBackoffs[Math.min(attempts - 1, longBackoffs.length - 1)] ?? 60000;
   }
-  // 默认短退避：1s / 2s / 4s
+  if (errorCode === "network_error") {
+    const networkBackoffs = [5000, 15000, 30000];
+    return networkBackoffs[Math.min(attempts - 1, networkBackoffs.length - 1)] ?? 30000;
+  }
+  // 解析和 schema 错误使用短退避
   return Math.min(1000 * Math.pow(2, attempts - 1), 4000);
 }
 
@@ -465,8 +471,7 @@ export class ModelJobQueue {
           lastResult = result;
 
           if (result.ok) {
-            // 成功
-            entry.resolve(result as JobResult<unknown>);
+            entry.resolve(withQueueMetadata(result, entry.attempts));
             return;
           }
 
@@ -474,14 +479,14 @@ export class ModelJobQueue {
           const errorCode = result.errorCode;
           if (!errorCode || !RETRYABLE_ERROR_CODES.has(errorCode)) {
             // 不可重试，直接返回失败
-            entry.resolve(result as JobResult<unknown>);
+            entry.resolve(withQueueMetadata(result, entry.attempts));
             return;
           }
 
           // 可重试：检查是否还有重试机会
           if (entry.attempts >= MAX_ATTEMPTS) {
             // 已达最大尝试次数，返回失败
-            entry.resolve(result as JobResult<unknown>);
+            entry.resolve(withQueueMetadata(result, entry.attempts));
             return;
           }
 
@@ -500,14 +505,8 @@ export class ModelJobQueue {
             attempts: entry.attempts,
           };
 
-          if (entry.attempts >= MAX_ATTEMPTS) {
-            entry.resolve(lastResult);
-            return;
-          }
-
-          // 异常也走重试（unknown_error 走短退避）
-          const backoffMs = computeBackoffMs("unknown_error", entry.attempts);
-          await sleep(backoffMs);
+          entry.resolve(lastResult);
+          return;
         }
       }
 
@@ -545,6 +544,14 @@ export class ModelJobQueue {
 
 function generateJobId(): string {
   return `qj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function withQueueMetadata<T>(result: JobResult<T>, attempts: number): JobResult<T> {
+  return {
+    ...result,
+    modelJobId: result.modelJobId ?? result.jobId,
+    attempts,
+  };
 }
 
 function sleep(ms: number): Promise<void> {

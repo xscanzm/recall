@@ -124,6 +124,7 @@ export class ObservationRepository {
     to?: string;
     limit?: number;
     offset?: number;
+    order?: "asc" | "desc";
   } = {}): Observation[] {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -138,9 +139,10 @@ export class ObservationRepository {
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
+    const order = opts.order === "asc" ? "ASC" : "DESC";
     const rows = this.db
       .prepare(
-        `SELECT * FROM observations ${where} ORDER BY captured_at DESC LIMIT ? OFFSET ?`
+        `SELECT * FROM observations ${where} ORDER BY captured_at ${order} LIMIT ? OFFSET ?`
       )
       .all(...params, limit, offset) as ObservationRow[];
     return rows.map(mapRow);

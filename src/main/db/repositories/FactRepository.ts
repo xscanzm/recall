@@ -124,6 +124,32 @@ export class FactRepository {
     return rows.map(mapRow);
   }
 
+  listByCreatedAt(opts: {
+    from?: string;
+    to?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+    order?: "asc" | "desc";
+  } = {}): Fact[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.from) {
+      conditions.push("created_at >= ?");
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      conditions.push("created_at < ?");
+      params.push(opts.to);
+    }
+    if (!opts.includeDeleted) conditions.push("deleted_at IS NULL");
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const order = opts.order === "desc" ? "DESC" : "ASC";
+    const rows = this.db
+      .prepare(`SELECT * FROM facts ${where} ORDER BY created_at ${order} LIMIT ?`)
+      .all(...params, opts.limit ?? 100) as FactRow[];
+    return rows.map(mapRow);
+  }
+
   /**
    * 按 id 查询（含已删除）
    */

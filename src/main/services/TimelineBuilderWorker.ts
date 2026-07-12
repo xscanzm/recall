@@ -50,6 +50,16 @@ import { localDateKeyUtcRange } from "../utils/dateKey";
 export type TimelineBuildMode = "normal" | "forceFinalizeTail" | "reorganizeDay";
 const MATURITY_MS = 10 * 60 * 1000;
 const MUTABLE_TAIL_MS = 30 * 60 * 1000;
+const MAX_WINDOW_MS = 90 * 60 * 1000;
+const MAX_OBSERVATIONS = 120;
+const MAX_TAIL_OBSERVATIONS = 30;
+const MAX_FORWARD_OBSERVATIONS = MAX_OBSERVATIONS - MAX_TAIL_OBSERVATIONS;
+const MAX_FACTS = 120;
+const MAX_SCENES = 60;
+const MODEL_CONTEXT_TOKENS = 500_000;
+const TIMELINE_MAX_TOKENS = 65_536;
+const CONTEXT_OVERHEAD_TOKENS = 14_464;
+const MAX_PROMPT_INPUT_TOKENS = MODEL_CONTEXT_TOKENS - TIMELINE_MAX_TOKENS - CONTEXT_OVERHEAD_TOKENS;
 
 /**
  * TimelineBuilderWorker 运行结果
@@ -128,69 +138,141 @@ export class TimelineBuilderWorker {
   }
 
   async reorganizeDay(dateKey: string): Promise<TimelineBuilderResult> {
-    return this.runBuild(dateKey, "reorganizeDay");
+    const first = await this.runBuild(dateKey, "reorganizeDay");
+    if (!first.ok) return first;
+
+    const blocks = [...first.blocks];
+    let attempts = first.attempts ?? 0;
+    let modelJobId = first.modelJobId;
+    const targetEnd = Math.min(Date.now(), Date.parse(localDateKeyUtcRange(dateKey).end));
+    for (let chunk = 1; chunk < 24; chunk++) {
+      const checkpoint = this.timelineBuildCheckpointRepo.get(dateKey);
+      if (!checkpoint || Date.parse(checkpoint) >= targetEnd) break;
+      const next = await this.runBuild(dateKey, "forceFinalizeTail");
+      if (!next.ok) return next;
+      blocks.push(...next.blocks);
+      attempts += next.attempts ?? 0;
+      modelJobId = next.modelJobId ?? modelJobId;
+    }
+    return {
+      ok: true,
+      blocks,
+      dayStartSummary: first.dayStartSummary,
+      dayMainThread: first.dayMainThread,
+      modelJobId,
+      attempts,
+    };
   }
 
   private async runBuild(dateKey: string, mode: TimelineBuildMode): Promise<TimelineBuilderResult> {
-    // 1. 获取启用的多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
     if (!multimodalModelConfigId) {
-      return {
-        ok: false,
-        blocks: [],
-        dayStartSummary: "",
-        dayMainThread: "",
-        errorCode: "no_language_model",
-        errorMessage: "未配置启用的多模态模型，无法生成时间轴",
-      };
+      return failure("no_language_model", "未配置启用的多模态模型，无法生成时间轴");
     }
 
-    // 2. 增量窗口：查询已落盘 blocks 的最大 endAt
-    // - 如果有 lastEndAt，只处理 (lastEndAt, now] 的新数据
-    // - 如果没有（当天首次），从当天 00:00 开始处理到 now
-    // - 历史已落盘的 blocks 永不改动（增量落盘策略，2026-07-07）
-    const checkpoint = this.timelineBuildCheckpointRepo.get(dateKey);
+    let checkpoint: string | null;
+    try {
+      checkpoint = this.timelineBuildCheckpointRepo.get(dateKey);
+    } catch (error) {
+      return failure("timeline_data_error", `读取时间轴 checkpoint 失败: ${errorMessage(error)}`);
+    }
+
     const isInitialBuild = checkpoint === null;
     const day = localDateKeyUtcRange(dateKey);
     const nowMs = Date.now();
     const todayEndMs = Math.min(nowMs, Date.parse(day.end));
     const matureEndMs = mode === "normal" ? todayEndMs - MATURITY_MS : todayEndMs;
-    const processedMs = checkpoint ? Date.parse(checkpoint) : Date.parse(day.start);
-    if (mode !== "reorganizeDay" && matureEndMs <= processedMs) return noop("insufficient_mature_window", "尚未形成 10 分钟成熟窗口。");
-    const windowStart = mode === "reorganizeDay"
-      ? day.start
-      : new Date(Math.max(Date.parse(day.start), processedMs - MUTABLE_TAIL_MS)).toISOString();
-    const windowEnd = new Date(Math.max(Date.parse(day.start), matureEndMs)).toISOString();
-    const existingBlocks = this.timelineBlockRepo.findOverlapping(dateKey, windowStart, windowEnd);
+    const dayStartMs = Date.parse(day.start);
+    const processedMs = checkpoint ? Date.parse(checkpoint) : dayStartMs;
+    if (mode !== "reorganizeDay" && matureEndMs <= processedMs) {
+      return noop("insufficient_mature_window", "尚未形成 10 分钟成熟窗口。");
+    }
 
-    // 3. 查询增量窗口内的数据
-    const observations = this.fetchObservationsByDateRange(windowStart, windowEnd);
-    const facts = this.fetchFactsByDateRange(windowStart, windowEnd);
-    const scenes = this.fetchScenesByDateRange(windowStart, windowEnd);
+    const cursorMs = mode === "reorganizeDay" ? dayStartMs : processedMs;
+    const windowStartMs = mode === "reorganizeDay"
+      ? dayStartMs
+      : Math.max(dayStartMs, cursorMs - MUTABLE_TAIL_MS);
+    const targetEndMs = Math.min(matureEndMs, cursorMs + MAX_WINDOW_MS);
+    let windowEnd = new Date(Math.max(dayStartMs, targetEndMs)).toISOString();
+    const windowStart = new Date(windowStartMs).toISOString();
 
-    // 数据量过少时给出明确提示，不浪费模型调用
+    let observations: Observation[];
+    try {
+      observations = this.fetchObservationsByDateRange(
+        windowStart,
+        windowEnd,
+        mode === "reorganizeDay" ? null : checkpoint
+      );
+    } catch (error) {
+      return failure("timeline_data_error", `读取时间轴 observation 失败: ${errorMessage(error)}`);
+    }
+
+    if (observations.length >= MAX_OBSERVATIONS) {
+      const lastCapturedAt = observations[observations.length - 1]?.capturedAt;
+      if (lastCapturedAt && Date.parse(lastCapturedAt) < Date.parse(windowEnd)) {
+        windowEnd = nextIso(lastCapturedAt);
+        observations = observations.filter((value) => value.capturedAt < windowEnd);
+      }
+    }
+
+    let facts: Fact[];
+    let scenes: Scene[];
+    let existingBlocks: TimelineBlock[];
+    try {
+      facts = this.fetchFactsByDateRange(windowStart, windowEnd);
+      scenes = this.fetchScenesByDateRange(windowStart, windowEnd);
+      existingBlocks = this.timelineBlockRepo.findOverlapping(dateKey, windowStart, windowEnd);
+    } catch (error) {
+      return failure("timeline_data_error", `读取时间轴来源数据失败: ${errorMessage(error)}`);
+    }
+
+    const sourceObservationIds = new Set(observations.map((value) => value.id));
+    scenes = scenes.filter((scene) => scene.observationIds.some((id) => sourceObservationIds.has(id)));
+    const sourceSceneIds = new Set(scenes.map((value) => value.id));
+    facts = facts.filter((fact) =>
+      fact.sourceObservationIds.some((id) => sourceObservationIds.has(id))
+      || fact.sourceEpisodeIds.some((id) => sourceSceneIds.has(id))
+    );
+
     if (observations.length === 0 && facts.length === 0 && scenes.length === 0) {
-      this.timelineBlockRepo.replaceWindowAndCheckpoint({ dateKey, windowStart, windowEnd, blocks: existingBlocks, processedThrough: windowEnd });
+      try {
+        this.timelineBlockRepo.replaceWindowAndCheckpoint({
+          dateKey,
+          windowStart,
+          windowEnd,
+          blocks: existingBlocks,
+          processedThrough: windowEnd,
+        });
+      } catch (error) {
+        return failure("timeline_data_error", `推进空时间轴窗口失败: ${errorMessage(error)}`);
+      }
       return { ok: true, blocks: [], dayStartSummary: "", dayMainThread: "" };
     }
 
-    // 4. 构造 TimelineBuilderInput
-    // - 顶层加 systemTimezone + systemTimezoneOffset + systemNow + windowStart + windowEnd
-    // - windowStart/windowEnd 明确告知 LLM 本次只处理这个时间范围
-    const baseInput: TimelineBuilderInput = {
-      dateKey,
-      existingBlocks,
-      observations: observations.map(this.toObservationSummary),
-      facts: facts.map(this.toFactSummary),
-      scenes: scenes.map(this.toSceneSummary),
-    };
+    const bounded = this.boundInput(dateKey, existingBlocks, observations, facts, scenes);
+    if (!bounded) {
+      return failure(
+        "timeline_input_too_large",
+        `单条 observation 超出时间轴输入预算（${MAX_PROMPT_INPUT_TOKENS.toLocaleString("en-US")} estimated tokens），无法安全构建。`
+      );
+    }
+    observations = bounded.observations;
+    facts = bounded.facts;
+    scenes = bounded.scenes;
+    existingBlocks = bounded.existingBlocks;
+    if (bounded.windowEnd && bounded.windowEnd < windowEnd) windowEnd = bounded.windowEnd;
+
     const input = {
       systemTimezone: getSystemTimezone(),
       systemTimezoneOffset: getSystemTimezoneOffset(),
       systemNow: windowEnd,
       windowStart,
       windowEnd,
-      ...baseInput,
+      dateKey,
+      existingBlocks,
+      observations: observations.map(this.toObservationSummary),
+      facts: facts.map(this.toFactSummary),
+      scenes: scenes.map(this.toSceneSummary),
     } as TimelineBuilderInput & {
       systemTimezone: string;
       systemTimezoneOffset: string;
@@ -198,15 +280,11 @@ export class TimelineBuilderWorker {
       windowStart: string;
       windowEnd: string;
     };
-    const inputJson = JSON.stringify(input, null, 2);
-
-    // 5. 填充 prompt（替换占位符）
+    const inputJson = JSON.stringify(input);
     const userPrompt = TIMELINE_BUILDER_PROMPT_TEMPLATE.replace(
       "{{timeline_builder_input_json}}",
       inputJson
     );
-
-    // 6. 构造脱敏 jobInputJson
     const jobInputJson = JSON.stringify({
       dateKey,
       windowStart,
@@ -214,61 +292,75 @@ export class TimelineBuilderWorker {
       observationCount: observations.length,
       factCount: facts.length,
       sceneCount: scenes.length,
+      inputTokensEstimate: estimateTokens(inputJson),
+      contextTokens: MODEL_CONTEXT_TOKENS,
+      maxOutputTokens: TIMELINE_MAX_TOKENS,
       isIncremental: checkpoint !== null,
       mode,
       existingBlockCount: existingBlocks.length,
     });
 
-    // 7. 提交 LLM 任务
     const result = await this.modelJobQueue.enqueueMultimodalJob<TimelineBuilderOutput>({
       type: "timeline_builder",
-      // 首次生成直接影响今日页是否有内容；增量刷新让位给普通采集链路。
       priority: isInitialBuild ? 1 : 3,
       dedupeKey: `timeline_builder:${dateKey}`,
-      executor: async () => {
-        return this.modelGateway.callMultimodal<TimelineBuilderOutput>(
-          {
-            kind: "multimodal",
-            configId: multimodalModelConfigId,
-            systemPrompt: "",
-            userPrompt,
-            jobType: "timeline_builder",
-            jobInputJson,
-          },
-          TimelineBuilderOutputSchema
-        );
-      },
+      executor: async () => this.modelGateway.callMultimodal<TimelineBuilderOutput>(
+        {
+          kind: "multimodal",
+          configId: multimodalModelConfigId,
+          systemPrompt: "",
+          userPrompt,
+          jobType: "timeline_builder",
+          jobInputJson,
+          maxTokens: TIMELINE_MAX_TOKENS,
+          streaming: true,
+        },
+        TimelineBuilderOutputSchema
+      ),
     });
 
     if (!result.ok || !result.data) {
-      return {
-        ok: false,
-        blocks: [],
-        dayStartSummary: "",
-        dayMainThread: "",
-        errorCode: result.errorCode,
-        errorMessage: result.errorMessage,
-        modelJobId: result.modelJobId,
-        attempts: result.attempts,
-      };
+      return failure(
+        result.errorCode ?? "unknown_error",
+        result.errorMessage ?? "时间轴模型调用失败",
+        result.modelJobId,
+        result.attempts
+      );
     }
 
     const output = result.data;
-
-    // 8. 映射 blocks 到 TimelineBlock 并增量持久化（只追加，不删除旧的）
-    if (output.blocks.length === 0) return noop("empty_model_output", "模型未返回可用时间轴片段。", result);
+    if (output.blocks.length === 0) {
+      return failure("empty_model_output", "模型未返回可用时间轴片段。", result.modelJobId, result.attempts);
+    }
     const blocks = this.mapBlocks(dateKey, output, observations, facts, scenes);
-    if (blocks.length === 0) return noop("invalid_model_output", "模型输出没有可验证来源。", result);
-    const persisted = this.timelineBlockRepo.replaceWindowAndCheckpoint({ dateKey, windowStart, windowEnd, blocks, processedThrough: windowEnd });
+    if (blocks.length === 0) {
+      return failure(
+        "invalid_model_output",
+        `模型返回 ${output.blocks.length} 个片段，但全部缺少当前窗口内可验证的 observation 来源。`,
+        result.modelJobId,
+        result.attempts
+      );
+    }
 
-    return {
-      ok: true,
-      blocks: persisted,
-      dayStartSummary: output.dayStartSummary,
-      dayMainThread: output.dayMainThread,
-      modelJobId: result.modelJobId,
-      attempts: result.attempts,
-    };
+    try {
+      const persisted = this.timelineBlockRepo.replaceWindowAndCheckpoint({
+        dateKey,
+        windowStart,
+        windowEnd,
+        blocks,
+        processedThrough: windowEnd,
+      });
+      return {
+        ok: true,
+        blocks: persisted,
+        dayStartSummary: output.dayStartSummary,
+        dayMainThread: output.dayMainThread,
+        modelJobId: result.modelJobId,
+        attempts: result.attempts,
+      };
+    } catch (error) {
+      return failure("timeline_data_error", `写入时间轴失败: ${errorMessage(error)}`, result.modelJobId, result.attempts);
+    }
   }
 
   // ----------------------------------------------------------------
@@ -293,18 +385,28 @@ export class TimelineBuilderWorker {
    * 查询指定日期范围的 observations
    * - 按 captured_at 升序（便于模型理解时间线）
    */
-  private fetchObservationsByDateRange(startIso: string, endIso: string): Observation[] {
-    try {
-      const list = this.observationRepo.listByCapturedAt({
+  private fetchObservationsByDateRange(startIso: string, endIso: string, checkpoint: string | null): Observation[] {
+    if (!checkpoint) {
+      return this.observationRepo.listByCapturedAt({
         from: startIso,
         to: endIso,
-        limit: 200,
+        limit: MAX_OBSERVATIONS,
+        order: "asc",
       });
-      // listByCapturedAt 默认 DESC，这里反转为升序便于模型理解时间线
-      return list.reverse();
-    } catch {
-      return [];
     }
+    const tail = this.observationRepo.listByCapturedAt({
+      from: startIso,
+      to: checkpoint,
+      limit: MAX_TAIL_OBSERVATIONS,
+      order: "desc",
+    }).reverse();
+    const forward = this.observationRepo.listByCapturedAt({
+      from: checkpoint,
+      to: endIso,
+      limit: MAX_FORWARD_OBSERVATIONS,
+      order: "asc",
+    });
+    return [...tail, ...forward];
   }
 
   /**
@@ -313,14 +415,12 @@ export class TimelineBuilderWorker {
    * 这里使用 list() 后在代码中过滤（与 ReporterWorker 一致）。
    */
   private fetchFactsByDateRange(startIso: string, endIso: string): Fact[] {
-    try {
-      const all = this.factRepo.list({ includeDeleted: false, limit: 500 });
-      return all
-        .filter((f) => f.createdAt >= startIso && f.createdAt <= endIso)
-        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    } catch {
-      return [];
-    }
+    return this.factRepo.listByCreatedAt({
+      from: startIso,
+      to: endIso,
+      limit: MAX_FACTS,
+      order: "asc",
+    });
   }
 
   /**
@@ -328,17 +428,64 @@ export class TimelineBuilderWorker {
    * - 按 start_at 升序（便于模型理解时间线）
    */
   private fetchScenesByDateRange(startIso: string, endIso: string): Scene[] {
-    try {
-      const list = this.sceneRepo.listByStartAt({
-        from: startIso,
-        to: endIso,
-        limit: 100,
-      });
-      // listByStartAt 默认 DESC，这里反转为升序便于模型理解时间线
-      return list.reverse();
-    } catch {
-      return [];
+    return this.sceneRepo.listByStartAt({
+      from: startIso,
+      to: endIso,
+      limit: MAX_SCENES,
+      order: "asc",
+    });
+  }
+
+  private boundInput(
+    dateKey: string,
+    existingBlocks: TimelineBlock[],
+    observations: Observation[],
+    facts: Fact[],
+    scenes: Scene[]
+  ): {
+    existingBlocks: TimelineBlock[];
+    observations: Observation[];
+    facts: Fact[];
+    scenes: Scene[];
+    windowEnd?: string;
+  } | null {
+    const selected: Observation[] = [];
+    for (const observation of observations) {
+      const candidate = [...selected, observation];
+      const candidateIds = new Set(candidate.map((value) => value.id));
+      const candidateScenes = scenes.filter((scene) => scene.observationIds.some((id) => candidateIds.has(id)));
+      const candidateSceneIds = new Set(candidateScenes.map((value) => value.id));
+      const candidateFacts = facts.filter((fact) =>
+        fact.sourceObservationIds.some((id) => candidateIds.has(id))
+        || fact.sourceEpisodeIds.some((id) => candidateSceneIds.has(id))
+      );
+      const tokensEstimate = estimateTokens(JSON.stringify({
+        dateKey,
+        existingBlocks,
+        observations: candidate.map(this.toObservationSummary),
+        facts: candidateFacts.map(this.toFactSummary),
+        scenes: candidateScenes.map(this.toSceneSummary),
+      }));
+      if (tokensEstimate > MAX_PROMPT_INPUT_TOKENS) break;
+      selected.push(observation);
     }
+    if (observations.length > 0 && selected.length === 0) return null;
+
+    const selectedIds = new Set(selected.map((value) => value.id));
+    const selectedScenes = scenes.filter((scene) => scene.observationIds.some((id) => selectedIds.has(id)));
+    const selectedSceneIds = new Set(selectedScenes.map((value) => value.id));
+    const selectedFacts = facts.filter((fact) =>
+      fact.sourceObservationIds.some((id) => selectedIds.has(id))
+      || fact.sourceEpisodeIds.some((id) => selectedSceneIds.has(id))
+    );
+    const wasTrimmed = selected.length < observations.length;
+    return {
+      existingBlocks,
+      observations: selected,
+      facts: selectedFacts,
+      scenes: selectedScenes,
+      windowEnd: wasTrimmed ? nextIso(selected[selected.length - 1].capturedAt) : undefined,
+    };
   }
 
   // ----------------------------------------------------------------
@@ -520,4 +667,35 @@ export class TimelineBuilderWorker {
  */
 function noop(errorCode: string, errorMessage: string, job?: { modelJobId?: string; attempts?: number }): TimelineBuilderResult {
   return { ok: true, blocks: [], dayStartSummary: "", dayMainThread: "", errorCode, errorMessage, modelJobId: job?.modelJobId, attempts: job?.attempts };
+}
+
+function failure(errorCode: string, errorMessageValue: string, modelJobId?: string, attempts?: number): TimelineBuilderResult {
+  return {
+    ok: false,
+    blocks: [],
+    dayStartSummary: "",
+    dayMainThread: "",
+    errorCode,
+    errorMessage: errorMessageValue,
+    modelJobId,
+    attempts,
+  };
+}
+
+function estimateTokens(text: string): number {
+  let asciiChars = 0;
+  let nonAsciiTokens = 0;
+  for (const char of text) {
+    if (char.codePointAt(0)! <= 0x7f) asciiChars++;
+    else nonAsciiTokens += 2;
+  }
+  return Math.ceil(asciiChars / 4) + nonAsciiTokens;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function nextIso(iso: string): string {
+  return new Date(Date.parse(iso) + 1).toISOString();
 }
