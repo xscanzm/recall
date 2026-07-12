@@ -6,8 +6,10 @@ const rootDir = path.resolve(__dirname, "..");
 const outputDir = path.join(rootDir, "scripts", "output");
 const preloadPath = path.join(outputDir, "smoke-renderer-preload.js");
 const indexPath = path.join(rootDir, "dist", "renderer", "index.html");
+const captureDir = process.env.RECALL_CAPTURE_DIR || null;
 const now = "2026-07-09T10:08:00.000Z";
 const dateKey = "2026-07-09";
+const marketingCapture = Boolean(captureDir);
 
 function writePreload() {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -20,6 +22,41 @@ const { contextBridge } = require("electron");
 
 const now = "${now}";
 const dateKey = "${dateKey}";
+const marketingCapture = ${marketingCapture};
+const copy = marketingCapture ? {
+  appName: "浏览器",
+  windowTitle: "夏日市集活动方案",
+  sceneTitle: "整理夏日市集的活动方案",
+  sceneSummary: "从资料搜集、主题构思到页面文案，逐步整理出一份可以继续完善的活动方案。",
+  taskFact: "发布前还需要确认移动端页面和报名链接。",
+  decisionFact: "活动首页采用真实现场照片，不再使用抽象插画。",
+  projectName: "夏日市集发布计划",
+  projectSummary: "完成活动主题、首页内容、报名流程和发布前检查。",
+  taskTitle: "检查移动端页面与报名链接",
+  taskSummary: "桌面版内容已经完成，发布前还需要确认手机端显示和报名流程。",
+  decisionTitle: "首页视觉方向",
+  decisionText: "首页使用真实现场照片，让来访者第一眼感受到活动氛围。",
+  timelineTitle: "完成夏日市集首页内容",
+  timelineSummary: "整理活动主题、修改首页文案，并确认用真实现场照片作为首屏视觉。",
+  highlights: ["首页叙事已经定稿", "确定使用真实现场照片", "报名流程已基本完成", "还需检查移动端"],
+  unfinishedTitle: "发布前检查移动端页面",
+  unfinishedReason: "桌面版已经完成，但手机端按钮和报名链接还没有最后确认。",
+  unfinishedAction: "用手机走一遍报名流程，再发布活动页面。",
+  reviewOverview: "今天终于把夏日市集从一个模糊的念头，整理成了可以发布的活动页面。",
+  reviewThreads: ["完成活动首页", "确认视觉方向"],
+  reviewProgress: ["首页文案定稿", "报名流程基本完成"],
+  reviewUnfinished: "检查手机端页面和报名链接",
+  reviewNext: "用手机完成一次报名测试",
+  reviewMemory: "真实的现场照片，比抽象插画更能让人感受到活动。",
+  tomorrow: "从移动端检查开始",
+  reportText: "今日完成夏日市集首页内容与报名流程，确认首屏使用真实现场照片。",
+  reportCompleted: "完成活动首页文案与页面结构",
+  reportProgress: "报名流程已基本打通",
+  reportRisk: "移动端显示仍需最后检查",
+  reportPlan: "完成手机端测试并发布",
+  searchTitle: "夏日市集首页视觉方向",
+  searchSummary: "你决定使用真实现场照片，让来访者第一眼感受到活动氛围。",
+} : null;
 const appStatus = { observing: true, paused: false, pipelineState: "observing" };
 const settings = {
   observation: {
@@ -45,11 +82,11 @@ const observations = Array.from({ length: 6 }, (_, index) => ({
   id: "obs_" + (index + 1),
   captureId: "capture_" + (index + 1),
   capturedAt: "2026-07-09T10:0" + index + ":00.000Z",
-  appName: "微信",
-  windowTitle: "Recall 记忆系统讨论",
+  appName: copy?.appName || "微信",
+  windowTitle: copy?.windowTitle || "Recall 记忆系统讨论",
   urlOrDomain: null,
   captureReason: "batch_capture",
-  sceneSummary: "讨论 Recall 记忆系统分层，第 " + (index + 1) + " 个瞬间。",
+  sceneSummary: copy?.sceneSummary || ("讨论 Recall 记忆系统分层，第 " + (index + 1) + " 个瞬间。"),
   sensitivity: "low",
   confidence: 0.9,
   createdAt: now,
@@ -59,10 +96,10 @@ const facts = [
   {
     id: "fact_task",
     type: "task",
-    content: "需要把 L0 先稳定为低判断观察层，再继续沉淀 L1 片段。",
+    content: copy?.taskFact || "需要把 L0 先稳定为低判断观察层，再继续沉淀 L1 片段。",
     status: "active",
     projectId: "project_recall",
-    projectHint: "Recall 记忆系统重构",
+    projectHint: copy?.projectName || "Recall 记忆系统重构",
     importance: 4,
     confidence: 0.92,
     inferred: false,
@@ -76,10 +113,10 @@ const facts = [
   {
     id: "fact_decision",
     type: "decision",
-    content: "Edges 作为关系层，不再作为 L4 页面呈现。",
+    content: copy?.decisionFact || "Edges 作为关系层，不再作为 L4 页面呈现。",
     status: "active",
     projectId: "project_recall",
-    projectHint: "Recall 记忆系统重构",
+    projectHint: copy?.projectName || "Recall 记忆系统重构",
     importance: 5,
     confidence: 0.94,
     inferred: false,
@@ -95,8 +132,8 @@ const facts = [
 const scenes = [
   {
     id: "scene_wechat_memory",
-    title: "微信讨论 Recall 记忆系统分层",
-    summary: "围绕 L-1、L0、L1、L2、L3 与关系层的职责边界展开讨论。",
+    title: copy?.sceneTitle || "微信讨论 Recall 记忆系统分层",
+    summary: copy?.sceneSummary || "围绕 L-1、L0、L1、L2、L3 与关系层的职责边界展开讨论。",
     startAt: "2026-07-09T10:00:00.000Z",
     endAt: "2026-07-09T10:10:00.000Z",
     projectId: "project_recall",
@@ -113,8 +150,8 @@ const scenes = [
 const projects = [
   {
     id: "project_recall",
-    name: "Recall 记忆系统重构",
-    summary: "从重 L0 改为分层沉淀：观察、片段、记忆原子、长期对象和关系层。",
+    name: copy?.projectName || "Recall 记忆系统重构",
+    summary: copy?.projectSummary || "从重 L0 改为分层沉淀：观察、片段、记忆原子、长期对象和关系层。",
     status: "active",
     lastActiveAt: now,
     sourceFactIds: ["fact_task", "fact_decision"],
@@ -129,10 +166,10 @@ const projects = [
 const tasks = [
   {
     id: "task_l0",
-    title: "收束 L0 为低判断观察层",
+    title: copy?.taskTitle || "收束 L0 为低判断观察层",
     status: "open",
     projectId: "project_recall",
-    summary: "减少单次结论负担，保留可重建的底层观察。",
+    summary: copy?.taskSummary || "减少单次结论负担，保留可重建的底层观察。",
     dueHint: "今天",
     priority: 4,
     confidence: 0.9,
@@ -147,8 +184,8 @@ const tasks = [
 const decisions = [
   {
     id: "decision_edges",
-    title: "关系层定位",
-    decision: "Edges 是贯穿 L0-L3 的关系层，不作为独立 L4 页面。",
+    title: copy?.decisionTitle || "关系层定位",
+    decision: copy?.decisionText || "Edges 是贯穿 L0-L3 的关系层，不作为独立 L4 页面。",
     projectId: "project_recall",
     rationale: "这样避免把关系图过早产品化，同时保留证据链。",
     confidence: 0.94,
@@ -183,14 +220,14 @@ const timelineBlocks = [
     dateKey,
     startAt: "2026-07-09T10:00:00.000Z",
     endAt: "2026-07-09T10:10:00.000Z",
-    title: "微信讨论 Recall 记忆系统分层",
-    summary: "讨论如何让 L0 只做识别，后续逐层沉淀为片段、记忆原子和长期对象。",
+    title: copy?.timelineTitle || "微信讨论 Recall 记忆系统分层",
+    summary: copy?.timelineSummary || "讨论如何让 L0 只做识别，后续逐层沉淀为片段、记忆原子和长期对象。",
     category: "work",
     projectIds: ["project_recall"],
-    projectNames: ["Recall 记忆系统重构"],
-    highlights: ["L0 降低判断负担", "关系层用 Edges 承接证据链", "保留完整证据链", "前台使用自然语言"],
-    generatedTasks: ["收束 L0 为低判断观察层"],
-    generatedDecisions: ["Edges 不作为 L4 页面"],
+    projectNames: [copy?.projectName || "Recall 记忆系统重构"],
+    highlights: copy?.highlights || ["L0 降低判断负担", "关系层用 Edges 承接证据链", "保留完整证据链", "前台使用自然语言"],
+    generatedTasks: [copy?.taskTitle || "收束 L0 为低判断观察层"],
+    generatedDecisions: [copy?.decisionFact || "Edges 不作为 L4 页面"],
     reportable: true,
     privateRisk: "medium",
     privateRiskReason: "讨论中提到了协作者和内部方案，分享前需要检查。",
@@ -206,11 +243,11 @@ const timelineBlocks = [
 const unfinishedThreads = [
   {
     id: "unfinished_l0",
-    title: "确认 L0 批量观察边界",
-    reason: "微信讨论里明确担心 L0 一旦失败会影响后续全部层级。",
-    suggestedNextAction: "先用 6 帧批量观察验证低判断输出。",
+    title: copy?.unfinishedTitle || "确认 L0 批量观察边界",
+    reason: copy?.unfinishedReason || "微信讨论里明确担心 L0 一旦失败会影响后续全部层级。",
+    suggestedNextAction: copy?.unfinishedAction || "先用 6 帧批量观察验证低判断输出。",
     priority: "high",
-    projectName: "Recall 记忆系统重构",
+    projectName: copy?.projectName || "Recall 记忆系统重构",
     lastSeenAt: now,
     sourceFactIds: ["fact_task"],
     sourceTimelineBlockIds: ["block_wechat_memory"],
@@ -225,25 +262,25 @@ const personalReview = {
   id: "personal_review_today",
   dateKey,
   title: "我的复盘",
-  overview: "今天把 Recall 记忆系统从一次性识别，重新拆成可追溯、可重试的分层链路。",
-  mainThreads: ["重新定义 L0-L3", "确认前台页面入口"],
-  meaningfulProgress: ["明确 L0 只保存观察", "确认待收尾页面定位"],
+  overview: copy?.reviewOverview || "今天把 Recall 记忆系统从一次性识别，重新拆成可追溯、可重试的分层链路。",
+  mainThreads: copy?.reviewThreads || ["重新定义 L0-L3", "确认前台页面入口"],
+  meaningfulProgress: copy?.reviewProgress || ["明确 L0 只保存观察", "确认待收尾页面定位"],
   unfinished: [
     {
-      text: "继续验证真实运行态数据流",
-      suggestedNextAction: "跑 Electron 前台 smoke",
+      text: copy?.reviewUnfinished || "继续验证真实运行态数据流",
+      suggestedNextAction: copy?.reviewNext || "跑 Electron 前台 smoke",
       sourceTimelineBlockIds: ["block_wechat_memory"],
       sourceFactIds: ["fact_task"],
     },
   ],
   worthRemembering: [
     {
-      text: "前台应忠实记录，不提前做对外降级。",
+      text: copy?.reviewMemory || "前台应忠实记录，不提前做对外降级。",
       reason: "这是产品呈现原则。",
       sourceFactIds: ["fact_decision"],
     },
   ],
-  tomorrowStartHere: ["从真实 UI 验证开始"],
+  tomorrowStartHere: [copy?.tomorrow || "从真实 UI 验证开始"],
   createdAt: now,
   updatedAt: now,
 };
@@ -252,12 +289,12 @@ const workReport = {
   id: "work_report_today",
   dateKey,
   title: "工作日报",
-  plainText: "今日完成 Recall 记忆系统分层重构方案与前台入口验证。",
+  plainText: copy?.reportText || "今日完成 Recall 记忆系统分层重构方案与前台入口验证。",
   sections: {
-    completed: ["完成 L0-L3 分层方案"],
-    projectProgress: ["打通片段、事实、对象与关系层"],
-    risks: ["真实模型输出仍需继续观察"],
-    tomorrowPlan: ["继续做运行态验证"],
+    completed: [copy?.reportCompleted || "完成 L0-L3 分层方案"],
+    projectProgress: [copy?.reportProgress || "打通片段、事实、对象与关系层"],
+    risks: [copy?.reportRisk || "真实模型输出仍需继续观察"],
+    tomorrowPlan: [copy?.reportPlan || "继续做运行态验证"],
   },
   sourceTimelineBlockIds: ["block_wechat_memory"],
   sourceFactIds: ["fact_task", "fact_decision"],
@@ -317,8 +354,8 @@ const api = {
         {
           id: "scene_wechat_memory",
           type: "scene",
-          title: "微信讨论 Recall 记忆系统分层",
-          summary: "L0 到 L3 的分层记忆链路。",
+          title: copy?.searchTitle || "微信讨论 Recall 记忆系统分层",
+          summary: copy?.searchSummary || "L0 到 L3 的分层记忆链路。",
           createdAt: now,
           projectName: "Recall 记忆系统重构",
           projectId: "project_recall",
@@ -465,6 +502,14 @@ async function assertTexts(win, texts) {
   }
 }
 
+async function capturePage(win, fileName) {
+  if (!captureDir) return;
+  fs.mkdirSync(captureDir, { recursive: true });
+  await wait(350);
+  const image = await win.webContents.capturePage();
+  fs.writeFileSync(path.join(captureDir, fileName), image.toPNG());
+}
+
 async function run() {
   writePreload();
   if (!fs.existsSync(indexPath)) {
@@ -505,6 +550,7 @@ async function run() {
     "确认 L0 批量观察边界",
     "我的复盘",
   ]);
+  await capturePage(win, "today.png");
   await clickByLabel(win, "细节");
   await assertTexts(win, [
     "前台使用自然语言",
@@ -526,6 +572,7 @@ async function run() {
 
   await clickByLabel(win, "待收尾");
   await assertTexts(win, ["待收尾", "确认 L0 批量观察边界", "先用 6 帧批量观察验证低判断输出"]);
+  await capturePage(win, "unfinished.png");
   await clickByLabel(win, "查看来源");
   await assertTexts(win, ["来源", "需要把 L0 先稳定为低判断观察层"]);
   await clickByLabel(win, "关闭");
@@ -542,9 +589,24 @@ async function run() {
 
   await clickByLabel(win, "记忆库");
   await assertTexts(win, ["记忆库", "帮你找回过去的工作、资料、决策或人", "问回声"]);
+  await win.webContents.executeJavaScript(
+    `(() => {
+      const input = document.querySelector('input[placeholder="搜索过去的工作、资料、决策或人"]');
+      if (!input) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'Recall 记忆系统');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.closest('form').requestSubmit();
+      return true;
+    })()`,
+    true
+  );
+  await assertTexts(win, ["共 1 条结果", "微信讨论 Recall 记忆系统分层"]);
+  await capturePage(win, "memory-search.png");
 
   await clickByLabel(win, "报告");
   await assertTexts(win, ["报告", "我的复盘", "工作日报", "今天把 Recall 记忆系统"]);
+  await capturePage(win, "report.png");
   await clickByLabel(win, "工作日报");
   await assertTexts(win, ["今日完成 Recall 记忆系统分层重构方案", "查看来源"]);
   await clickByLabel(win, "查看来源");

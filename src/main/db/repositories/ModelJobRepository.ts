@@ -33,6 +33,8 @@ export type ModelJobErrorCode =
   | "rate_limited"
   | "invalid_json"
   | "schema_invalid"
+  | "output_truncated"
+  | "response_invalid"
   | "safety_blocked"
   | "unknown_error";
 

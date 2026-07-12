@@ -1,0 +1,63 @@
+html,
+body,
+#root,
+.product-demo-root {
+  height: 100%;
+  min-width: 980px;
+  overflow: hidden;
+}
+
+.product-demo-root {
+  position: relative;
+}
+
+.product-demo-disclosure {
+  position: absolute;
+  right: 168px;
+  top: 12px;
+  z-index: 20;
+  padding: 3px 9px;
+  color: var(--recall-text-muted);
+  background: var(--recall-bg-subtle);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-pill);
+  font-size: 10px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.product-demo-root .app-shell__sidebar {
+  width: 118px;
+}
+
+.product-demo-root .app-shell__nav-label {
+  font-size: 12px;
+}
+
+.product-demo-root .app-shell__topbar {
+  padding-left: 18px;
+}
+
+.product-demo-root .today-page {
+  grid-template-columns: minmax(520px, 1fr) 330px;
+}
+
+.product-demo-root .timeline-main {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+@media (max-width: 1050px) {
+  .product-demo-root .app-shell__sidebar {
+    width: 92px;
+  }
+
+  .product-demo-root .app-shell__nav-item {
+    justify-content: center;
+    padding-inline: 6px;
+  }
+
+  .product-demo-root .app-shell__nav-label {
+    display: none;
+  }
+}

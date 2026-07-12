@@ -637,11 +637,23 @@ app.whenReady().then(async () => {
           batchBundle.frames.map((frame) => formatLocalDateKey(new Date(frame.capturedAt)))
         ));
         for (const dateKey of dateKeys) {
-          try {
-            await timelineBuilderWorker.buildTimeline(dateKey);
-          } catch {
-            // 时间轴刷新失败不改变 durable batch 的成功状态
-          }
+          void timelineBuilderWorker.buildTimeline(dateKey).then((result) => {
+            if (!result.ok) {
+              logger.warn({
+                jobType: "timeline_builder",
+                status: "failed",
+                errorCode: result.errorCode,
+                message: result.errorMessage ?? "post-batch timeline build failed",
+              });
+            }
+          }).catch((error) => {
+            logger.warn({
+              jobType: "timeline_builder",
+              status: "failed",
+              errorCode: "unknown_error",
+              message: `post-batch timeline build threw: ${error instanceof Error ? error.message : String(error)}`,
+            });
+          });
         }
       }
       const immediatePaths = batchBundle.frames

@@ -124,6 +124,7 @@ export class SceneRepository {
     includeDeleted?: boolean;
     limit?: number;
     offset?: number;
+    order?: "asc" | "desc";
   } = {}): Scene[] {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -141,8 +142,9 @@ export class SceneRepository {
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
+    const order = opts.order === "asc" ? "ASC" : "DESC";
     const rows = this.db
-      .prepare(`SELECT * FROM scenes ${where} ORDER BY start_at DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM scenes ${where} ORDER BY start_at ${order} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as SceneRow[];
     return rows.map(mapRow);
   }

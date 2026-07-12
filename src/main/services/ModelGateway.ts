@@ -59,6 +59,8 @@ export type ModelKind = "vision" | "language" | "multimodal";
  * - 单独的视觉调用可由调用方通过 ModelCallInput.temperature/maxTokens 间接影响耗时
  */
 export const DEFAULT_TIMEOUT_MS = 120_000;
+const STREAM_IDLE_TIMEOUT_MS = 60_000;
+const STREAM_TOTAL_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * 默认温度
@@ -110,6 +112,8 @@ export interface ModelCallInput {
    * 批次模式（默认 6 帧多图）需要 180s，普通模式保持 120s。
    */
   timeoutMs?: number;
+  /** 使用 OpenAI-compatible SSE 流式响应；适合长输出任务 */
+  streaming?: boolean;
 }
 
 /**
@@ -124,6 +128,8 @@ export interface ModelCallResult<T> {
   errorMessage?: string;
   /** model_job id（用于追踪） */
   jobId?: string;
+  /** 队列层使用的兼容字段 */
+  modelJobId?: string;
   /** 尝试次数 */
   attempts?: number;
   /** usage 信息 */
@@ -166,6 +172,28 @@ interface ChatCompletionResponse {
     message?: string;
     type?: string;
   };
+}
+
+interface ChatCompletionStreamChunk {
+  choices?: Array<{
+    delta?: { content?: string };
+    finish_reason?: string | null;
+  }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+  };
+  error?: { message?: string };
+}
+
+interface ModelHttpResult {
+  ok: boolean;
+  content?: string;
+  finishReason?: string;
+  usage?: { promptTokens: number; completionTokens: number };
+  errorCode?: ModelJobErrorCode;
+  errorMessage?: string;
+  receivedContent?: boolean;
 }
 
 /**
@@ -400,8 +428,8 @@ export class ModelGateway {
     // 5. 构造请求
     const endpoint = normalizeEndpoint(config.endpoint);
     const url = `${endpoint}/chat/completions`;
-    const temperature = input.temperature ?? extraOptions.temperature ?? DEFAULT_TEMPERATURE;
-    const maxTokens = input.maxTokens ?? extraOptions.max_tokens ?? DEFAULT_MAX_TOKENS;
+    const temperature = input.temperature ?? numericOption(extraOptions.temperature) ?? DEFAULT_TEMPERATURE;
+    const maxTokens = input.maxTokens ?? numericOption(extraOptions.max_tokens) ?? DEFAULT_MAX_TOKENS;
 
     const messages = buildMessages({
       kind: input.kind,
@@ -423,6 +451,10 @@ export class ModelGateway {
       max_tokens: maxTokens,
       response_format: { type: "json_object" },
     };
+    if (input.streaming) {
+      requestBody.stream = true;
+      requestBody.stream_options = { include_usage: true };
+    }
     // 透传 reasoning_effort（阶段一验证：sensenova-6.7-flash-lite 必须设为 "none" 否则 content 为空）
     if (input.reasoningEffort) {
       requestBody.reasoning_effort = input.reasoningEffort;
@@ -443,33 +475,42 @@ export class ModelGateway {
 
     // 6. 第一次调用
     attempts++;
-    const firstResult = await this.sendRequest(url, apiKey, requestBody, input.timeoutMs);
+    const firstResult = input.streaming
+      ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, input.timeoutMs)
+      : await this.sendRequest(url, apiKey, requestBody, input.timeoutMs);
     if (firstResult.ok) {
       rawOutput = firstResult.content ?? "";
       hasRawOutput = true;
       usage = firstResult.usage;
-      // 7. JSON parse
-      const parseResult = tryParseJson(rawOutput);
-      if (parseResult.ok) {
-        // 8. zod schema 校验
-        const schemaResult = schema.safeParse(parseResult.data);
-        if (schemaResult.success) {
-          // 成功
-          this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
-          return {
-            ok: true,
-            data: schemaResult.data,
-            jobId: job.id,
-            attempts,
-            usage,
-          };
-        }
-        // schema 校验失败
-        lastErrorCode = "schema_invalid";
-        lastErrorMessage = `schema 校验失败: ${schemaResult.error.message}`;
+      if (
+        firstResult.finishReason === "length"
+        || (usage?.completionTokens ?? 0) >= maxTokens
+      ) {
+        lastErrorCode = "output_truncated";
+        lastErrorMessage = `模型输出达到 max_tokens=${maxTokens}，JSON 已被截断（completion_tokens=${usage?.completionTokens ?? 0}）`;
       } else {
-        lastErrorCode = "invalid_json";
-        lastErrorMessage = `JSON parse 失败: ${parseResult.error}`;
+        // 7. JSON parse
+        const parseResult = tryParseJson(rawOutput);
+        if (parseResult.ok) {
+          // 8. zod schema 校验
+          const schemaResult = schema.safeParse(parseResult.data);
+          if (schemaResult.success) {
+            this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
+            return {
+              ok: true,
+              data: schemaResult.data,
+              jobId: job.id,
+              modelJobId: job.id,
+              attempts,
+              usage,
+            };
+          }
+          lastErrorCode = "schema_invalid";
+          lastErrorMessage = `schema 校验失败: ${schemaResult.error.message}`;
+        } else {
+          lastErrorCode = "invalid_json";
+          lastErrorMessage = `JSON parse 失败: ${parseResult.error}`;
+        }
       }
     } else {
       // HTTP/网络/超时错误
@@ -485,10 +526,12 @@ export class ModelGateway {
           url,
           config,
           apiKey,
-          extraOptions,
           schema,
           rawOutput,
-          lastErrorMessage ?? ""
+          lastErrorMessage ?? "",
+          maxTokens,
+          input.timeoutMs,
+          input.streaming ?? false
         );
         if (repairResult.ok) {
           rawOutput = repairResult.content ?? "";
@@ -502,6 +545,7 @@ export class ModelGateway {
                 ok: true,
                 data: schemaResult2.data,
                 jobId: job.id,
+                modelJobId: job.id,
                 attempts,
                 usage,
               };
@@ -537,6 +581,7 @@ export class ModelGateway {
       errorCode: lastErrorCode ?? "unknown_error",
       errorMessage: lastErrorMessage,
       jobId: job.id,
+      modelJobId: job.id,
       attempts,
       usage,
     };
@@ -550,10 +595,12 @@ export class ModelGateway {
     url: string,
     config: ModelConfig,
     apiKey: string,
-    extraOptions: Record<string, unknown>,
     _schema: ZodSchemaLike<unknown>,
     badOutput: string,
-    errorMessage: string
+    errorMessage: string,
+    maxTokens: number,
+    timeoutMs?: number,
+    streaming = false
   ): Promise<{
     ok: boolean;
     content?: string;
@@ -578,11 +625,27 @@ export class ModelGateway {
       model: config.model,
       messages,
       temperature: 0,
-      max_tokens: extraOptions.max_tokens ?? DEFAULT_MAX_TOKENS,
+      max_tokens: maxTokens,
       response_format: { type: "json_object" },
     };
 
-    const result = await this.sendRequest(url, apiKey, requestBody);
+    if (streaming) {
+      requestBody.stream = true;
+      requestBody.stream_options = { include_usage: true };
+    }
+    const result = streaming
+      ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, timeoutMs)
+      : await this.sendRequest(url, apiKey, requestBody, timeoutMs);
+    if (
+      result.ok
+      && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= maxTokens)
+    ) {
+      return {
+        ok: false,
+        errorCode: "output_truncated",
+        errorMessage: `repair 输出达到 max_tokens=${maxTokens}，JSON 仍被截断`,
+      };
+    }
     if (result.ok) {
       return {
         ok: true,
@@ -597,6 +660,170 @@ export class ModelGateway {
     };
   }
 
+  private async sendStreamingRequestWithFallback(
+    url: string,
+    apiKey: string,
+    requestBody: Record<string, unknown>,
+    firstResponseTimeoutMs?: number
+  ): Promise<ModelHttpResult> {
+    const withUsage = await this.sendStreamingRequest(url, apiKey, requestBody, firstResponseTimeoutMs);
+    if (withUsage.ok || withUsage.receivedContent || !isStreamCompatibilityError(withUsage)) {
+      return withUsage;
+    }
+
+    const withoutStreamOptions = { ...requestBody };
+    delete withoutStreamOptions.stream_options;
+    const basicStream = await this.sendStreamingRequest(url, apiKey, withoutStreamOptions, firstResponseTimeoutMs);
+    if (basicStream.ok || basicStream.receivedContent || !isStreamCompatibilityError(basicStream)) {
+      return basicStream;
+    }
+
+    const nonStreamingBody = { ...withoutStreamOptions };
+    delete nonStreamingBody.stream;
+    return this.sendRequest(url, apiKey, nonStreamingBody, firstResponseTimeoutMs);
+  }
+
+  private async sendStreamingRequest(
+    url: string,
+    apiKey: string,
+    requestBody: Record<string, unknown>,
+    firstResponseTimeoutMs?: number
+  ): Promise<ModelHttpResult> {
+    const controller = new AbortController();
+    const firstResponseTimer = setTimeout(
+      () => controller.abort(new Error("stream_first_response_timeout")),
+      firstResponseTimeoutMs ?? this.timeoutMs
+    );
+    const totalTimer = setTimeout(
+      () => controller.abort(new Error("stream_total_timeout")),
+      STREAM_TOTAL_TIMEOUT_MS
+    );
+    let receivedContent = false;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: buildHeaders(apiKey),
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+      clearTimeout(firstResponseTimer);
+
+      if (!response.ok) {
+        const errInfo = await extractErrorBody(response);
+        const mapped = mapHttpErrorToCode(response.status, errInfo);
+        return { ...mapped, ok: false, receivedContent: false };
+      }
+      if (!response.body) {
+        return {
+          ok: false,
+          errorCode: "response_invalid",
+          errorMessage: "流式响应缺少 body",
+          receivedContent: false,
+        };
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let content = "";
+      let finishReason: string | undefined;
+      let usage: { promptTokens: number; completionTokens: number } | undefined;
+      let streamEnded = false;
+      let sawDoneMarker = false;
+
+      while (!streamEnded) {
+        const read = await readStreamChunk(reader, controller, STREAM_IDLE_TIMEOUT_MS);
+        if (read.done) {
+          buffer += decoder.decode();
+          streamEnded = true;
+        } else {
+          buffer += decoder.decode(read.value, { stream: true });
+        }
+
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+        if (streamEnded && buffer.trim()) {
+          events.push(buffer);
+          buffer = "";
+        }
+        for (const event of events) {
+          for (const line of event.split(/\r?\n/)) {
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim();
+            if (!payload) continue;
+            if (payload === "[DONE]") {
+              sawDoneMarker = true;
+              streamEnded = true;
+              break;
+            }
+            let chunk: ChatCompletionStreamChunk;
+            try {
+              chunk = JSON.parse(payload) as ChatCompletionStreamChunk;
+            } catch (error) {
+              return {
+                ok: false,
+                errorCode: "response_invalid",
+                errorMessage: `SSE 数据不是有效 JSON: ${sanitizeErrorMessage(errorMessage(error))}`,
+                receivedContent,
+                content,
+              };
+            }
+            if (chunk.error) {
+              return {
+                ok: false,
+                errorCode: "response_invalid",
+                errorMessage: sanitizeErrorMessage(chunk.error.message),
+                receivedContent,
+                content,
+              };
+            }
+            const choice = chunk.choices?.[0];
+            const delta = choice?.delta?.content;
+            if (delta) {
+              content += delta;
+              receivedContent = true;
+            }
+            if (choice?.finish_reason) finishReason = choice.finish_reason;
+            if (chunk.usage) {
+              usage = {
+                promptTokens: chunk.usage.prompt_tokens ?? usage?.promptTokens ?? 0,
+                completionTokens: chunk.usage.completion_tokens ?? usage?.completionTokens ?? 0,
+              };
+            }
+          }
+        }
+      }
+
+      if (!sawDoneMarker && !finishReason) {
+        return {
+          ok: false,
+          errorCode: "network_error",
+          errorMessage: `流式响应提前结束（已接收 ${content.length} 字符）`,
+          receivedContent,
+          content,
+          usage,
+        };
+      }
+      return { ok: true, content, finishReason, usage, receivedContent };
+    } catch (error) {
+      const reason = controller.signal.reason;
+      const reasonMessage = reason instanceof Error ? reason.message : "";
+      if (reasonMessage === "stream_first_response_timeout") {
+        return { ok: false, errorCode: "timeout", errorMessage: "等待流式首响应超时", receivedContent };
+      }
+      if (reasonMessage === "stream_total_timeout") {
+        return { ok: false, errorCode: "timeout", errorMessage: "流式生成超过 10 分钟总时限", receivedContent };
+      }
+      if (reasonMessage === "stream_idle_timeout") {
+        return { ok: false, errorCode: "timeout", errorMessage: "流式响应连续 60 秒无新数据", receivedContent };
+      }
+      return { ...mapFetchError(error), receivedContent };
+    } finally {
+      clearTimeout(firstResponseTimer);
+      clearTimeout(totalTimer);
+    }
+  }
+
   /**
    * 发送 chat completion 请求（处理 HTTP/网络/超时错误）
    */
@@ -608,6 +835,7 @@ export class ModelGateway {
   ): Promise<{
     ok: boolean;
     content?: string;
+    finishReason?: string;
     usage?: { promptTokens: number; completionTokens: number };
     errorCode?: ModelJobErrorCode;
     errorMessage?: string;
@@ -629,30 +857,39 @@ export class ModelGateway {
         };
       }
 
-      const data = (await response.json()) as ChatCompletionResponse;
+      let data: ChatCompletionResponse;
+      try {
+        data = (await response.json()) as ChatCompletionResponse;
+      } catch (error) {
+        return {
+          ok: false,
+          errorCode: "response_invalid",
+          errorMessage: `HTTP 200 响应不是有效 JSON: ${sanitizeErrorMessage(errorMessage(error))}`,
+        };
+      }
       if (data.error) {
         return {
           ok: false,
-          errorCode: "unknown_error",
+          errorCode: "response_invalid",
           errorMessage: sanitizeErrorMessage(data.error.message),
         };
       }
       if (!data.choices || data.choices.length === 0) {
         return {
           ok: false,
-          errorCode: "unknown_error",
+          errorCode: "response_invalid",
           errorMessage: "响应缺少 choices 字段",
         };
       }
-      const content = data.choices[0]?.message?.content ?? "";
+      const choice = data.choices[0];
+      const content = choice?.message?.content ?? "";
       const usage = {
         promptTokens: data.usage?.prompt_tokens ?? 0,
         completionTokens: data.usage?.completion_tokens ?? 0,
       };
-      return { ok: true, content, usage };
+      return { ok: true, content, finishReason: choice?.finish_reason, usage };
     } catch (err) {
-      const mapped = mapFetchError(err);
-      return mapped;
+      return mapFetchError(err);
     }
   }
 
@@ -1032,6 +1269,40 @@ async function extractErrorBody(response: Response): Promise<{
  * 清理错误信息：去除潜在的 API Key 泄露
  * 任何形如 sk-xxx 的字符串都会被脱敏
  */
+function isStreamCompatibilityError(result: ModelHttpResult): boolean {
+  return result.errorCode === "unknown_error" && (result.errorMessage?.includes("HTTP 400") ?? false);
+}
+
+async function readStreamChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  controller: AbortController,
+  idleTimeoutMs: number
+): Promise<{ done: boolean; value?: Uint8Array }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error("stream_idle_timeout");
+          controller.abort(error);
+          reject(error);
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function numericOption(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function sanitizeErrorMessage(message: string | undefined | null): string {
   if (!message) return "";
   // 脱敏可能的 OpenAI API Key（sk- 开头 + 20+ 字符）

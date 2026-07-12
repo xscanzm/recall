@@ -31,6 +31,10 @@ function formatJsonString(json: string | null): string {
   }
 }
 
+function summarizeError(message: string): string {
+  return message.length > 80 ? `${message.slice(0, 80)}…` : message;
+}
+
 function formatDateTimeLocalValue(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
@@ -262,7 +266,10 @@ export function DebugPage() {
                 </td>
                 <td>{job.attempts}</td>
                 <td>{job.debugEventCount > 0 ? <span className="debug-badge">{job.debugEventCount}</span> : "—"}</td>
-                <td className="debug-table__error">{job.errorCode ?? ""}</td>
+                <td className="debug-table__error" title={job.errorMessage ?? undefined}>
+                  {job.errorCode ?? ""}
+                  {job.errorMessage && <span> · {summarizeError(job.errorMessage)}</span>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -285,6 +292,9 @@ export function DebugPage() {
                 <span>时间: {new Date(debugJobDetails.createdAt).toLocaleString("zh-CN")}</span>
                 <span>尝试: {debugJobDetails.attempts}</span>
                 {debugJobDetails.errorCode && <span className="debug-drawer__error">错误: {debugJobDetails.errorCode}</span>}
+                {debugJobDetails.errorMessage && (
+                  <span className="debug-drawer__error">详情: {debugJobDetails.errorMessage}</span>
+                )}
               </div>
               <div className="debug-drawer__tabs">
                 <button className={activeTab === "output" ? "is-active" : ""} onClick={() => setActiveTab("output")}>原始输出</button>
