@@ -35,6 +35,14 @@ export default function App() {
   const [bootState, setBootState] = useState<"loading" | "ready" | "onboarding">("loading");
 
   useEffect(() => {
+    const ipc = getIpc();
+    const unsub = ipc.app.onNavigate((page) => {
+      if (page === "today") useAppStore.getState().setPage("today");
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
     let unsub: (() => void) | undefined;
     let cancelled = false;
 

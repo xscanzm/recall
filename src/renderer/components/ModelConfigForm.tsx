@@ -256,8 +256,8 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
    */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fields.providerName || !fields.endpoint || !fields.model) {
-      setFormError("请填写 Provider 名称、Endpoint URL 和 Model 名称");
+    if (!fields.endpoint || !fields.model) {
+      setFormError("请填写 Endpoint URL 和 Model 名称");
       return;
     }
     // 新建模式必须输入 apiKey
@@ -272,7 +272,8 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
       const result = await onSave({
         id: editingId ?? undefined,
         kind,
-        providerName: fields.providerName,
+        // Provider 名称留空时自动用 Model 名称填充（满足 DB NOT NULL + schema min(1)）
+        providerName: fields.providerName.trim() || fields.model.trim(),
         endpoint: fields.endpoint,
         model: fields.model,
         apiKey: fields.apiKey || undefined, // 留空则不传，保留原 key
@@ -397,25 +398,17 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
           </h4>
 
           <div className="model-form__field">
-            <label>Provider 名称</label>
-            <input
-              type="text"
-              value={fields.providerName}
-              onChange={(e) => setFields({ ...fields, providerName: e.target.value })}
-              placeholder={providerPlaceholder}
-              required
-            />
-          </div>
-
-          <div className="model-form__field">
             <label>Endpoint URL</label>
             <input
               type="url"
               value={fields.endpoint}
               onChange={(e) => setFields({ ...fields, endpoint: e.target.value })}
-              placeholder="https://api.openai.com/v1"
+              placeholder="https://api.openai.com"
               required
             />
+            <p className="model-form__hint">
+              用于通过自定义 API 地址进行 API 调用，末尾不要带 /v1 和 /
+            </p>
           </div>
 
           <div className="model-form__field">
@@ -449,47 +442,62 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
             </p>
           </div>
 
-          <div className="model-form__field">
-            <label>温度（可选）</label>
-            <input
-              type="number"
-              step="0.1"
-              min="0"
-              max="2"
-              value={fields.temperature ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "") {
-                  setFields({ ...fields, temperature: undefined });
-                  return;
-                }
-                const n = Number(v);
-                setFields({ ...fields, temperature: Number.isNaN(n) ? undefined : n });
-              }}
-              placeholder="留空使用模型默认值"
-            />
-            <p className="model-form__hint">0 更确定，1 更多样，2 更随机</p>
-          </div>
+          <details className="model-form__advanced">
+            <summary>高级设置</summary>
 
-          <div className="model-form__field">
-            <label>最大输出长度（可选）</label>
-            <input
-              type="number"
-              min="1"
-              value={fields.maxTokens ?? ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                if (v === "") {
-                  setFields({ ...fields, maxTokens: undefined });
-                  return;
-                }
-                const n = Number(v);
-                setFields({ ...fields, maxTokens: Number.isNaN(n) ? undefined : n });
-              }}
-              placeholder="留空使用模型默认值"
-            />
-            <p className="model-form__hint">单位：token</p>
-          </div>
+            <div className="model-form__field">
+              <label>Provider 名称（可选）</label>
+              <input
+                type="text"
+                value={fields.providerName}
+                onChange={(e) => setFields({ ...fields, providerName: e.target.value })}
+                placeholder={providerPlaceholder}
+              />
+              <p className="model-form__hint">留空则自动使用 Model 名称作为标识</p>
+            </div>
+
+            <div className="model-form__field">
+              <label>温度（可选）</label>
+              <input
+                type="number"
+                step="0.1"
+                min="0"
+                max="2"
+                value={fields.temperature ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setFields({ ...fields, temperature: undefined });
+                    return;
+                  }
+                  const n = Number(v);
+                  setFields({ ...fields, temperature: Number.isNaN(n) ? undefined : n });
+                }}
+                placeholder="留空使用模型默认值"
+              />
+              <p className="model-form__hint">0 更确定，1 更多样，2 更随机</p>
+            </div>
+
+            <div className="model-form__field">
+              <label>最大输出长度（可选）</label>
+              <input
+                type="number"
+                min="1"
+                value={fields.maxTokens ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "") {
+                    setFields({ ...fields, maxTokens: undefined });
+                    return;
+                  }
+                  const n = Number(v);
+                  setFields({ ...fields, maxTokens: Number.isNaN(n) ? undefined : n });
+                }}
+                placeholder="留空使用模型默认值"
+              />
+              <p className="model-form__hint">单位：token</p>
+            </div>
+          </details>
 
           <div className="model-form__actions">
             <button
@@ -673,6 +681,32 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
           font-size: 11px;
           color: var(--recall-text-muted);
           line-height: 1.5;
+        }
+        .model-form__advanced {
+          margin-top: 4px;
+          border-top: 1px dashed var(--recall-border);
+          padding-top: 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .model-form__advanced > summary {
+          cursor: pointer;
+          font-size: 13px;
+          color: var(--recall-text-muted);
+          user-select: none;
+          padding: 4px 0;
+          list-style: none;
+        }
+        .model-form__advanced > summary::-webkit-details-marker {
+          display: none;
+        }
+        .model-form__advanced > summary::before {
+          content: "▸ ";
+          font-size: 10px;
+        }
+        .model-form__advanced[open] > summary::before {
+          content: "▾ ";
         }
         .model-form__actions {
           display: flex;

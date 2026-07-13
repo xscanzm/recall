@@ -74,6 +74,7 @@ export class SettingsService {
       observation: patch.observation ?? this.cache.observation,
       screenshot: patch.screenshot ?? this.cache.screenshot,
       notification: patch.notification ?? this.cache.notification,
+      endOfDayReview: patch.endOfDayReview ?? this.cache.endOfDayReview,
       dailyReport: patch.dailyReport ?? this.cache.dailyReport,
       personalReview: patch.personalReview ?? this.cache.personalReview,
       schedule: patch.schedule ?? this.cache.schedule,
@@ -263,6 +264,7 @@ export class SettingsService {
         observation: { ...DEFAULT_SETTINGS.observation, ...parsed.observation },
         screenshot: { ...DEFAULT_SETTINGS.screenshot, ...parsed.screenshot },
         notification: { ...DEFAULT_SETTINGS.notification, ...parsed.notification },
+        endOfDayReview: { ...DEFAULT_SETTINGS.endOfDayReview, ...parsed.endOfDayReview },
         dailyReport: { ...DEFAULT_SETTINGS.dailyReport, ...parsed.dailyReport },
         personalReview: {
           ...DEFAULT_SETTINGS.personalReview,

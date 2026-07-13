@@ -70,6 +70,11 @@ export interface AppSettings {
     dailyReportTime: string; // HH:mm
     weeklyReportTime: string; // HH:mm，每周日触发
   };
+  endOfDayReview: {
+    enabled: boolean;
+    firstTime: string; // HH:mm
+    secondTime: string; // HH:mm
+  };
   dailyReport: {
     autoGenerate: boolean;
     time: string; // HH:mm
@@ -135,6 +140,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     desktopNotifications: false,
     dailyReportTime: "19:00",
     weeklyReportTime: "20:00",
+  },
+  endOfDayReview: {
+    enabled: true,
+    firstTime: "17:30",
+    secondTime: "18:00",
   },
   dailyReport: {
     autoGenerate: false,

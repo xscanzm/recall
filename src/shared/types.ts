@@ -159,6 +159,19 @@ export interface UnfinishedThread {
   updatedAt?: string;
 }
 
+export interface EndOfDayReviewItem {
+  id: string;
+  text: string;
+  sourceType: "timeline_block" | "unfinished_thread";
+}
+
+export interface EndOfDayReview {
+  dateKey: string;
+  completed: EndOfDayReviewItem[];
+  attention: EndOfDayReviewItem[];
+  empty: boolean;
+}
+
 /**
  * PersonalReview：自用复盘持久化实体（doc 20 第 7 节 / spec.md 行 909-927）
  *

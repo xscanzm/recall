@@ -8,6 +8,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { EndOfDayReviewPopup } from "./components/EndOfDayReviewPopup";
 import "./styles/global.css";
 
 const container = document.getElementById("root");
@@ -15,8 +16,10 @@ if (!container) {
   throw new Error("找不到 #root 容器，index.html 可能被破坏");
 }
 
+const isPopup = new URLSearchParams(window.location.search).get("window") === "end-of-day-review";
+
 createRoot(container).render(
   <StrictMode>
-    <App />
+    {isPopup ? <EndOfDayReviewPopup /> : <App />}
   </StrictMode>
 );

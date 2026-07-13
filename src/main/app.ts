@@ -53,6 +53,7 @@ import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
 import { TimelineBuildCheckpointRepository } from "./db/repositories/TimelineBuildCheckpointRepository";
 import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
 import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
+import { EndOfDayReviewService } from "./services/EndOfDayReviewService";
 import { SceneScheduler } from "./services/SceneScheduler";
 import { CaptureBatcher } from "./services/CaptureBatcher";
 import { BatchProcessor } from "./services/BatchProcessor";
@@ -137,6 +138,7 @@ let modelJobRepo: ModelJobRepository | null = null;
 let memoryPipeline: MemoryPipeline | null = null;
 // M6：报告调度器
 let reportScheduler: ReportScheduler | null = null;
+let endOfDayReviewService: EndOfDayReviewService | null = null;
 // 长会话场景调度器（C-3 修复：触发 long_session capture bundle）
 let sceneScheduler: SceneScheduler | null = null;
 // 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
@@ -713,6 +715,23 @@ app.whenReady().then(async () => {
   });
 
   mainWindow = createMainWindow();
+
+  endOfDayReviewService = new EndOfDayReviewService({
+    settingsService,
+    timelineBlockRepo,
+    unfinishedThreadRepo,
+    getMainWindow: () => mainWindow,
+    openToday: () => {
+      if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow();
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send("app:navigate", "today");
+    },
+    isDev,
+    devServerUrl: process.env.VITE_DEV_SERVER_URL,
+  });
+  endOfDayReviewService.start();
+
   // 初始化托盘服务（M9：抽象到 TrayService，支持双击显示/动态菜单）
   initTray();
 
@@ -766,6 +785,7 @@ app.whenReady().then(async () => {
     memorySearchRepo,
     correctionLifecycleRepo,
     projectionInvalidationProcessor,
+    endOfDayReviewService,
   });
 
   // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
@@ -785,10 +805,12 @@ app.whenReady().then(async () => {
   // 监听系统锁屏/解锁事件，更新 AppStatus（不采集锁屏期间内容）
   powerMonitor.on("lock-screen", () => {
     captureService?.setLocked(true);
+    endOfDayReviewService?.setLocked(true);
     setStatus({ pipelineState: "idle" });
   });
   powerMonitor.on("unlock-screen", () => {
     captureService?.setLocked(false);
+    endOfDayReviewService?.setLocked(false);
     // 解锁后不自动启动观察，等待用户操作
   });
 
@@ -820,6 +842,7 @@ app.on("before-quit", (event) => {
     try {
       activityService?.stop();
       captureService?.stop();
+      endOfDayReviewService?.stop();
       sceneScheduler?.stop();
       await captureService?.drain();
       if (captureBatcher) {

@@ -39,12 +39,12 @@ function DownloadLink({ secondary = false, children = "下载 Windows 公开测�
   );
 }
 
-function ProductFrame({ page, title }: { page: "today" | "tasks" | "memory" | "reports"; title: string }) {
+function ProductFrame({ page, title }: { page: "today" | "tasks" | "memory" | "reports" | "projects" | "people"; title: string }) {
   return (
     <div className={`real-product real-product--${page}`}>
       <div className="real-product__bar">
-        <span>真实产品界面</span>
-        <small>虚构演示数据</small>
+        <Mark compact />
+        <span>回声 <b>Recall</b></span>
       </div>
       <iframe src={`/product-demo.html?page=${page}`} title={title} loading="lazy" />
     </div>
@@ -53,11 +53,11 @@ function ProductFrame({ page, title }: { page: "today" | "tasks" | "memory" | "r
 
 function AppPreview() {
   return (
-    <div className="app-stage" aria-label="Recall 真实产品界面，内容为隔离的演示数据">
+    <div className="app-stage" aria-label="回声 Recall 产品界面">
       <div className="app-window">
         <div className="preview-label">
-          <span>真实产品界面</span>
-          <small>内容为虚构演示数据，不读取用户记录</small>
+          <Mark compact />
+          <span>回声 <b>Recall</b></span>
         </div>
         <iframe
           className="product-demo-frame"
@@ -121,6 +121,34 @@ function App() {
         <section className="review-section">
           <ProductFrame page="reports" title="Recall 报告页面演示" />
           <div className="review-copy"><p className="kicker">留给今天，也留给以后的你</p><h2>原来这一天，<br />我真的做了很多。</h2><p>Recall 会把一天整理成个人回顾，也能生成可编辑的工作报告。那些微小却真实的推进，不再被疲惫轻易抹去。</p></div>
+        </section>
+
+        <section className="relations-section">
+          <div className="relations-heading">
+            <div>
+              <p className="kicker">一天之外，还有持续推进的事和一起做事的人</p>
+              <h2>工作会散在很多天里。<br />Recall 帮你重新看见完整的关系。</h2>
+            </div>
+            <p>它会把同一主题的进展归到项目，也把协作中提到的决定、承诺和上下文连接到相关人物。你看到的不是孤立记录，而是事情为什么走到今天。</p>
+          </div>
+          <div className="relations-showcases">
+            <article className="relations-showcase">
+              <div className="relations-copy">
+                <span>项目</span>
+                <h3>知道每件事推进到了哪里</h3>
+                <p>项目页汇集最近进展、待收尾、关键决策、相关资料、人物和报告。跨过几天再回来，也能迅速找到主线和下一步。</p>
+              </div>
+              <ProductFrame page="projects" title="Recall 项目页面演示" />
+            </article>
+            <article className="relations-showcase relations-showcase--reverse">
+              <div className="relations-copy">
+                <span>人物</span>
+                <h3>记住协作里真正重要的事</h3>
+                <p>人物页整理相关项目、最近协作、答应过的事和对方提到的需求。它是你的关系记忆，不是对他人的追踪。</p>
+              </div>
+              <ProductFrame page="people" title="Recall 人物页面演示" />
+            </article>
+          </div>
         </section>
 
         <section className="privacy-section" id="privacy">

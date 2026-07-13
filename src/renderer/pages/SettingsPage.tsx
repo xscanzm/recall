@@ -118,6 +118,9 @@ export function SettingsPage() {
   const [desktopNotifications, setDesktopNotifications] = useState(false);
   const [dailyReportTime, setDailyReportTime] = useState("18:30");
   const [weeklyReportTime, setWeeklyReportTime] = useState("20:00");
+  const [endOfDayEnabled, setEndOfDayEnabled] = useState(true);
+  const [endOfDayFirstTime, setEndOfDayFirstTime] = useState("17:30");
+  const [endOfDaySecondTime, setEndOfDaySecondTime] = useState("18:00");
   const [notificationSaving, setNotificationSaving] = useState(false);
 
   // 观察状态切换 loading
@@ -161,6 +164,9 @@ export function SettingsPage() {
       setDesktopNotifications(settings.notification.desktopNotifications);
       setDailyReportTime(settings.notification.dailyReportTime);
       setWeeklyReportTime(settings.notification.weeklyReportTime);
+      setEndOfDayEnabled(settings.endOfDayReview?.enabled ?? true);
+      setEndOfDayFirstTime(settings.endOfDayReview?.firstTime ?? "17:30");
+      setEndOfDaySecondTime(settings.endOfDayReview?.secondTime ?? "18:00");
       setDebugEnabled(settings.debug?.enabled ?? false);
       setDebugVerboseModelIO(settings.debug?.verboseModelIO ?? false);
     }
@@ -337,12 +343,17 @@ export function SettingsPage() {
     setActionMessage(null);
     try {
       const result = await updateSettings({
-        notification: {
-          inAppReminders,
-          desktopNotifications,
-          dailyReportTime,
-          weeklyReportTime,
-        },
+          notification: {
+            inAppReminders,
+            desktopNotifications,
+            dailyReportTime,
+            weeklyReportTime,
+          },
+          endOfDayReview: {
+            enabled: endOfDayEnabled,
+            firstTime: endOfDayFirstTime,
+            secondTime: endOfDaySecondTime,
+          },
       });
       if (!result.ok) {
         setActionMessage({ kind: "err", text: result.error ?? "保存失败" });
@@ -812,6 +823,27 @@ export function SettingsPage() {
                   <p className="settings-section__hint">
                     默认关闭。开启后只对候选高优先级提醒生效，低优先级提醒只在应用内显示。
                   </p>
+                </div>
+              </label>
+
+              <div className="settings-form__row">
+                <div className="settings-form__field">
+                  <label>收工回顾第一次通知</label>
+                  <input type="time" value={endOfDayFirstTime} onChange={(e) => setEndOfDayFirstTime(e.target.value)} disabled={!endOfDayEnabled} />
+                  <p className="settings-form__hint">默认 17:30</p>
+                </div>
+                <div className="settings-form__field">
+                  <label>收工回顾第二次通知</label>
+                  <input type="time" value={endOfDaySecondTime} onChange={(e) => setEndOfDaySecondTime(e.target.value)} disabled={!endOfDayEnabled} />
+                  <p className="settings-form__hint">默认 18:00，必须晚于第一次</p>
+                </div>
+              </div>
+
+              <label className="settings-section__toggle">
+                <input type="checkbox" checked={endOfDayEnabled} onChange={(e) => setEndOfDayEnabled(e.target.checked)} />
+                <div className="settings-section__toggle-text">
+                  <span className="settings-section__toggle-label">收工回顾通知</span>
+                  <p className="settings-section__hint">每天在右下角显示今天完成和需要留意的事项。</p>
                 </div>
               </label>
 

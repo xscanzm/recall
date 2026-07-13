@@ -347,6 +347,11 @@ export interface AppSettingsState {
     dailyReportTime: string;
     weeklyReportTime: string;
   };
+  endOfDayReview: {
+    enabled: boolean;
+    firstTime: string;
+    secondTime: string;
+  };
   dailyReport: {
     autoGenerate: boolean;
     time: string;
@@ -1543,6 +1548,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           observation: patch.observation ?? previous.observation,
           screenshot: patch.screenshot ?? previous.screenshot,
           notification: patch.notification ?? previous.notification,
+          endOfDayReview: patch.endOfDayReview ?? previous.endOfDayReview,
           dailyReport: patch.dailyReport ?? previous.dailyReport,
           onboardingCompleted: patch.onboardingCompleted ?? previous.onboardingCompleted,
           debug: patch.debug ?? previous.debug,

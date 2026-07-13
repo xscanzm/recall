@@ -112,6 +112,8 @@ export const PrivacyRuleIdSchema = z.object({
 });
 
 /** 设置更新 IPC 参数 schema。每个分区按 SettingsService 的浅合并语义整体替换。 */
+const TimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "时间必须为 HH:mm");
+
 export const SettingsUpdateSchema = z.object({
   observation: z.object({
     enabled: z.boolean(),
@@ -128,6 +130,14 @@ export const SettingsUpdateSchema = z.object({
     desktopNotifications: z.boolean(),
     dailyReportTime: z.string(),
     weeklyReportTime: z.string(),
+  }).optional(),
+  endOfDayReview: z.object({
+    enabled: z.boolean(),
+    firstTime: TimeOfDaySchema,
+    secondTime: TimeOfDaySchema,
+  }).refine((value) => value.secondTime > value.firstTime, {
+    message: "第二次通知时间必须晚于第一次",
+    path: ["secondTime"],
   }).optional(),
   dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
   personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),

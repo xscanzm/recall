@@ -36,6 +36,11 @@ const recallApi = {
         ipcRenderer.removeListener("app:statusChanged", handler);
       };
     },
+    onNavigate: (callback: (page: string) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, page: string): void => callback(page);
+      ipcRenderer.on("app:navigate", handler);
+      return () => ipcRenderer.removeListener("app:navigate", handler);
+    },
   },
 
   // -------------------- settings --------------------
@@ -43,6 +48,14 @@ const recallApi = {
     get: <T>(): Promise<T> => ipcRenderer.invoke("settings:get"),
     update: <T>(input: unknown): Promise<{ ok: true; settings: T }> =>
       ipcRenderer.invoke("settings:update", input),
+  },
+
+  endOfDayReview: {
+    get: <T>(): Promise<T | null> => ipcRenderer.invoke("endOfDayReview:get"),
+    viewToday: (): Promise<{ ok: true }> => ipcRenderer.invoke("endOfDayReview:viewToday"),
+    snooze: (): Promise<{ ok: true }> => ipcRenderer.invoke("endOfDayReview:snooze"),
+    dismiss: (): Promise<{ ok: true }> => ipcRenderer.invoke("endOfDayReview:dismiss"),
+    expired: (): Promise<{ ok: true }> => ipcRenderer.invoke("endOfDayReview:expired"),
   },
 
   // -------------------- model --------------------

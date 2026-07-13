@@ -25,6 +25,11 @@ export type IpcChannel =
   | "app:setLaunchAtLogin"
   | "settings:get"
   | "settings:update"
+  | "endOfDayReview:get"
+  | "endOfDayReview:viewToday"
+  | "endOfDayReview:snooze"
+  | "endOfDayReview:dismiss"
+  | "endOfDayReview:expired"
   | "model:testConnection"
   // M8 新增：模型配置 CRUD
   | "model:listConfigs"
@@ -97,6 +102,11 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "app:setLaunchAtLogin",
   "settings:get",
   "settings:update",
+  "endOfDayReview:get",
+  "endOfDayReview:viewToday",
+  "endOfDayReview:snooze",
+  "endOfDayReview:dismiss",
+  "endOfDayReview:expired",
   "model:testConnection",
   "model:listConfigs",
   "model:saveConfig",

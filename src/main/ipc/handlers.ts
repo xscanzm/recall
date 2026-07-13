@@ -85,6 +85,7 @@ import type { DataLifecycleService } from "../services/DataLifecycleService";
 import type { MemorySearchRepository } from "../db/repositories/MemorySearchRepository";
 import type { CorrectionLifecycleRepository } from "../db/repositories/CorrectionLifecycleRepository";
 import type { ProjectionInvalidationProcessor } from "../services/ProjectionInvalidationProcessor";
+import type { EndOfDayReviewService } from "../services/EndOfDayReviewService";
 import { registerAppHandlers } from "./handlers/appHandlers";
 import { registerDataLifecycleHandlers } from "./handlers/dataLifecycleHandlers";
 import { registerMemorySearchHandlers } from "./handlers/memorySearchHandlers";
@@ -146,6 +147,7 @@ export interface IpcDeps {
   memorySearchRepo?: MemorySearchRepository;
   correctionLifecycleRepo?: CorrectionLifecycleRepository;
   projectionInvalidationProcessor?: ProjectionInvalidationProcessor;
+  endOfDayReviewService?: EndOfDayReviewService;
 }
 
 /**
@@ -190,6 +192,24 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     // 调试模式开关：保存后立即同步到 Logger（无需重启应用）
     logger.setDevDebug(updated.debug?.enabled ?? false);
     return { ok: true, settings: updated };
+  });
+
+  ipcMain.handle("endOfDayReview:get", () => deps.endOfDayReviewService?.getCurrentReview() ?? null);
+  ipcMain.handle("endOfDayReview:viewToday", () => {
+    deps.endOfDayReviewService?.viewToday();
+    return { ok: true };
+  });
+  ipcMain.handle("endOfDayReview:snooze", () => {
+    deps.endOfDayReviewService?.snooze(30);
+    return { ok: true };
+  });
+  ipcMain.handle("endOfDayReview:dismiss", () => {
+    deps.endOfDayReviewService?.dismiss();
+    return { ok: true };
+  });
+  ipcMain.handle("endOfDayReview:expired", () => {
+    deps.endOfDayReviewService?.markExpired();
+    return { ok: true };
   });
 
   // -------------------- model --------------------

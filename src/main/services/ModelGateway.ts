@@ -327,7 +327,7 @@ export class ModelGateway {
    */
   async testConnection(input: TestConnectionInput): Promise<TestConnectionResult> {
     const endpoint = normalizeEndpoint(input.endpoint);
-    const url = `${endpoint}/chat/completions`;
+    const url = `${endpoint}/v1/chat/completions`;
 
     const body: Record<string, unknown> = {
       model: input.model,
@@ -427,7 +427,7 @@ export class ModelGateway {
 
     // 5. 构造请求
     const endpoint = normalizeEndpoint(config.endpoint);
-    const url = `${endpoint}/chat/completions`;
+    const url = `${endpoint}/v1/chat/completions`;
     const temperature = input.temperature ?? numericOption(extraOptions.temperature) ?? DEFAULT_TEMPERATURE;
     const maxTokens = input.maxTokens ?? numericOption(extraOptions.max_tokens) ?? DEFAULT_MAX_TOKENS;
 
@@ -920,14 +920,18 @@ export class ModelGateway {
 // ============================================================================
 
 /**
- * 规范化 endpoint：去除末尾斜杠
- * 若 endpoint 以 /v1 结尾，去除 /v1 后再统一加 /chat/completions
- * （OpenAI-compatible endpoint 通常以 /v1 结尾，但也可能直接是 base url）
+ * 规范化 endpoint：
+ * 1. 去除末尾斜杠
+ * 2. 去除末尾 /v1（用户可能误填，后台统一补全）
+ * 拼接时统一加 /v1/chat/completions
  */
 function normalizeEndpoint(endpoint: string): string {
   let normalized = endpoint.trim();
-  if (normalized.endsWith("/")) {
+  while (normalized.endsWith("/")) {
     normalized = normalized.slice(0, -1);
+  }
+  if (normalized.endsWith("/v1")) {
+    normalized = normalized.slice(0, -3);
   }
   return normalized;
 }
