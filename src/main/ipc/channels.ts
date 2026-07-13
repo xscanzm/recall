@@ -41,6 +41,10 @@ export type IpcChannel =
   | "privacy:deleteRule"
   | "memory:listToday"
   | "memory:search"
+  | "memory:expandSearch"
+  | "memory:getDetail"
+  | "memory:getSourcePreview"
+  | "memory:openSourceUrl"
   | "memory:updateFact"
   | "memory:updateTask"
   | "memory:deleteObject"
@@ -117,6 +121,10 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "privacy:deleteRule",
   "memory:listToday",
   "memory:search",
+  "memory:expandSearch",
+  "memory:getDetail",
+  "memory:getSourcePreview",
+  "memory:openSourceUrl",
   "memory:updateFact",
   "memory:updateTask",
   "memory:deleteObject",

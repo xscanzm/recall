@@ -15,9 +15,14 @@ export const AppStatusSchema = z.object({
   lastError: z.string().optional(),
 });
 
+export const MemoryTypeSchema = z.enum(["fact", "scene", "task", "project", "decision", "report", "person", "record"]);
+export const MemoryRefSchema = z.object({ id: z.string(), type: MemoryTypeSchema });
+export const MemoryDetailTypeSchema = z.union([MemoryTypeSchema, z.literal("timeline")]);
+export const MemoryDetailRefSchema = z.object({ id: z.string(), type: MemoryDetailTypeSchema });
+
 export const MemorySearchItemSchema = z.object({
   id: z.string(),
-  type: z.enum(["fact", "scene", "task", "project", "decision", "report", "person"]),
+  type: MemoryTypeSchema,
   title: z.string(),
   summary: z.string().optional(),
   createdAt: z.string(),
@@ -26,6 +31,51 @@ export const MemorySearchItemSchema = z.object({
   sourceType: z.enum(["observation", "fact", "scene", "project", "report"]).optional(),
   sourceId: z.string().nullable().optional(),
   relevance: z.number().optional(),
+  matchReasons: z.array(z.string()).default([]),
+  sourceCount: z.number().int().nonnegative().default(0),
+});
+
+export const MemorySearchFiltersSchema = z.object({
+  timePreset: z.enum(["all", "today", "week", "month"]).optional(),
+  timeFrom: z.string().optional(),
+  timeTo: z.string().optional(),
+  projectId: z.string().optional(),
+  type: MemoryTypeSchema.optional(),
+  personId: z.string().optional(),
+}).default({});
+
+const MemoryVisibleContentSchema = z.object({
+  type: z.enum(["webpage", "document", "chat", "code", "spreadsheet", "design", "email", "terminal", "unknown"]),
+  summary: z.string(),
+  fullText: z.string(),
+  keyTextSnippets: z.array(z.string()),
+});
+
+const MemorySourceSchema = z.object({
+  id: z.string(),
+  capturedAt: z.string(),
+  appName: z.string(),
+  windowTitle: z.string(),
+  url: z.string().nullable(),
+  summary: z.string(),
+  visibleContent: z.array(MemoryVisibleContentSchema),
+  screenshotState: z.enum(["available", "expired", "none"]),
+  screenshotCount: z.number().int().nonnegative(),
+});
+
+export const MemoryDetailSchema = z.object({
+  id: z.string(),
+  type: MemoryDetailTypeSchema,
+  title: z.string(),
+  summary: z.string(),
+  createdAt: z.string(),
+  projectId: z.string().nullable(),
+  projectName: z.string().nullable(),
+  fields: z.array(z.object({ label: z.string(), value: z.string() })),
+  contentSections: z.array(z.object({ title: z.string(), text: z.string(), items: z.array(z.string()) })),
+  sources: z.array(MemorySourceSchema),
+  relations: z.array(MemoryRefSchema.extend({ title: z.string(), summary: z.string().optional() })),
+  correctionType: z.enum(["fact", "task", "scene", "project", "person", "decision"]).nullable(),
 });
 
 const fileCleanup = z.object({
@@ -85,8 +135,65 @@ export const ipcContracts = {
   "app:getLaunchAtLogin": { request: z.undefined(), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
   "app:setLaunchAtLogin": { request: z.object({ enabled: z.boolean() }), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
   "memory:search": {
-    request: z.object({ query: z.string().min(1).max(500), limit: z.number().int().min(1).max(200).default(50), offset: z.number().int().min(0).default(0) }),
-    response: z.object({ results: z.array(MemorySearchItemSchema), total: z.number().int().nonnegative() }),
+    request: z.object({
+      query: z.string().min(1).max(500),
+      limit: z.number().int().min(1).max(200).default(50),
+      offset: z.number().int().min(0).default(0),
+      filters: MemorySearchFiltersSchema,
+    }),
+    response: z.object({
+      results: z.array(MemorySearchItemSchema),
+      total: z.number().int().nonnegative(),
+      quality: z.enum(["strong", "weak", "none"]),
+      queryTerms: z.array(z.string()),
+    }),
+  },
+  "memory:expandSearch": {
+    request: z.object({ query: z.string().min(1).max(500), filters: MemorySearchFiltersSchema }),
+    response: z.union([
+      z.object({ ok: z.literal(true), expandedTerms: z.array(z.string()), results: z.array(MemorySearchItemSchema), total: z.number().int().nonnegative(), quality: z.enum(["strong", "weak", "none"]) }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
+    ]),
+  },
+  "memory:ask": {
+    request: z.object({
+      mode: z.enum(["summary", "answer"]),
+      question: z.string().trim().max(1000).optional(),
+      candidates: z.array(MemoryRefSchema).min(1).max(15),
+    }).superRefine((value, context) => {
+      if (value.mode === "answer" && !value.question) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["question"], message: "AI回答必须提供追问内容" });
+      }
+    }),
+    response: z.union([
+      z.object({
+        ok: z.literal(true),
+        mode: z.enum(["summary", "answer"]),
+        answer: z.string(),
+        caveat: z.string().optional(),
+        sources: z.array(MemorySearchItemSchema),
+        candidateCount: z.number().int().nonnegative(),
+      }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
+    ]),
+  },
+  "memory:getDetail": {
+    request: MemoryDetailRefSchema,
+    response: MemoryDetailSchema.nullable(),
+  },
+  "memory:getSourcePreview": {
+    request: z.object({ observationId: z.string(), index: z.number().int().nonnegative() }),
+    response: z.union([
+      z.object({ ok: z.literal(true), dataUrl: z.string() }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
+    ]),
+  },
+  "memory:openSourceUrl": {
+    request: z.object({ url: z.string().url() }),
+    response: z.union([
+      z.object({ ok: z.literal(true) }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
+    ]),
   },
   "capture:forgetRecent": { request: z.object({ duration: z.enum(["15m", "30m", "1h", "today", "all"]) }), response: lifecycleSuccess },
   "screenshot:clear": { request: z.undefined(), response: lifecycleSuccess },

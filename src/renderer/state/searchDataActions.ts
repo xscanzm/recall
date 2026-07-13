@@ -1,10 +1,17 @@
 import type { StoreApi } from "zustand";
-import type { DataExportResult, SearchResultItem } from "./store";
+import type { DataExportResult, SearchResultItem, SearchFilters } from "./store";
 import { getIpc } from "./ipc";
 
 export interface SearchDataState {
   searchQuery: string;
   searchResults: SearchResultItem[];
+  searchTotal: number;
+  searchQuality: "strong" | "weak" | "none";
+  searchQueryTerms: string[];
+  searchFilters: SearchFilters;
+  searchExpandedTerms: string[];
+  searchExpandLoading: boolean;
+  searchExpandError: string | null;
   searchLoading: boolean;
   searchError: string | null;
   searchSearched: boolean;
@@ -13,7 +20,10 @@ export interface SearchDataState {
   todayPageData: unknown;
   reminders: unknown[];
   remindersLoadedAt: number | null;
-  askResult: unknown;
+  followupQuestion: string;
+  aiMode: "summary" | "answer" | null;
+  aiResult: unknown;
+  aiError: string | null;
   projectDetail: unknown;
   mergeSuggestions: unknown[];
   allAliases: unknown;
@@ -34,20 +44,32 @@ export interface SearchDataState {
 type Set = StoreApi<SearchDataState>["setState"];
 type Get = StoreApi<SearchDataState>["getState"];
 
-export async function searchMemoryAction(set: Set, query: string, limit = 50, offset = 0): Promise<void> {
+export async function searchMemoryAction(set: Set, query: string, limit = 50, offset = 0, filters: SearchFilters = {}): Promise<void> {
   if (!query.trim()) return;
-  set({ searchLoading: true, searchError: null, searchQuery: query });
+  set({ searchLoading: true, searchError: null, searchExpandError: null, searchQuery: query, followupQuestion: "", aiMode: null, aiResult: null, aiError: null });
   try {
-    const result = await getIpc().memory.search({ query: query.trim(), limit, offset });
-    set({ searchResults: result.results, searchLoading: false, searchSearched: true });
+    const result = await getIpc().memory.search({ query: query.trim(), limit, offset, filters });
+    set({ searchResults: result.results, searchTotal: result.total, searchQuality: result.quality, searchQueryTerms: result.queryTerms, searchFilters: filters, searchExpandedTerms: [], searchLoading: false, searchSearched: true });
   } catch (error) {
     set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error), searchSearched: true });
   }
 }
 
+export async function expandSearchAction(set: Set, query: string, filters: SearchFilters = {}): Promise<void> {
+  if (!query.trim()) return;
+  set({ searchExpandLoading: true, searchExpandError: null, aiMode: null, aiResult: null, aiError: null });
+  try {
+    const result = await getIpc().memory.expandSearch({ query: query.trim(), filters });
+    if (!result.ok) { set({ searchExpandLoading: false, searchExpandError: result.message }); return; }
+    set({ searchResults: result.results, searchTotal: result.total, searchQuality: result.quality, searchExpandedTerms: result.expandedTerms, searchExpandLoading: false, searchSearched: true });
+  } catch (error) {
+    set({ searchExpandLoading: false, searchExpandError: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 export async function forgetRecentAction(set: Set, get: Get, emptyToday: unknown, duration: "15m" | "30m" | "1h" | "today") {
   const result = await getIpc().capture.forgetRecent({ duration });
-  set({ todayData: emptyToday, todayLoadedAt: null, todayPageData: null, reminders: [], remindersLoadedAt: null, searchResults: [], searchSearched: false, projectDetail: null, reportsList: [], personalReview: null, workReport: null, unfinishedThreads: [], debugJobs: null, debugJobDetails: null, debugRelatedRecords: null });
+  set({ todayData: emptyToday, todayLoadedAt: null, todayPageData: null, reminders: [], remindersLoadedAt: null, searchResults: [], searchTotal: 0, searchQuality: "none", searchQueryTerms: [], searchExpandedTerms: [], searchSearched: false, followupQuestion: "", aiMode: null, aiResult: null, aiError: null, projectDetail: null, reportsList: [], personalReview: null, workReport: null, unfinishedThreads: [], debugJobs: null, debugJobDetails: null, debugRelatedRecords: null });
   await Promise.all([get().loadToday(), get().loadTodayPageData(get().todayPageDateKey)]);
   return { deletedObservations: result.deletedObservations ?? 0, deletedScreenshots: result.deletedScreenshots };
 }
@@ -63,7 +85,7 @@ export async function clearAllDataAction(set: Set) {
   try {
     const result = await getIpc().data.clearAll();
     if (!result.ok) return { ok: false, error: result.message };
-    set({ todayLoadedAt: null, todayPageData: null, reminders: [], remindersLoadedAt: null, searchResults: [], searchSearched: false, askResult: null, projectDetail: null, mergeSuggestions: [], allAliases: null, reportsList: [], personalReview: null, workReport: null, unfinishedThreads: [], selectedBlockIds: [], ignoredBlockIds: [], debugJobs: null, debugJobDetails: null, debugRelatedRecords: null });
+    set({ todayLoadedAt: null, todayPageData: null, reminders: [], remindersLoadedAt: null, searchResults: [], searchSearched: false, followupQuestion: "", aiMode: null, aiResult: null, aiError: null, projectDetail: null, mergeSuggestions: [], allAliases: null, reportsList: [], personalReview: null, workReport: null, unfinishedThreads: [], selectedBlockIds: [], ignoredBlockIds: [], debugJobs: null, debugJobDetails: null, debugRelatedRecords: null });
     return { ok: true, deletedScreenshots: result.deletedScreenshots };
   } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
 }

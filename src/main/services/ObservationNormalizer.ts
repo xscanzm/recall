@@ -301,7 +301,7 @@ export class ObservationNormalizer {
       warnings
     );
 
-    // visibleContent: 清洗 summary 和 keyTextSnippets
+    // visibleContent: 只清洗摘要和辅助片段，fullText 作为 L0 原文原样保留
     const visibleContent = output.visibleContent.map((vc, idx) => {
       const summary = truncateText(
         vc.summary,
@@ -317,7 +317,7 @@ export class ObservationNormalizer {
           warnings
         )
       );
-      return { ...vc, summary, keyTextSnippets };
+      return { ...vc, summary, fullText: vc.fullText, keyTextSnippets };
     });
 
     // detectedEntities: 清洗 name 和 evidence

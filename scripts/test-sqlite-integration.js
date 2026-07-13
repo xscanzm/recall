@@ -135,6 +135,29 @@ async function main() {
     assert.equal(search.results.length, 1);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count >= 3, true);
 
+    insertObservation(db, "obs-search", "cap-search", now);
+    db.prepare("UPDATE observations SET user_facing_summary = ?, scene_summary = ?, visible_content_json = ? WHERE id = ?")
+      .run("查看离线架构文档", "阅读工具架构说明", JSON.stringify([{ type: "document", summary: "离线方案", fullText: "最终采用本地缓存\nMatilda 负责缓存失效策略", keyTextSnippets: ["最终采用本地缓存"] }]), "obs-search");
+    db.prepare("INSERT INTO facts (id,type,content,importance,confidence,inferred,source_observation_ids_json,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("f-search", "note", "整理架构研究", 1, 1, 0, '["obs-search"]', "[]", now, now);
+    const sourceSearch = new MemorySearchRepository(db).search("本地缓存", 10, 0);
+    assert.equal(sourceSearch.results.some((item) => item.id === "f-search" && item.type === "fact"), true, "observation text recalls its aggregated fact");
+    const sourceDetail = new MemorySearchRepository(db).getDetail({ id: "f-search", type: "fact" });
+    assert.equal(sourceDetail.sources[0].visibleContent[0].keyTextSnippets[0], "最终采用本地缓存");
+    assert.equal(sourceDetail.sources[0].visibleContent[0].fullText.includes("Matilda"), true);
+    assert.equal(new MemorySearchRepository(db).search("Matilda", 10, 0).results.some((item) => item.id === "f-search"), true, "full observation text participates in recall");
+    timelineRepo.insertMany("2026-07-11", [{
+      ...timelineBlock("detail-block", ["obs-search"]),
+      title: "整理离线架构文档",
+      summary: "确认最终采用本地缓存",
+      highlights: ["保留识别文本"],
+      generatedTasks: ["补充缓存失效策略"],
+    }]);
+    const timelineDetail = new MemorySearchRepository(db).getDetail({ id: "detail-block", type: "timeline" });
+    assert.equal(timelineDetail.title, "整理离线架构文档");
+    assert.equal(timelineDetail.sources[0].visibleContent[0].keyTextSnippets[0], "最终采用本地缓存");
+    assert.equal(timelineDetail.contentSections[1].items[0], "补充缓存失效策略");
+
     const corrections = new CorrectionLifecycleRepository(db);
     corrections.recordRevision({ targetType: "fact", targetId: "f1", feedbackType: "content_wrong", before: { content: "before" }, after: { content: "after" } });
     const revisions = corrections.listRevisions("fact", "f1");
@@ -204,7 +227,7 @@ async function main() {
 
     const exportCollections = ["observations", "facts", "scenes", "tasks", "decisions", "people", "projects", "reports"];
     const exportCounts = Object.fromEntries(exportCollections.map((table) => [table, db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count]));
-    assert.equal(exportCounts.facts, 2);
+    assert.equal(exportCounts.facts, 3);
     assert.equal(exportCounts.reports, 2);
 
     await service.clearAll();
@@ -212,6 +235,7 @@ async function main() {
       assert.equal(db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count, 0, `${table} cleared transactionally`);
     }
     assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM observation_search_fts").get().count, 0);
   } finally {
     db.close();
   }
@@ -222,7 +246,7 @@ async function main() {
     const files = migrations();
     migrate(failureDb, files.slice(0, -1));
     failureDb.exec("CREATE TABLE preserved_user_data (value TEXT NOT NULL); INSERT INTO preserved_user_data VALUES ('keep-me');");
-    failureDb.exec("CREATE TABLE timeline_build_checkpoints (date_key TEXT PRIMARY KEY)");
+    failureDb.exec("CREATE TABLE observation_search_fts (value TEXT)");
     assert.throws(() => migrate(failureDb), /already exists/);
     assert.equal(failureDb.prepare("SELECT value FROM preserved_user_data").get().value, "keep-me");
     assert.equal(failureDb.prepare("SELECT COUNT(*) count FROM _migrations WHERE version = ?").get(files.at(-1)).count, 0);

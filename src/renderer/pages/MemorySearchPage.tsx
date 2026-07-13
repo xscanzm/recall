@@ -1,48 +1,18 @@
-// src/renderer/pages/MemorySearchPage.tsx
-// 记忆库搜索页 + 轻量问答（Phase 6 重构，来自 spec.md "记忆库"章节）
-//
-// 搜索 UI（spec 行 2206-2228）：
-// - 顶部大搜索框 placeholder "搜索过去的工作、资料、决策或人"
-// - 过滤：时间 / 项目 / 类型 / 人物
-// - 类型：工作片段 / 任务 / 决策 / 资料 / 项目 / 报告 / 人物
-//
-// 搜索结果卡片（spec 行 2229-2239）：
-// - 类型标签 / 标题 / 摘要 / 时间 / 项目 / 查看来源
-// - 不要像数据库表格
-//
-// 自然语言问答（spec 行 2241-2247）：
-// - 只基于检索到的记忆
-// - 列出来源
-// - 不确定时说明
-//
-// 重要约束：
-// - 不使用 emoji
-// - 中文注释
-// - 不暴露 L0/L1/L2/L3 术语
-// - 不显示 source ids
+import { useState } from "react";
+import { MemoryDetailPage } from "./MemoryDetailPage";
+import { useAppStore, type SearchFilters, type SearchResultItem } from "../state/store";
 
-import { useState, useMemo } from "react";
-import { useAppStore, type SearchResultItem, type AskSourceItem } from "../state/store";
-import { CorrectionDialog } from "../components/CorrectionDialog";
-import type { FeedbackTargetType } from "../state/store";
-
-/**
- * 搜索结果类型 -> 前台标签（spec 行 2220-2227）
- * spec 明确类型：工作片段 / 任务 / 决策 / 资料 / 项目 / 报告 / 人物
- */
 const RESULT_TYPE_LABELS: Record<SearchResultItem["type"], string> = {
-  fact: "资料",
+  fact: "内容",
   scene: "工作片段",
   task: "任务",
   project: "项目",
   decision: "决策",
   report: "报告",
   person: "人物",
+  record: "记录",
 };
 
-/**
- * 搜索结果类型 -> 颜色
- */
 const RESULT_TYPE_COLORS: Record<SearchResultItem["type"], string> = {
   fact: "var(--recall-info)",
   scene: "var(--recall-text-muted)",
@@ -51,464 +21,203 @@ const RESULT_TYPE_COLORS: Record<SearchResultItem["type"], string> = {
   decision: "var(--recall-amber)",
   report: "var(--recall-text-muted)",
   person: "var(--recall-info)",
+  record: "var(--recall-green)",
 };
 
-/**
- * 问答来源类型 -> 前台标签
- */
-const ASK_SOURCE_TYPE_LABELS: Record<AskSourceItem["type"], string> = RESULT_TYPE_LABELS;
-
-/**
- * 把搜索结果类型映射为可纠错的目标类型
- * report 类型不可纠错（返回 null）
- */
-function toCorrectionTargetType(
-  type: SearchResultItem["type"]
-): FeedbackTargetType | null {
-  if (type === "fact") return "fact";
-  if (type === "scene") return "scene";
-  if (type === "task") return "task";
-  if (type === "project") return "project";
-  if (type === "person") return "person";
-  if (type === "decision") return "decision";
-  return null; // report 不支持纠错
-}
-
-/**
- * 时间过滤选项
- */
 type TimeFilter = "all" | "today" | "week" | "month";
 
 const TIME_FILTER_LABELS: Record<TimeFilter, string> = {
   all: "全部时间",
   today: "今天",
-  week: "本周",
-  month: "本月",
+  week: "最近 7 天",
+  month: "最近 30 天",
 };
 
-/**
- * 判断时间是否符合过滤条件
- */
-function matchTimeFilter(createdAt: string, filter: TimeFilter): boolean {
-  if (filter === "all") return true;
-  const d = new Date(createdAt);
+function timeRange(filter: TimeFilter): Pick<SearchFilters, "timeFrom" | "timeTo"> {
+  if (filter === "all") return {};
   const now = new Date();
-  const oneDay = 24 * 60 * 60 * 1000;
-  const diff = now.getTime() - d.getTime();
-  if (filter === "today") {
-    return (
-      d.getFullYear() === now.getFullYear() &&
-      d.getMonth() === now.getMonth() &&
-      d.getDate() === now.getDate()
-    );
-  }
-  if (filter === "week") return diff >= 0 && diff <= 7 * oneDay;
-  if (filter === "month") return diff >= 0 && diff <= 30 * oneDay;
-  return true;
+  const start = new Date(now);
+  if (filter === "today") start.setHours(0, 0, 0, 0);
+  if (filter === "week") start.setDate(start.getDate() - 7);
+  if (filter === "month") start.setDate(start.getDate() - 30);
+  return { timeFrom: start.toISOString(), timeTo: new Date(now.getTime() + 1).toISOString() };
+}
+
+function buildFilters(time: TimeFilter, project: string, type: string, person: string): SearchFilters {
+  return {
+    timePreset: time,
+    ...timeRange(time),
+    projectId: project === "all" ? undefined : project,
+    type: type === "all" ? undefined : type as SearchResultItem["type"],
+    personId: person === "all" ? undefined : person,
+  };
 }
 
 export function MemorySearchPage() {
-  const isReady = useAppStore((s) => s.isReady);
-  const todayData = useAppStore((s) => s.todayData);
-  const setPage = useAppStore((s) => s.setPage);
-  const setPendingJump = useAppStore((s) => s.setPendingJump);
+  const isReady = useAppStore((state) => state.isReady);
+  const todayData = useAppStore((state) => state.todayData);
+  const searchQuery = useAppStore((state) => state.searchQuery);
+  const searchFilters = useAppStore((state) => state.searchFilters);
+  const searchResults = useAppStore((state) => state.searchResults);
+  const searchTotal = useAppStore((state) => state.searchTotal);
+  const searchQuality = useAppStore((state) => state.searchQuality);
+  const searchQueryTerms = useAppStore((state) => state.searchQueryTerms);
+  const searchExpandedTerms = useAppStore((state) => state.searchExpandedTerms);
+  const searchLoading = useAppStore((state) => state.searchLoading);
+  const searchError = useAppStore((state) => state.searchError);
+  const searchSearched = useAppStore((state) => state.searchSearched);
+  const searchMemory = useAppStore((state) => state.searchMemory);
+  const expandSearch = useAppStore((state) => state.expandSearch);
+  const searchExpandLoading = useAppStore((state) => state.searchExpandLoading);
+  const searchExpandError = useAppStore((state) => state.searchExpandError);
+  const followupQuestion = useAppStore((state) => state.followupQuestion);
+  const aiMode = useAppStore((state) => state.aiMode);
+  const aiResult = useAppStore((state) => state.aiResult);
+  const aiLoading = useAppStore((state) => state.aiLoading);
+  const aiError = useAppStore((state) => state.aiError);
+  const setFollowupQuestion = useAppStore((state) => state.setFollowupQuestion);
+  const analyzeMemory = useAppStore((state) => state.analyzeMemory);
 
-  // 搜索状态
-  const searchQuery = useAppStore((s) => s.searchQuery);
-  const searchResults = useAppStore((s) => s.searchResults);
-  const searchLoading = useAppStore((s) => s.searchLoading);
-  const searchError = useAppStore((s) => s.searchError);
-  const searchSearched = useAppStore((s) => s.searchSearched);
-  const searchMemory = useAppStore((s) => s.searchMemory);
+  const [queryInput, setQueryInput] = useState(searchQuery);
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>(() => searchFilters.timePreset ?? "all");
+  const [projectFilter, setProjectFilter] = useState(() => searchFilters.projectId ?? "all");
+  const [typeFilter, setTypeFilter] = useState(() => searchFilters.type ?? "all");
+  const [personFilter, setPersonFilter] = useState(() => searchFilters.personId ?? "all");
+  const [selectedDetail, setSelectedDetail] = useState<{ id: string; type: SearchResultItem["type"] } | null>(null);
+  const [followupOpen, setFollowupOpen] = useState(false);
 
-  // 问答状态
-  const askQuestion = useAppStore((s) => s.askQuestion);
-  const askResult = useAppStore((s) => s.askResult);
-  const askLoading = useAppStore((s) => s.askLoading);
-  const askError = useAppStore((s) => s.askError);
-  const askMemory = useAppStore((s) => s.askMemory);
+  const currentFilters = buildFilters(timeFilter, projectFilter, typeFilter, personFilter);
 
-  // 本地输入框状态
-  const [queryInput, setQueryInput] = useState("");
-  const [askInput, setAskInput] = useState("");
-
-  // 过滤状态
-  const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
-  const [projectFilter, setProjectFilter] = useState<string>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
-  const [personFilter, setPersonFilter] = useState<string>("all");
-
-  // 纠错对话框状态
-  const [correctionTarget, setCorrectionTarget] = useState<{
-    targetType: FeedbackTargetType;
-    targetId: string;
-  } | null>(null);
-
-  // 搜索表单提交
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = queryInput.trim();
-    if (!q) return;
-    await searchMemory(q);
+  const runSearch = async (query: string, filters = currentFilters) => {
+    const value = query.trim();
+    if (!value) return;
+    await searchMemory(value, 50, 0, filters);
   };
 
-  // 问答表单提交
-  const handleAsk = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = askInput.trim();
-    if (!q) return;
-    await askMemory(q);
-    setAskInput("");
+  const handleSearch = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await runSearch(queryInput);
   };
 
-  // 来源跳转：根据 sourceType 跳转到对应页面
-  const handleViewSource = (item: SearchResultItem) => {
-    if (!item.sourceType || !item.sourceId) {
-      if (item.type === "task") setPage("tasks");
-      else if (item.type === "project") setPage("projects");
-      else if (item.type === "report") setPage("reports");
-      else if (item.type === "decision") setPage("projects");
-      return;
-    }
-    setPendingJump(item.sourceId, item.sourceType);
-    if (item.sourceType === "observation") {
-      setPage("today");
-    } else if (item.sourceType === "fact") {
-      setPage("memory");
-    } else if (item.sourceType === "scene") {
-      setPage("today");
-    } else if (item.sourceType === "project") {
-      setPage("projects");
-    } else if (item.sourceType === "report") {
-      setPage("reports");
-    }
+  const updateFilter = (next: { time?: TimeFilter; project?: string; type?: string; person?: string }) => {
+    const nextTime = next.time ?? timeFilter;
+    const nextProject = next.project ?? projectFilter;
+    const nextType = next.type ?? typeFilter;
+    const nextPerson = next.person ?? personFilter;
+    if (next.time) setTimeFilter(next.time);
+    if (next.project) setProjectFilter(next.project);
+    if (next.type) setTypeFilter(next.type);
+    if (next.person) setPersonFilter(next.person);
+    if (searchSearched && searchQuery) void runSearch(searchQuery, buildFilters(nextTime, nextProject, nextType, nextPerson));
   };
 
-  // 打开纠错对话框
-  const handleCorrect = (item: SearchResultItem) => {
-    const targetType = toCorrectionTargetType(item.type);
-    if (!targetType) return;
-    setCorrectionTarget({ targetType, targetId: item.id });
+  const currentCandidates = () => searchResults.slice(0, 10).map((item) => ({ id: item.id, type: item.type }));
+
+  const handleSummary = async () => {
+    const candidates = currentCandidates();
+    if (candidates.length === 0) return;
+    await analyzeMemory("summary", candidates);
   };
 
-  // 问答来源点击：跳转到对应页面
-  const handleSourceClick = (source: AskSourceItem) => {
-    if (source.type === "task") setPage("tasks");
-    else if (source.type === "project") setPage("projects");
-    else if (source.type === "report") setPage("reports");
-    else if (source.type === "decision") setPage("projects");
-    else setPage("memory");
+  const handleAnswer = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const candidates = searchResults.slice(0, 10).map((item) => ({ id: item.id, type: item.type }));
+    if (candidates.length === 0 || !followupQuestion.trim()) return;
+    await analyzeMemory("answer", candidates, followupQuestion);
   };
 
-  // 应用过滤后的结果
-  const filteredResults = useMemo(() => {
-    return searchResults.filter((r) => {
-      // 时间过滤
-      if (!matchTimeFilter(r.createdAt, timeFilter)) return false;
-      // 项目过滤
-      if (projectFilter !== "all" && r.projectId !== projectFilter) return false;
-      // 类型过滤
-      if (typeFilter !== "all" && r.type !== typeFilter) return false;
-      // 人物过滤（按结果标题/摘要中是否包含人物名）
-      if (personFilter !== "all") {
-        const person = todayData.people.find((p) => p.id === personFilter);
-        if (person) {
-          const name = person.name;
-          if (!r.title.includes(name) && !(r.summary ?? "").includes(name)) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-  }, [searchResults, timeFilter, projectFilter, typeFilter, personFilter, todayData.people]);
-
-  // 类型选项（spec 行 2220-2227）
-  const typeOptions: Array<{ value: string; label: string }> = [
-    { value: "all", label: "全部类型" },
-    { value: "scene", label: RESULT_TYPE_LABELS.scene },
-    { value: "task", label: RESULT_TYPE_LABELS.task },
-    { value: "decision", label: RESULT_TYPE_LABELS.decision },
-    { value: "fact", label: RESULT_TYPE_LABELS.fact },
-    { value: "project", label: RESULT_TYPE_LABELS.project },
-    { value: "report", label: RESULT_TYPE_LABELS.report },
-    { value: "person", label: RESULT_TYPE_LABELS.person },
-  ];
+  if (selectedDetail) {
+    return <MemoryDetailPage detailRef={selectedDetail} onBack={() => setSelectedDetail(null)} onOpenRelation={(relation) => setSelectedDetail(relation)} />;
+  }
 
   if (!isReady) {
-    return (
-      <div className="memory-search-page">
-        <header className="page-header">
-          <h2>记忆库</h2>
-        </header>
-        <p className="state-loading">正在加载...</p>
-      </div>
-    );
+    return <div className="memory-search-page"><header className="page-header"><h2>记忆库</h2></header><p className="state-loading">正在加载...</p></div>;
   }
 
   return (
     <div className="memory-search-page">
-      <header className="page-header">
-        <h2>记忆库</h2>
-        <p className="page-header__sub">
-          帮你找回过去的工作、资料、决策或人。也可以用自然语言提问，Recall 会基于检索到的记忆回答。
-        </p>
+      <header className="page-header memory-search-page__hero">
+        <div>
+          <h2>记忆库</h2>
+          <p className="page-header__sub">找回过去的工作、资料、决策或人。先检索，再按需用 AI 总结或回答。</p>
+        </div>
+        <div className="memory-search-page__principle"><strong>本地先找</strong><span>AI 只在你明确需要时回答</span></div>
       </header>
 
-      {/* 顶部大搜索框（spec 行 2208-2212） */}
       <form className="memory-search-bar" onSubmit={handleSearch}>
-        <input
-          type="text"
-          value={queryInput}
-          onChange={(e) => setQueryInput(e.target.value)}
-          placeholder="搜索过去的工作、资料、决策或人"
-          className="memory-search-bar__input"
-        />
-        <button type="submit" className="primary" disabled={searchLoading || !queryInput.trim()}>
-          {searchLoading ? "搜索中..." : "搜索"}
-        </button>
+        <input type="search" value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder="搜索关键词，或直接描述你想找的记忆" className="memory-search-bar__input" aria-label="搜索记忆" />
+        <button type="submit" className="primary" disabled={searchLoading || !queryInput.trim()}>{searchLoading ? "正在检索..." : "搜索"}</button>
       </form>
 
-      {/* 过滤区（spec 行 2214-2218） */}
-      {searchSearched && searchResults.length > 0 && (
-        <div className="memory-filters">
-          <div className="memory-filters__group">
-            <label className="memory-filters__label">时间</label>
-            <select
-              className="memory-filters__select"
-              value={timeFilter}
-              onChange={(e) => setTimeFilter(e.target.value as TimeFilter)}
-            >
-              {Object.entries(TIME_FILTER_LABELS).map(([value, label]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="memory-filters__group">
-            <label className="memory-filters__label">项目</label>
-            <select
-              className="memory-filters__select"
-              value={projectFilter}
-              onChange={(e) => setProjectFilter(e.target.value)}
-            >
-              <option value="all">全部项目</option>
-              {todayData.projects.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="memory-filters__group">
-            <label className="memory-filters__label">类型</label>
-            <select
-              className="memory-filters__select"
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value)}
-            >
-              {typeOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-          <div className="memory-filters__group">
-            <label className="memory-filters__label">人物</label>
-            <select
-              className="memory-filters__select"
-              value={personFilter}
-              onChange={(e) => setPersonFilter(e.target.value)}
-            >
-              <option value="all">全部人物</option>
-              {todayData.people.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
-          </div>
+      {searchSearched && (
+        <div className="memory-filters" aria-label="搜索过滤条件">
+          <label className="memory-filters__group"><span className="memory-filters__label">时间</span><select className="memory-filters__select" value={timeFilter} onChange={(event) => updateFilter({ time: event.target.value as TimeFilter })}>{Object.entries(TIME_FILTER_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label className="memory-filters__group"><span className="memory-filters__label">项目</span><select className="memory-filters__select" value={projectFilter} onChange={(event) => updateFilter({ project: event.target.value })}><option value="all">全部项目</option>{todayData.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+          <label className="memory-filters__group"><span className="memory-filters__label">类型</span><select className="memory-filters__select" value={typeFilter} onChange={(event) => updateFilter({ type: event.target.value })}><option value="all">全部类型</option>{Object.entries(RESULT_TYPE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+          <label className="memory-filters__group"><span className="memory-filters__label">人物</span><select className="memory-filters__select" value={personFilter} onChange={(event) => updateFilter({ person: event.target.value })}><option value="all">全部人物</option>{todayData.people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
         </div>
       )}
 
-      {/* 搜索结果区 */}
-      {searchError && <p className="memory-search__error">{searchError}</p>}
+      {(searchError || searchExpandError || aiError) && <div className="memory-search__error">{searchError || searchExpandError || aiError}</div>}
 
-      {searchSearched && searchResults.length === 0 && !searchError && (
-        <div className="empty-state">
-          <p>没有找到匹配的记忆。</p>
-          <p className="empty-state__hint">试试其他关键词，或等待 Recall 沉淀更多内容。</p>
-        </div>
-      )}
-
-      {searchSearched && filteredResults.length > 0 && (
-        <div className="memory-results">
-          <div className="memory-results__summary">
-            共 {filteredResults.length} 条结果
-            {searchQuery && <span className="memory-results__query">关键词：{searchQuery}</span>}
+      {searchSearched && (
+        <section className="memory-results">
+          <div className="memory-results__toolbar">
+            <div>
+              <div className="memory-results__summary">找到 {searchTotal} 条相关记忆</div>
+              <div className="memory-results__query">“{searchQuery}”{searchQueryTerms.length > 0 && <span> · 本地匹配 {searchQueryTerms.slice(0, 6).join("、")}</span>}</div>
+            </div>
+            <div className="memory-results__actions">
+              {(searchQuality === "weak" || searchQuality === "none") && <button type="button" className="memory-results__expand" onClick={() => void expandSearch(searchQuery, currentFilters)} disabled={searchExpandLoading || !searchQuery}>{searchExpandLoading ? "正在扩展..." : "扩展搜索"}</button>}
+              <button type="button" className="primary memory-results__ask" onClick={() => void handleSummary()} disabled={aiLoading || searchResults.length === 0}>{aiLoading && aiMode === "summary" ? "AI总结中..." : "AI总结"}</button>
+              <button type="button" className="memory-results__answer" onClick={() => setFollowupOpen((open) => !open)} disabled={aiLoading || searchResults.length === 0}>{followupOpen ? "收起追问" : "AI回答"}</button>
+            </div>
           </div>
-          <div className="memory-results__list">
-            {filteredResults.map((r) => (
-              <div key={`${r.type}-${r.id}`} className="memory-result-card">
-                <div className="memory-result-card__header">
-                  <span
-                    className="memory-result-card__type"
-                    style={{ color: RESULT_TYPE_COLORS[r.type] ?? "var(--recall-text-muted)" }}
-                  >
-                    {RESULT_TYPE_LABELS[r.type] ?? r.type}
-                  </span>
-                  {r.projectName && (
-                    <span className="memory-result-card__project">{r.projectName}</span>
-                  )}
-                </div>
-                <div className="memory-result-card__title">{r.title}</div>
-                {r.summary && (
-                  <div className="memory-result-card__summary">{r.summary}</div>
-                )}
-                <div className="memory-result-card__footer">
-                  <span className="memory-result-card__time">
-                    {new Date(r.createdAt).toLocaleString("zh-CN")}
-                  </span>
-                  <div className="memory-result-card__actions">
-                    {(r.sourceType || r.sourceId) && (
-                      <button
-                        type="button"
-                        onClick={() => handleViewSource(r)}
-                        className="memory-result-card__action"
-                      >
-                        查看来源
-                      </button>
-                    )}
-                    {toCorrectionTargetType(r.type) && (
-                      <button
-                        type="button"
-                        onClick={() => handleCorrect(r)}
-                        className="memory-result-card__action memory-result-card__action--ghost"
-                      >
-                        纠错
-                      </button>
-                    )}
+
+          {followupOpen && <form className="memory-followup" onSubmit={handleAnswer}>
+            <input type="text" value={followupQuestion} onChange={(event) => setFollowupQuestion(event.target.value)} placeholder="针对这些结果继续提问，例如：为什么当时这样决定？" aria-label="针对检索结果提问" />
+            <button type="submit" className="primary" disabled={aiLoading || !followupQuestion.trim()}>{aiLoading && aiMode === "answer" ? "AI回答中..." : "提交问题"}</button>
+          </form>}
+
+          {searchExpandedTerms.length > 0 && <div className="memory-expanded-query"><span>已按这些词扩展：</span>{searchExpandedTerms.map((term) => <strong key={term}>{term}</strong>)}<button type="button" onClick={() => void runSearch(searchQuery)}>恢复原搜索</button></div>}
+
+          {aiResult?.ok && (
+            <article className="memory-answer-card">
+              <div className="memory-answer-card__eyebrow">{aiResult.mode === "summary" ? "AI总结" : "AI回答"} · 基于 {aiResult.candidateCount ?? 0} 条候选记忆</div>
+              {aiResult.mode === "answer" && <h3>{followupQuestion}</h3>}
+              <p className="memory-answer-card__answer">{aiResult.answer}</p>
+              {aiResult.caveat && <p className="memory-answer-card__caveat">需要留意：{aiResult.caveat}</p>}
+              {aiResult.sources && aiResult.sources.length > 0 && <div className="memory-answer-card__sources"><span>引用</span>{aiResult.sources.map((source, index) => <button type="button" key={`${source.type}-${source.id}`} onClick={() => setSelectedDetail({ id: source.id, type: source.type })}><small>{index + 1}</small>{source.title}</button>)}</div>}
+            </article>
+          )}
+          {aiResult && !aiResult.ok && <div className="memory-answer-card memory-answer-card--error"><strong>{aiMode === "summary" ? "AI总结暂时不可用" : "AI回答暂时不可用"}</strong><p>{aiResult.message ?? "请稍后重试。"}</p></div>}
+
+          {searchResults.length > 0 ? (
+            <div className="memory-results__list">
+              {searchResults.map((result) => (
+                <article className="memory-result-card" key={`${result.type}-${result.id}`} role="button" tabIndex={0} onClick={() => setSelectedDetail({ id: result.id, type: result.type })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedDetail({ id: result.id, type: result.type }); } }}>
+                  <div className="memory-result-card__header">
+                    <span className="memory-result-card__type" style={{ color: RESULT_TYPE_COLORS[result.type] }}>{RESULT_TYPE_LABELS[result.type]}</span>
+                    {result.projectName && <span className="memory-result-card__project">{result.projectName}</span>}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {searchSearched && filteredResults.length === 0 && searchResults.length > 0 && (
-        <div className="empty-state">
-          <p>当前过滤条件下没有结果。</p>
-          <p className="empty-state__hint">尝试调整过滤条件。</p>
-        </div>
+                  <h3 className="memory-result-card__title">{result.title}</h3>
+                  {result.summary && <p className="memory-result-card__summary">{result.summary}</p>}
+                  <div className="memory-result-card__matches">{result.matchReasons.slice(0, 3).map((reason) => <span key={reason}>命中{reason}</span>)}{result.sourceCount > 0 && <span>{result.sourceCount} 条来源</span>}</div>
+                  <div className="memory-result-card__footer"><time>{new Date(result.createdAt).toLocaleString("zh-CN")}</time><span className="memory-result-card__open">查看详情</span></div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state memory-search-empty"><p>没有找到匹配的记忆。</p><p className="empty-state__hint">可以调整时间或类型，也可以明确点击“扩展搜索”让模型只改写检索词。</p></div>
+          )}
+        </section>
       )}
 
       {!searchSearched && !searchError && (
-        <div className="empty-state">
-          <p>输入关键词搜索记忆。</p>
-          <p className="empty-state__hint">
-            结果会以卡片形式展示类型、标题、摘要、时间、项目和来源。
-          </p>
+        <div className="memory-search-starters">
+          <p>可以这样开始</p>
+          <div>{["上周研究过的工具", "某个项目当时为什么这样决定", "最近和谁讨论过发布计划"].map((example) => <button type="button" key={example} onClick={() => { setQueryInput(example); void runSearch(example); }}>{example}</button>)}</div>
         </div>
-      )}
-
-      {/* 自然语言问答（spec 行 2241-2247） */}
-      <section className="memory-ask">
-        <h3 className="memory-ask__title">问回声</h3>
-        <p className="memory-ask__hint">
-          用自然语言提问，Recall 只基于检索到的记忆回答，会列出来源；不确定时会说明。
-        </p>
-        <form className="memory-ask__bar" onSubmit={handleAsk}>
-          <input
-            type="text"
-            value={askInput}
-            onChange={(e) => setAskInput(e.target.value)}
-            placeholder="例如：上周研究那个工具的结论是什么？我上次和某人聊了什么？某个项目为什么当时这么定？"
-            className="memory-ask__input"
-          />
-          <button type="submit" className="primary" disabled={askLoading || !askInput.trim()}>
-            {askLoading ? "思考中..." : "提问"}
-          </button>
-        </form>
-
-        {askError && <p className="memory-search__error">{askError}</p>}
-
-        {askResult && (
-          <div className="memory-ask__result">
-            {askResult.ok ? (
-              <>
-                <div className="memory-ask__question">
-                  <span className="memory-ask__label">问：</span>
-                  {askQuestion}
-                </div>
-                {askResult.answer && (
-                  <div className="memory-ask__answer">
-                    <span className="memory-ask__label">答：</span>
-                    <div className="memory-ask__answer-text">{askResult.answer}</div>
-                  </div>
-                )}
-                {askResult.sources && askResult.sources.length > 0 ? (
-                  <div className="memory-ask__sources">
-                    <div className="memory-ask__sources-title">
-                      来源（{askResult.sources.length} 条）
-                      {typeof askResult.searchCount === "number" && (
-                        <span className="memory-ask__search-count">
-                          检索范围 {askResult.searchCount} 条
-                        </span>
-                      )}
-                    </div>
-                    <ul className="memory-ask__sources-list">
-                      {askResult.sources.map((s, idx) => (
-                        <li
-                          key={`${s.type}-${s.id}-${idx}`}
-                          className="memory-ask__source"
-                          onClick={() => handleSourceClick(s)}
-                        >
-                          <span
-                            className="memory-ask__source-type"
-                            style={{ color: RESULT_TYPE_COLORS[s.type] ?? "var(--recall-text-muted)" }}
-                          >
-                            {ASK_SOURCE_TYPE_LABELS[s.type] ?? s.type}
-                          </span>
-                          <div className="memory-ask__source-main">
-                            <div className="memory-ask__source-title">{s.title}</div>
-                            {s.summary && (
-                              <div className="memory-ask__source-summary">{s.summary}</div>
-                            )}
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : (
-                  <div className="memory-ask__no-sources">
-                    本次回答未检索到明确来源，建议换一种问法或确认相关记忆是否已沉淀。
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="memory-ask__error">
-                <p>回答失败：{askResult.message ?? askResult.code ?? "未知错误"}</p>
-                <p className="memory-ask__error-hint">
-                  可能是模型未配置或检索为空。请先在设置页配置语言模型，或换一种问法。
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!askResult && !askError && !askLoading && (
-          <p className="memory-ask__empty">还没有提问。可以试试上面的示例问题。</p>
-        )}
-      </section>
-
-      {/* 纠错对话框 */}
-      {correctionTarget && (
-        <CorrectionDialog
-          open={true}
-          targetType={correctionTarget.targetType}
-          targetId={correctionTarget.targetId}
-          onClose={() => setCorrectionTarget(null)}
-          onSubmitted={() => {
-            if (searchQuery) {
-              void searchMemory(searchQuery);
-            }
-          }}
-        />
       )}
     </div>
   );

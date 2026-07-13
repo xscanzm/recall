@@ -4,12 +4,10 @@
 // 目标：帮用户找回"今天或近期可能还没处理完的事情"。
 // 不是传统任务管理器。
 //
-// 5 分组：
+// 3 分组（仅展示仍为 open 的事项）：
 // 1. 今天要看一眼 — 当天 open
 // 2. 近期未收尾 — 近 7 天 open（排除今天）
 // 3. 可能已完成，待确认 — priority=low 且超过 7 天的 open
-// 4. 已完成 — status=done
-// 5. 已忽略 — status=ignored
 //
 // 每条待收尾卡片含：标题 / 原因 / 建议下一步 / 项目标签 + 最近出现时间 / 操作按钮
 // 操作：标记完成 / 稍后 / 忽略 / 改项目 / 查看来源
@@ -38,6 +36,7 @@ import { Tag } from "../components/Tag";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { Loading } from "../components/Loading";
+import { MemoryDetailPage, type MemoryDetailRef } from "./MemoryDetailPage";
 
 // ============================================================================
 // 日期辅助
@@ -101,35 +100,25 @@ interface GroupDef {
 }
 
 /**
- * 将待收尾列表按 5 分组归类。
+ * 将仍处于 open 状态的待收尾按 3 个时间分组归类。
  * 依赖 lastSeenAt 作为日期判定（UnfinishedThread 类型未暴露 dateKey）。
  */
 function groupThreads(threads: UnfinishedThread[]): GroupDef[] {
   const today: UnfinishedThread[] = [];
   const recent: UnfinishedThread[] = [];
   const maybeDone: UnfinishedThread[] = [];
-  const done: UnfinishedThread[] = [];
-  const ignored: UnfinishedThread[] = [];
 
   for (const t of threads) {
-    if (t.status === "done") {
-      done.push(t);
-    } else if (t.status === "ignored") {
-      ignored.push(t);
-    } else if (t.status === "open") {
-      if (isToday(t.lastSeenAt)) {
-        today.push(t);
-      } else if (isWithinDays(t.lastSeenAt, 7)) {
-        recent.push(t);
-      } else if (t.priority === "low") {
-        // 超过 7 天且低优先级：可能已完成，待确认
-        maybeDone.push(t);
-      } else {
-        // 超过 7 天但非低优先级：仍归入近期未收尾
-        recent.push(t);
-      }
+    if (t.status !== "open") continue;
+    if (isToday(t.lastSeenAt)) {
+      today.push(t);
+    } else if (isWithinDays(t.lastSeenAt, 7)) {
+      recent.push(t);
+    } else if (t.priority === "low") {
+      maybeDone.push(t);
+    } else {
+      recent.push(t);
     }
-    // snoozed：暂时隐藏，不显示在任何分组
   }
 
   // 每组内按 priority 降序（high > medium > low），再按 lastSeenAt 降序
@@ -143,15 +132,11 @@ function groupThreads(threads: UnfinishedThread[]): GroupDef[] {
   today.sort(sortFn);
   recent.sort(sortFn);
   maybeDone.sort(sortFn);
-  done.sort(sortFn);
-  ignored.sort(sortFn);
 
   return [
     { key: "today", title: "今天要看一眼", threads: today },
     { key: "recent", title: "近期未收尾", threads: recent },
     { key: "maybe-done", title: "可能已完成，待确认", threads: maybeDone },
-    { key: "done", title: "已完成", threads: done },
-    { key: "ignored", title: "已忽略", threads: ignored },
   ];
 }
 
@@ -176,6 +161,7 @@ export function TasksPage() {
   const updateStatus = useAppStore((s) => s.updateUnfinishedStatus);
 
   const [sourceDialog, setSourceDialog] = useState<SourceDialogState | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<MemoryDetailRef | null>(null);
   // 改项目入口（预留）：当前仅提示，spec 允许后置
   const [projectHintId, setProjectHintId] = useState<string | null>(null);
 
@@ -206,6 +192,17 @@ export function TasksPage() {
   const handleViewSource = (thread: UnfinishedThread) => {
     setSourceDialog({ thread });
   };
+
+  if (selectedDetail) {
+    return (
+      <MemoryDetailPage
+        detailRef={selectedDetail}
+        backLabel="返回待收尾来源"
+        onBack={() => setSelectedDetail(null)}
+        onOpenRelation={(relation) => setSelectedDetail(relation)}
+      />
+    );
+  }
 
   // ---- 渲染 ----
   if (!isReady) {
@@ -282,6 +279,10 @@ export function TasksPage() {
         <SourceDialog
           thread={sourceDialog.thread}
           onClose={() => setSourceDialog(null)}
+          onOpenDetail={(detailRef) => {
+            setSourceDialog(null);
+            setSelectedDetail(detailRef);
+          }}
         />
       )}
     </div>
@@ -313,8 +314,6 @@ function UnfinishedCard({
 }: UnfinishedCardProps) {
   const sourceCount =
     thread.sourceFactIds.length + thread.sourceTimelineBlockIds.length;
-  const isDone = thread.status === "done";
-  const isIgnored = thread.status === "ignored";
 
   return (
     <article className="unfinished-card">
@@ -349,40 +348,36 @@ function UnfinishedCard({
 
       <div className="unfinished-card__actions-label">操作：</div>
       <div className="unfinished-card__actions">
-        {!isDone && !isIgnored && (
-          <>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => onMarkDone(thread.id)}
-              title="标记为完成"
-              aria-label="标记为完成"
-            >
-              <Check size={14} style={{ marginRight: 4 }} />
-              标记完成
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => onSnooze(thread.id)}
-              title="稍后再看"
-              aria-label="稍后再看"
-            >
-              <Clock size={14} style={{ marginRight: 4 }} />
-              稍后
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onIgnore(thread.id)}
-              title="忽略此条"
-              aria-label="忽略此条"
-            >
-              <X size={14} style={{ marginRight: 4 }} />
-              忽略
-            </Button>
-          </>
-        )}
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => onMarkDone(thread.id)}
+          title="标记为完成"
+          aria-label="标记为完成"
+        >
+          <Check size={14} style={{ marginRight: 4 }} />
+          标记完成
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => onSnooze(thread.id)}
+          title="稍后再看"
+          aria-label="稍后再看"
+        >
+          <Clock size={14} style={{ marginRight: 4 }} />
+          稍后
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => onIgnore(thread.id)}
+          title="忽略此条"
+          aria-label="忽略此条"
+        >
+          <X size={14} style={{ marginRight: 4 }} />
+          忽略
+        </Button>
         <Button
           variant="ghost"
           size="sm"
@@ -403,31 +398,12 @@ function UnfinishedCard({
           <Link2 size={14} style={{ marginRight: 4 }} />
           查看来源
         </Button>
-        {(isDone || isIgnored) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onMarkDone(thread.id)}
-            title="重新标记为完成"
-            aria-label="重新标记为完成"
-          >
-            <Check size={14} style={{ marginRight: 4 }} />
-            重新打开
-          </Button>
-        )}
       </div>
 
       {showProjectHint && (
         <p className="unfinished-card__hint">
           改项目功能即将开放，当前可先在项目页整理。
         </p>
-      )}
-
-      {isDone && (
-        <p className="unfinished-card__hint">已标记为完成。</p>
-      )}
-      {isIgnored && (
-        <p className="unfinished-card__hint">已忽略。可重新标记为完成或稍后。</p>
       )}
 
       {sourceCount > 0 && (
@@ -446,9 +422,10 @@ function UnfinishedCard({
 interface SourceDialogProps {
   thread: UnfinishedThread;
   onClose: () => void;
+  onOpenDetail: (detailRef: MemoryDetailRef) => void;
 }
 
-function SourceDialog({ thread, onClose }: SourceDialogProps) {
+function SourceDialog({ thread, onClose, onOpenDetail }: SourceDialogProps) {
   const hasTimelineBlocks = thread.sourceTimelineBlockIds.length > 0;
   const hasFacts = thread.sourceFactIds.length > 0;
   const [loading, setLoading] = useState(true);
@@ -535,7 +512,10 @@ function SourceDialog({ thread, onClose }: SourceDialogProps) {
               <ul className="unfinished-source-dialog__list">
                 {thread.sourceTimelineBlockIds.map((id) => (
                   <li key={id} className="unfinished-source-dialog__item">
-                    {blockMap.get(id)?.title ?? "已找不到该时间轴片段"}
+                    <button type="button" className="unfinished-source-dialog__item-button" onClick={() => onOpenDetail({ id, type: "timeline" })}>
+                      <span>{blockMap.get(id)?.title ?? "时间轴片段"}</span>
+                      <small>查看详情</small>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -549,7 +529,10 @@ function SourceDialog({ thread, onClose }: SourceDialogProps) {
               <ul className="unfinished-source-dialog__list">
                 {thread.sourceFactIds.map((id) => (
                   <li key={id} className="unfinished-source-dialog__item">
-                    {factMap.get(id)?.content ?? "已找不到该线索"}
+                    <button type="button" className="unfinished-source-dialog__item-button" onClick={() => onOpenDetail({ id, type: "fact" })}>
+                      <span>{factMap.get(id)?.content ?? "相关线索"}</span>
+                      <small>查看详情</small>
+                    </button>
                   </li>
                 ))}
               </ul>

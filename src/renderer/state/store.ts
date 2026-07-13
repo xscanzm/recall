@@ -197,7 +197,7 @@ const EMPTY_TODAY: TodayData = {
  */
 export interface SearchResultItem {
   id: string;
-  type: "fact" | "scene" | "task" | "project" | "decision" | "report" | "person";
+  type: "fact" | "scene" | "task" | "project" | "decision" | "report" | "person" | "record";
   title: string;
   summary?: string;
   createdAt: string;
@@ -205,6 +205,45 @@ export interface SearchResultItem {
   projectId?: string | null;
   sourceType?: "observation" | "fact" | "scene" | "project" | "report";
   sourceId?: string | null;
+  relevance?: number;
+  matchReasons: string[];
+  sourceCount: number;
+}
+
+export interface SearchFilters {
+  timePreset?: "all" | "today" | "week" | "month";
+  timeFrom?: string;
+  timeTo?: string;
+  projectId?: string;
+  type?: SearchResultItem["type"];
+  personId?: string;
+}
+
+export interface MemoryDetailSource {
+  id: string;
+  capturedAt: string;
+  appName: string;
+  windowTitle: string;
+  url: string | null;
+  summary: string;
+  visibleContent: Array<{ type: string; summary: string; fullText: string; keyTextSnippets: string[] }>;
+  screenshotState: "available" | "expired" | "none";
+  screenshotCount: number;
+}
+
+export interface MemoryDetail {
+  id: string;
+  type: SearchResultItem["type"] | "timeline";
+  title: string;
+  summary: string;
+  createdAt: string;
+  projectId: string | null;
+  projectName: string | null;
+  fields: Array<{ label: string; value: string }>;
+  contentSections: Array<{ title: string; text: string; items: string[] }>;
+  sources: MemoryDetailSource[];
+  relations: Array<{ id: string; type: SearchResultItem["type"]; title: string; summary?: string }>;
+  correctionType: FeedbackTargetType | null;
 }
 
 /**
@@ -212,9 +251,17 @@ export interface SearchResultItem {
  */
 export interface AskSourceItem {
   id: string;
-  type: "fact" | "scene" | "task" | "project" | "decision" | "report" | "person";
+  type: SearchResultItem["type"];
   title: string;
   summary?: string;
+  createdAt: string;
+  projectName?: string;
+  projectId?: string | null;
+  sourceType?: SearchResultItem["sourceType"];
+  sourceId?: string | null;
+  relevance?: number;
+  matchReasons: string[];
+  sourceCount: number;
 }
 
 /**
@@ -222,9 +269,11 @@ export interface AskSourceItem {
  */
 export interface AskResult {
   ok: boolean;
+  mode?: "summary" | "answer";
   answer?: string;
+  caveat?: string;
   sources?: AskSourceItem[];
-  searchCount?: number;
+  candidateCount?: number;
   code?: string;
   message?: string;
 }
@@ -505,15 +554,22 @@ interface AppState {
   // M7 新增：搜索结果
   searchQuery: string;
   searchResults: SearchResultItem[];
+  searchTotal: number;
+  searchQuality: "strong" | "weak" | "none";
+  searchQueryTerms: string[];
+  searchFilters: SearchFilters;
+  searchExpandedTerms: string[];
+  searchExpandLoading: boolean;
+  searchExpandError: string | null;
   searchLoading: boolean;
   searchError: string | null;
   searchSearched: boolean; // 是否已执行过搜索
 
-  // M7 新增：轻量问答
-  askQuestion: string;
-  askResult: AskResult | null;
-  askLoading: boolean;
-  askError: string | null;
+  followupQuestion: string;
+  aiMode: "summary" | "answer" | null;
+  aiResult: AskResult | null;
+  aiLoading: boolean;
+  aiError: string | null;
 
   // M7 新增：项目详情
   projectDetail: ProjectDetail | null;
@@ -614,6 +670,19 @@ interface AppState {
   /** 历史报告列表过滤：项目 ID（"all" 或具体 projectId） */
   reportsHistoryProjectFilter: string;
 
+  /** 项目页筛选：关键词 / 状态 / 排序 */
+  projectsFilters: {
+    keyword: string;
+    status: "all" | "active" | "archived";
+    sortBy: "lastActiveAt" | "createdAt" | "name";
+  };
+  /** 人物页筛选：关键词 / 关联项目 / 排序 */
+  peopleFilters: {
+    keyword: string;
+    projectId: string;
+    sortBy: "updatedAt" | "createdAt" | "name";
+  };
+
   // 调试模式：DebugPage 数据
   debugJobs: DebugJobSummary[] | null;
   debugJobsLoading: boolean;
@@ -644,8 +713,10 @@ interface AppState {
   updateReminderStatus: (id: string, status: string) => Promise<void>;
 
   // M7 新增：搜索 / 问答 / 项目详情 / 任务更新 / 删除 / 纠错 / 合并 / 忘掉最近
-  searchMemory: (query: string, limit?: number, offset?: number) => Promise<void>;
-  askMemory: (question: string, limit?: number) => Promise<void>;
+  searchMemory: (query: string, limit?: number, offset?: number, filters?: SearchFilters) => Promise<void>;
+  expandSearch: (query: string, filters?: SearchFilters) => Promise<void>;
+  setFollowupQuestion: (question: string) => void;
+  analyzeMemory: (mode: "summary" | "answer", candidates: Array<{ id: string; type: SearchResultItem["type"] }>, question?: string) => Promise<void>;
   loadProjectDetail: (id: string) => Promise<void>;
   clearProjectDetail: () => void;
   updateTask: (id: string, patch: Record<string, unknown>) => Promise<void>;
@@ -835,6 +906,10 @@ interface AppState {
   setReportsHistoryDateTo: (dateKey: string) => void;
   /** 设置历史报告过滤：项目 */
   setReportsHistoryProjectFilter: (projectId: string) => void;
+  /** 设置项目页筛选（部分更新） */
+  setProjectsFilters: (patch: Partial<{ keyword: string; status: "all" | "active" | "archived"; sortBy: "lastActiveAt" | "createdAt" | "name" }>) => void;
+  /** 设置人物页筛选（部分更新） */
+  setPeopleFilters: (patch: Partial<{ keyword: string; projectId: string; sortBy: "updatedAt" | "createdAt" | "name" }>) => void;
 
   // Phase 7 新增：设置页 / 信任中心 UI actions
   /** 切换设置页激活分区 */
@@ -942,15 +1017,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   // M7 新增：搜索状态
   searchQuery: "",
   searchResults: [],
+  searchTotal: 0,
+  searchQuality: "none",
+  searchQueryTerms: [],
+  searchFilters: {},
+  searchExpandedTerms: [],
+  searchExpandLoading: false,
+  searchExpandError: null,
   searchLoading: false,
   searchError: null,
   searchSearched: false,
 
-  // M7 新增：问答状态
-  askQuestion: "",
-  askResult: null,
-  askLoading: false,
-  askError: null,
+  followupQuestion: "",
+  aiMode: null,
+  aiResult: null,
+  aiLoading: false,
+  aiError: null,
 
   // M7 新增：项目详情
   projectDetail: null,
@@ -1022,6 +1104,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   reportsHistoryDateFrom: "",
   reportsHistoryDateTo: "",
   reportsHistoryProjectFilter: "all",
+
+  projectsFilters: {
+    keyword: "",
+    status: "active",
+    sortBy: "lastActiveAt",
+  },
+  peopleFilters: {
+    keyword: "",
+    projectId: "",
+    sortBy: "updatedAt",
+  },
 
   // 调试模式初始状态
   debugJobs: null,
@@ -1121,8 +1214,8 @@ export const useAppStore = create<AppState>((set, get) => ({
    * - 搜索结果类型：Fact/Scene/Task/Project/Decision/Report
    * - 每条结果显示：类型/标题摘要/时间/项目/来源跳转
    */
-  searchMemory: async (query: string, limit = 50, offset = 0) => {
-    await searchMemoryAction(set as never, query, limit, offset);
+  searchMemory: async (query: string, limit = 50, offset = 0, filters = {}) => {
+    await searchMemoryAction(set as never, query, limit, offset, filters);
   },
 
   /**
@@ -1134,26 +1227,45 @@ export const useAppStore = create<AppState>((set, get) => ({
    * - 回答必须列出来源对象
    * - 聊天只是查询入口，不作为主界面
    */
-  askMemory: async (question: string, limit = 10) => {
-    if (!question.trim()) return;
+  expandSearch: async (query: string, filters = {}) => {
+    if (!query.trim()) return;
+    set({ searchExpandLoading: true, searchExpandError: null, aiMode: null, aiResult: null, aiError: null });
+    try {
+      const result = await getIpc().memory.expandSearch({ query: query.trim(), filters });
+      if (!result.ok) {
+        set({ searchExpandLoading: false, searchExpandError: result.message });
+        return;
+      }
+      set({ searchResults: result.results, searchTotal: result.total, searchQuality: result.quality, searchExpandedTerms: result.expandedTerms, searchExpandLoading: false, searchSearched: true });
+    } catch (err) {
+      set({ searchExpandLoading: false, searchExpandError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  setFollowupQuestion: (question) => set({ followupQuestion: question }),
+
+  analyzeMemory: async (mode, candidates, question) => {
+    const normalizedQuestion = question?.trim();
+    if (mode === "answer" && !normalizedQuestion) return;
     set({
-      askLoading: true,
-      askError: null,
-      askQuestion: question,
-      askResult: null,
+      aiLoading: true,
+      aiError: null,
+      aiMode: mode,
+      aiResult: null,
+      followupQuestion: mode === "answer" ? normalizedQuestion ?? "" : get().followupQuestion,
     });
     try {
-      const result = await getIpc().memory.ask({ question: question.trim(), limit });
+      const result = await getIpc().memory.ask({ mode, question: normalizedQuestion, candidates });
       set({
-        askResult: result,
-        askLoading: false,
+        aiResult: result,
+        aiLoading: false,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({
-        askLoading: false,
-        askError: message,
-        askResult: { ok: false, code: "unknown_error", message },
+        aiLoading: false,
+        aiError: message,
+        aiResult: { ok: false, code: "unknown_error", message },
       });
     }
   },
@@ -1885,7 +1997,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     }
     try {
-      await getIpc().unfinishedThreads.updateStatus({ id, status });
+      const result = await getIpc().unfinishedThreads.updateStatus({ id, status });
+      if (!result.ok) throw new Error(result.error);
     } catch (err) {
       // 回滚
       set({ todayPageData: prev });
@@ -1899,34 +2012,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ============================================================================
 
   /**
-   * 加载待收尾列表（拉取全部状态：open / done / snoozed / ignored）
-   *
-   * IPC 单次仅支持按 status 或 dateKey 过滤，这里并行拉取 4 个状态后合并，
-   * 供待收尾页按 5 分组（今天 / 近期 / 待确认 / 已完成 / 已忽略）渲染。
+   * 加载仍需处理的待收尾列表，仅拉取 open 状态。
    */
   loadUnfinishedThreads: async () => {
     if (get().unfinishedLoading) return;
     set({ unfinishedLoading: true, unfinishedError: null });
     try {
-      const statuses: Array<"open" | "done" | "snoozed" | "ignored"> = [
-        "open",
-        "done",
-        "snoozed",
-        "ignored",
-      ];
-      const results = await Promise.all(
-        statuses.map((s) => getIpc().unfinishedThreads.list({ status: s }))
-      );
-      const all: UnfinishedThread[] = [];
-      for (const res of results) {
-        if (!res.ok) continue;
-        if (Array.isArray(res.data)) {
-          for (const item of res.data) {
-            all.push(item as UnfinishedThread);
-          }
-        }
-      }
-      set({ unfinishedThreads: all, unfinishedLoading: false });
+      const result = await getIpc().unfinishedThreads.list({ status: "open" });
+      if (!result.ok) throw new Error(result.error);
+      set({ unfinishedThreads: result.data as UnfinishedThread[], unfinishedLoading: false });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ unfinishedError: message, unfinishedLoading: false });
@@ -1938,13 +2032,10 @@ export const useAppStore = create<AppState>((set, get) => ({
    */
   updateUnfinishedStatus: async (id, status) => {
     const prev = get().unfinishedThreads;
-    set({
-      unfinishedThreads: prev.map((t) =>
-        t.id === id ? { ...t, status } : t
-      ),
-    });
+    set({ unfinishedThreads: status === "open" ? prev.map((thread) => thread.id === id ? { ...thread, status } : thread) : prev.filter((thread) => thread.id !== id) });
     try {
-      await getIpc().unfinishedThreads.updateStatus({ id, status });
+      const result = await getIpc().unfinishedThreads.updateStatus({ id, status });
+      if (!result.ok) throw new Error(result.error);
     } catch (err) {
       // 回滚
       set({ unfinishedThreads: prev });
@@ -2207,6 +2298,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setReportsHistoryProjectFilter: (projectId) =>
     set({ reportsHistoryProjectFilter: projectId }),
+
+  setProjectsFilters: (patch) =>
+    set((state) => ({ projectsFilters: { ...state.projectsFilters, ...patch } })),
+
+  setPeopleFilters: (patch) =>
+    set((state) => ({ peopleFilters: { ...state.peopleFilters, ...patch } })),
 
   // ============================================================================
   // Phase 7 新增 actions（设置页 / 信任中心 UI）

@@ -1055,11 +1055,11 @@ ${context}
    * - 用于项目页 ProjectsPage 渲染
    * - 返回 Project 完整字段（含 aliases）
    */
-  ipcMain.handle("memory:listProjects", () => {
+  ipcMain.handle("memory:listProjects", (_event, input?: { includeArchived?: boolean }) => {
     if (!deps.memoryObjectRepo) {
       fail("not_ready", "MemoryObjectRepository 未初始化");
     }
-    return { ok: true, projects: deps.memoryObjectRepo.listProjects({ includeArchived: false, limit: 500 }) };
+    return { ok: true, projects: deps.memoryObjectRepo.listProjects({ includeArchived: input?.includeArchived ?? false, limit: 500 }) };
   });
 
   // -------------------- reminders --------------------
@@ -1943,6 +1943,10 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "privacy:deleteRule",
   "memory:listToday",
   "memory:search",
+  "memory:expandSearch",
+  "memory:getDetail",
+  "memory:getSourcePreview",
+  "memory:openSourceUrl",
   "memory:updateFact",
   "memory:updateTask",
   "memory:deleteObject",

@@ -11,7 +11,6 @@
 // - 关键产出 chips
 // - 底部操作：查看来源 / 加入日报 / 忽略
 
-import { useState } from "react";
 import type { TodayTimelineProjection } from "../../../shared/types";
 import { Tag } from "../../components/Tag";
 import { SourceLink } from "../../components/SourceLink";
@@ -26,10 +25,10 @@ import {
 interface TimelineCardProps {
   block: TodayTimelineProjection;
   detailMode: boolean;
+  onOpenDetail: () => void;
 }
 
-export function TimelineCard({ block, detailMode }: TimelineCardProps) {
-  const [sourceOpen, setSourceOpen] = useState(false);
+export function TimelineCard({ block, detailMode, onOpenDetail }: TimelineCardProps) {
   const selectionMode = useAppStore((s) => s.workReportSelectionMode);
   const selectedBlockIds = useAppStore((s) => s.selectedBlockIds);
   const toggleBlockSelection = useAppStore((s) => s.toggleBlockSelection);
@@ -82,7 +81,7 @@ export function TimelineCard({ block, detailMode }: TimelineCardProps) {
 
       {/* 主体内容 */}
       <div className="timeline-card__body">
-        <h3 className="timeline-card__title">{title}</h3>
+        <h3 className="timeline-card__title"><button type="button" className="timeline-card__title-button" onClick={onOpenDetail}>{title}</button></h3>
         {summary && <p className="timeline-card__summary">{summary}</p>}
 
         {/* 标签行 */}
@@ -161,7 +160,7 @@ export function TimelineCard({ block, detailMode }: TimelineCardProps) {
                 block.sourceObservationIds.length
               }
               sourceTime={timeRange ? formatTimeRange(block.startAt, block.endAt).split(" - ")[0] : undefined}
-              onClick={() => setSourceOpen(true)}
+              onClick={onOpenDetail}
             />
             <button
               type="button"
@@ -180,21 +179,6 @@ export function TimelineCard({ block, detailMode }: TimelineCardProps) {
           </div>
         )}
       </div>
-      {sourceOpen && (
-        <>
-          <div className="decision-source-modal__backdrop" onClick={() => setSourceOpen(false)} />
-          <div className="decision-source-modal" role="dialog" aria-modal="true" aria-label="来源">
-            <div className="decision-source-modal__header">
-              <span>来源</span>
-              <button type="button" onClick={() => setSourceOpen(false)}>关闭</button>
-            </div>
-            <p className="decision-source-modal__content">{title}</p>
-            <ProvenanceIds label="工作片段" ids={block.sourceSceneIds} />
-            <ProvenanceIds label="记忆线索" ids={block.sourceFactIds} />
-            <ProvenanceIds label="活动瞬间" ids={block.sourceObservationIds} />
-          </div>
-        </>
-      )}
     </div>
   );
 }
@@ -225,13 +209,4 @@ function defaultPrivacyReason(risk: TodayTimelineProjection["privateRisk"]): str
   return risk === "high"
     ? "这段内容可能包含私人或敏感信息，使用前请确认。"
     : "这段内容可能涉及敏感信息，分享前请检查。";
-}
-
-function ProvenanceIds({ label, ids }: { label: string; ids: string[] }) {
-  return (
-    <div className="decision-source-modal__hint">
-      <strong>{label} ({ids.length})</strong>
-      <div>{ids.length > 0 ? ids.join("、") : "无"}</div>
-    </div>
-  );
 }

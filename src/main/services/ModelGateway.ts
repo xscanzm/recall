@@ -68,9 +68,12 @@ const STREAM_TOTAL_TIMEOUT_MS = 10 * 60_000;
 export const DEFAULT_TEMPERATURE = 0.3;
 
 /**
- * 默认 max tokens
+ * 默认 max tokens。
+ *
+ * 结构化抽取任务可能同时返回关联、场景、判断和待办等多个数组，
+ * 较小上限容易在 JSON 完成前触发 output_truncated；16384 给默认调用留出足够空间。
  */
-export const DEFAULT_MAX_TOKENS = 4096;
+export const DEFAULT_MAX_TOKENS = 16_384;
 
 /**
  * zod schema 接口（兼容 z.ZodType）
@@ -114,6 +117,8 @@ export interface ModelCallInput {
   timeoutMs?: number;
   /** 使用 OpenAI-compatible SSE 流式响应；适合长输出任务 */
   streaming?: boolean;
+  responseFormat?: "json" | "text";
+  disableRepair?: boolean;
 }
 
 /**
@@ -449,8 +454,8 @@ export class ModelGateway {
       messages,
       temperature,
       max_tokens: maxTokens,
-      response_format: { type: "json_object" },
     };
+    if (input.responseFormat !== "text") requestBody.response_format = { type: "json_object" };
     if (input.streaming) {
       requestBody.stream = true;
       requestBody.stream_options = { include_usage: true };
@@ -519,7 +524,7 @@ export class ModelGateway {
     }
 
     // 9. 失败时尝试一次 JSON repair（仅当错误是 invalid_json 或 schema_invalid）
-    if (lastErrorCode === "invalid_json" || lastErrorCode === "schema_invalid") {
+    if (!input.disableRepair && (lastErrorCode === "invalid_json" || lastErrorCode === "schema_invalid")) {
       if (hasRawOutput) {
         attempts++;
         const repairResult = await this.callRepair(

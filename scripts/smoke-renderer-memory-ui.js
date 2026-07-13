@@ -330,6 +330,7 @@ const api = {
     getLaunchAtLogin: async () => ({ ok: true, enabled: false }),
     setLaunchAtLogin: async (input) => ({ ok: true, enabled: !!input.enabled }),
     onStatusChanged: () => () => undefined,
+    onNavigate: () => () => undefined,
   },
   settings: {
     get: async () => settings,
@@ -361,14 +362,48 @@ const api = {
           projectId: "project_recall",
           sourceType: "scene",
           sourceId: "scene_wechat_memory",
+          relevance: 5,
+          matchReasons: ["标题"],
+          sourceCount: 1,
         },
       ],
       total: 1,
+      quality: "strong",
+      queryTerms: ["recall", "记忆", "系统"],
     }),
+    expandSearch: async () => ({ ok: true, expandedTerms: ["Recall", "记忆系统"], results: [], total: 0, quality: "none" }),
+    getDetail: async ({ id, type }) => {
+      const isTimeline = type === "timeline";
+      const isFact = type === "fact";
+      return {
+        id,
+        type,
+        title: isTimeline ? (copy?.timelineTitle || "微信讨论 Recall 记忆系统分层") : isFact ? (facts.find((fact) => fact.id === id)?.content || "相关线索") : "微信讨论 Recall 记忆系统分层",
+        summary: isTimeline ? (copy?.timelineSummary || "L0 到 L3 的分层记忆链路。") : isFact ? "微信讨论中明确提出先解决第一层。" : "L0 到 L3 的分层记忆链路。",
+        createdAt: now,
+        projectId: "project_recall",
+        projectName: copy?.projectName || "Recall 记忆系统重构",
+        fields: [{ label: "开始", value: now }],
+        contentSections: [{ title: isTimeline ? "时间轴片段" : isFact ? "具体内容" : "工作片段", text: isFact ? (facts.find((fact) => fact.id === id)?.content || "相关线索") : "讨论 Recall 记忆系统分层。", items: ["L0 降低判断负担"] }],
+        sources: [{ id: "obs_1", capturedAt: now, appName: copy?.appName || "微信", windowTitle: copy?.windowTitle || "Recall 讨论", url: null, summary: "讨论记忆分层", visibleContent: [{ type: "chat", summary: "讨论 L0-L3", fullText: "L0 降低判断负担\n叶商白（12群） 人间唢呐奖\nMatilda（19群） 人间唢呐奖", keyTextSnippets: ["L0 降低判断负担"] }], screenshotState: "none", screenshotCount: 0 }],
+        relations: [],
+        correctionType: isTimeline ? null : isFact ? "fact" : "scene",
+      };
+    },
+    getSourcePreview: async () => ({ ok: false, code: "not_found", message: "截图不存在" }),
+    openSourceUrl: async () => ({ ok: true }),
     updateFact: async () => ({ ok: true }),
     updateTask: async () => ({ ok: true }),
     deleteObject: async () => ({ ok: true }),
-    ask: async () => ({ ok: true, answer: "基于记录，今天重点是 L0-L3 分层。", sources: [], searchCount: 1 }),
+    ask: async ({ mode, question }) => ({
+      ok: true,
+      mode,
+      answer: mode === "summary"
+        ? "基于记录，今天重点是 L0-L3 分层。"
+        : "针对追问“" + question + "”，记录显示应先稳定低判断观察层。",
+      sources: [],
+      candidateCount: 1,
+    }),
     createUserFeedback: async () => ({ ok: true, feedback: {} }),
     getProjectDetail: async () => ({
       project: projects[0],
@@ -433,8 +468,12 @@ const api = {
     saveSelection: async () => ({ ok: true }),
   },
   unfinishedThreads: {
-    list: async () => ({ ok: true, data: unfinishedThreads }),
-    updateStatus: async () => ({ ok: true }),
+    list: async ({ status } = {}) => ({ ok: true, data: status ? unfinishedThreads.filter((thread) => thread.status === status) : unfinishedThreads }),
+    updateStatus: async ({ id, status }) => {
+      const thread = unfinishedThreads.find((item) => item.id === id);
+      if (thread) thread.status = status;
+      return { ok: true, data: null };
+    },
   },
   debug: {
     listJobs: async () => ({ ok: true, jobs: [] }),
@@ -462,7 +501,8 @@ async function waitForText(win, text, timeoutMs = 8000) {
     await wait(100);
   }
   const bodyText = await getBodyText(win);
-  throw new Error(`Timed out waiting for text: ${text}\nCurrent text:\n${bodyText.slice(0, 2000)}`);
+  const diagnostics = await win.webContents.executeJavaScript(`({ readyState: document.readyState, html: document.documentElement.outerHTML.slice(0, 1000) })`, true);
+  throw new Error(`Timed out waiting for text: ${text}\nCurrent text:\n${bodyText.slice(0, 2000)}\nDiagnostics:\n${JSON.stringify(diagnostics)}`);
 }
 
 async function getBodyText(win) {
@@ -500,6 +540,16 @@ async function assertTexts(win, texts) {
   for (const text of texts) {
     await waitForText(win, text);
   }
+}
+
+async function assertTextAbsent(win, text, timeoutMs = 3000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const bodyText = await getBodyText(win);
+    if (!bodyText.includes(text)) return;
+    await wait(100);
+  }
+  throw new Error(`Timed out waiting for text to disappear: ${text}`);
 }
 
 async function capturePage(win, fileName) {
@@ -567,15 +617,19 @@ async function run() {
     "1 个工作片段",
   ]);
   await clickByLabel(win, "来自今天 18:00 的记录");
-  await assertTexts(win, ["工作片段 (1)", "scene_wechat_memory", "记忆线索 (2)", "fact_task", "活动瞬间 (6)", "obs_1"]);
-  await clickByLabel(win, "关闭");
+  await assertTexts(win, ["返回今日时间轴", "时间轴", "来源记录", "L0 降低判断负担"]);
+  await clickByLabel(win, "返回今日时间轴");
 
   await clickByLabel(win, "待收尾");
   await assertTexts(win, ["待收尾", "确认 L0 批量观察边界", "先用 6 帧批量观察验证低判断输出"]);
   await capturePage(win, "unfinished.png");
   await clickByLabel(win, "查看来源");
   await assertTexts(win, ["来源", "需要把 L0 先稳定为低判断观察层"]);
-  await clickByLabel(win, "关闭");
+  await clickByLabel(win, "需要把 L0 先稳定为低判断观察层");
+  await assertTexts(win, ["返回待收尾来源", "具体内容", "来源记录", "L0 降低判断负担"]);
+  await clickByLabel(win, "返回待收尾来源");
+  await clickByLabel(win, "标记为完成");
+  await assertTextAbsent(win, "确认 L0 批量观察边界");
 
   await clickByLabel(win, "项目");
   await assertTexts(win, ["项目", "Recall 记忆系统重构", "查看项目"]);
@@ -588,10 +642,10 @@ async function run() {
   await assertTexts(win, ["最近协作", "提到过的事", "需要把 L0 先稳定为低判断观察层"]);
 
   await clickByLabel(win, "记忆库");
-  await assertTexts(win, ["记忆库", "帮你找回过去的工作、资料、决策或人", "问回声"]);
+  await assertTexts(win, ["记忆库", "找回过去的工作、资料、决策或人", "本地先找"]);
   await win.webContents.executeJavaScript(
     `(() => {
-      const input = document.querySelector('input[placeholder="搜索过去的工作、资料、决策或人"]');
+      const input = document.querySelector('input[placeholder="搜索关键词，或直接描述你想找的记忆"]');
       if (!input) return false;
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
       setter.call(input, 'Recall 记忆系统');
@@ -601,8 +655,27 @@ async function run() {
     })()`,
     true
   );
-  await assertTexts(win, ["共 1 条结果", "微信讨论 Recall 记忆系统分层"]);
+  await assertTexts(win, ["找到 1 条相关记忆", "微信讨论 Recall 记忆系统分层", "AI总结", "AI回答"]);
+  await clickByLabel(win, "AI总结");
+  await assertTexts(win, ["基于记录，今天重点是 L0-L3 分层。", "基于 1 条候选记忆"]);
+  await clickByLabel(win, "AI回答");
+  await win.webContents.executeJavaScript(
+    `(() => {
+      const input = document.querySelector('input[aria-label="针对检索结果提问"]');
+      if (!input) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, '为什么要先稳定观察层？');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.closest('form').requestSubmit();
+      return true;
+    })()`,
+    true
+  );
+  await assertTexts(win, ["针对追问“为什么要先稳定观察层？”，记录显示应先稳定低判断观察层。"]);
   await capturePage(win, "memory-search.png");
+  await clickByLabel(win, "微信讨论 Recall 记忆系统分层");
+  await assertTexts(win, ["返回搜索结果", "来源记录", "L0 降低判断负担"]);
+  await clickByLabel(win, "返回搜索结果");
 
   await clickByLabel(win, "报告");
   await assertTexts(win, ["报告", "我的复盘", "工作日报", "今天把 Recall 记忆系统"]);

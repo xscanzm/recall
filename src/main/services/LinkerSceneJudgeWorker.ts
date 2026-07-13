@@ -789,6 +789,8 @@ export class LinkerSceneJudgeWorker {
           sourceSceneIds: [],
         });
         this.finalizeObjectFactLinks("project", created.id, sourceFactIds, newObj.confidence, "新建项目对象的事实来源关系");
+        // 自动相似度检测：若与现有项目相似，写入合并建议
+        this.checkAndWriteAutoMergeSuggestion("project", created.id, created.name, sourceFactIds);
         return true;
       }
       case "task": {
@@ -843,6 +845,8 @@ export class LinkerSceneJudgeWorker {
           sourceFactIds,
         });
         this.finalizeObjectFactLinks("person", created.id, sourceFactIds, newObj.confidence, "新建人物对象的事实来源关系");
+        // 自动相似度检测：若与现有人物相似，写入合并建议
+        this.checkAndWriteAutoMergeSuggestion("person", created.id, created.name, sourceFactIds);
         return true;
       }
       case "decision": {
@@ -893,9 +897,7 @@ export class LinkerSceneJudgeWorker {
     try {
       switch (objectType) {
         case "project": {
-          const existing = this.memoryObjectRepo.findActiveProjectByName(title, {
-            ignoreCase: true,
-          });
+          const existing = this.memoryObjectRepo.findActiveProjectByFuzzyName(title);
           return existing?.id ?? null;
         }
         case "task": {
@@ -906,7 +908,7 @@ export class LinkerSceneJudgeWorker {
           return existing?.id ?? null;
         }
         case "person": {
-          const existing = this.memoryObjectRepo.findPersonByName(title);
+          const existing = this.memoryObjectRepo.findPersonByFuzzyName(title);
           return existing?.id ?? null;
         }
         case "decision": {
@@ -920,6 +922,118 @@ export class LinkerSceneJudgeWorker {
       // 去重查询失败不阻断创建流程
     }
     return null;
+  }
+
+  /**
+   * 自动相似度检测：创建新对象后，检测是否与现有对象相似。
+   * 命中则写入 proactive_items 作为 merge_suggestion，等待用户确认。
+   *
+   * 相似度算法：名字 bigram Jaccard (权重 0.6) + sourceFactIds 重叠度 (权重 0.4)
+   * 阈值 >= 0.5 才写建议。
+   */
+  private checkAndWriteAutoMergeSuggestion(
+    objectType: "project" | "person",
+    newId: string,
+    newName: string,
+    newFactIds: string[]
+  ): void {
+    try {
+      // 获取候选对象（排除自身）
+      let candidates: Array<{ id: string; name: string; sourceFactIds: string[] }>;
+      if (objectType === "project") {
+        const projects = this.memoryObjectRepo.listProjects({ includeArchived: false, limit: 50 });
+        candidates = projects
+          .filter((p) => p.id !== newId)
+          .map((p) => ({ id: p.id, name: p.name, sourceFactIds: p.sourceFactIds }));
+      } else {
+        const people = this.memoryObjectRepo.listPeople({ limit: 50 });
+        candidates = people
+          .filter((p) => p.id !== newId)
+          .map((p) => ({ id: p.id, name: p.name, sourceFactIds: p.sourceFactIds }));
+      }
+
+      let best: { id: string; name: string; similarity: number } | null = null;
+      const newNameBigrams = this.computeBigrams(newName.toLowerCase());
+
+      for (const candidate of candidates) {
+        const candBigrams = this.computeBigrams(candidate.name.toLowerCase());
+        const nameSim = this.jaccardSimilarity(newNameBigrams, candBigrams);
+        const factSim = this.jaccardSimilarity(
+          new Set(newFactIds),
+          new Set(candidate.sourceFactIds)
+        );
+        const combined = 0.6 * nameSim + 0.4 * factSim;
+        if (combined >= 0.5 && (!best || combined > best.similarity)) {
+          best = { id: candidate.id, name: candidate.name, similarity: combined };
+        }
+      }
+
+      if (!best) return;
+
+      // 去重：已有合并建议则跳过
+      const fromId = newId;
+      const toId = best.id;
+      if (this.proactiveItemRepo.hasExistingMergeSuggestion(objectType, fromId, toId)) return;
+      if (this.proactiveItemRepo.hasExistingMergeSuggestion(objectType, toId, fromId)) return;
+
+      const objectTypeLabel = objectType === "project" ? "项目" : "人物";
+      const title = `建议合并${objectTypeLabel}：${newName} → ${best.name}`;
+      const body = `检测到「${newName}」与「${best.name}」可能是同一${objectTypeLabel}（相似度 ${best.similarity.toFixed(2)}），建议合并。`;
+
+      const payloadJson = JSON.stringify({
+        objectType,
+        fromId,
+        toId,
+        fromName: newName,
+        toName: best.name,
+        reason: `自动相似度检测（${best.similarity.toFixed(2)}）`,
+        confidence: best.similarity,
+      });
+
+      const item: Omit<ProactiveItem, "id" | "createdAt" | "updatedAt"> = {
+        type: "merge_suggestion",
+        title,
+        body,
+        reason: `自动相似度检测（${best.similarity.toFixed(2)}）`,
+        priority: best.similarity,
+        surface: "in_app",
+        requiresUserConfirmation: true,
+        status: "new",
+        sourceFactIds: [],
+        sourceSceneIds: [],
+        payloadJson,
+      };
+      this.proactiveItemRepo.create(item);
+      logger.info({
+        jobType: "linker_scene_judge",
+        message: `[LinkerSceneJudgeWorker] 自动合并建议已写入: ${objectType} ${newName} -> ${best.name} (similarity=${best.similarity.toFixed(2)})`,
+      });
+    } catch (err) {
+      logger.debug({
+        jobType: "linker_scene_judge",
+        message: `[LinkerSceneJudgeWorker] 自动合并建议检测失败（不阻断）: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
+  /** 计算字符串的字符 bigram 集合 */
+  private computeBigrams(s: string): Set<string> {
+    const bigrams = new Set<string>();
+    for (let i = 0; i < s.length - 1; i++) {
+      bigrams.add(s.slice(i, i + 2));
+    }
+    return bigrams;
+  }
+
+  /** 计算两个集合的 Jaccard 相似度 */
+  private jaccardSimilarity<T>(a: Set<T>, b: Set<T>): number {
+    if (a.size === 0 && b.size === 0) return 0;
+    let intersection = 0;
+    for (const item of a) {
+      if (b.has(item)) intersection++;
+    }
+    const union = a.size + b.size - intersection;
+    return union === 0 ? 0 : intersection / union;
   }
 
   /**

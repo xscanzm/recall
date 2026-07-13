@@ -16,10 +16,11 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../state/store";
+import { getIpc } from "../state/ipc";
 import { CorrectionDialog } from "../components/CorrectionDialog";
 import { MergeDialog } from "../components/MergeDialog";
 import { NAMING, TASK_STATUS_LABELS } from "../app/naming";
-import type { ProjectDetail } from "../state/store";
+import type { ProjectDetail, ProjectItem } from "../state/store";
 
 /**
  * 判断时间是否在今天
@@ -112,6 +113,8 @@ export function ProjectsPage() {
   const updateTask = useAppStore((s) => s.updateTask);
   const unfinishedThreads = useAppStore((s) => s.unfinishedThreads);
   const loadUnfinishedThreads = useAppStore((s) => s.loadUnfinishedThreads);
+  const projectsFilters = useAppStore((s) => s.projectsFilters);
+  const setProjectsFilters = useAppStore((s) => s.setProjectsFilters);
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   // 012 新增：合并对话框状态
@@ -206,6 +209,55 @@ export function ProjectsPage() {
     }
     return stats;
   }, [todayData.tasks, todayData.decisions, todayData.projects]);
+
+  // 归档项目列表（仅当筛选状态包含归档时才加载）
+  const [archivedProjects, setArchivedProjects] = useState<ProjectItem[]>([]);
+  useEffect(() => {
+    if (projectsFilters.status === "active") return;
+    let cancelled = false;
+    void getIpc().memory.listProjects<ProjectItem>({ includeArchived: true })
+      .then((res) => {
+        if (cancelled) return;
+        // 仅保留已归档的项目
+        setArchivedProjects(res.projects.filter((p) => p.archivedAt));
+      })
+      .catch((err) => {
+        if (!cancelled) console.error("加载归档项目失败:", err);
+      });
+    return () => { cancelled = true; };
+  }, [projectsFilters.status]);
+
+  // 客户端过滤 + 排序
+  const filteredProjects = useMemo(() => {
+    let list: ProjectItem[];
+    if (projectsFilters.status === "active") {
+      list = todayData.projects.filter((p) => !p.archivedAt);
+    } else if (projectsFilters.status === "archived") {
+      list = archivedProjects;
+    } else {
+      // all：合并活跃 + 归档
+      const activeIds = new Set(todayData.projects.map((p) => p.id));
+      list = [...todayData.projects, ...archivedProjects.filter((p) => !activeIds.has(p.id))];
+    }
+
+    const kw = projectsFilters.keyword.trim().toLowerCase();
+    if (kw) {
+      list = list.filter((p) =>
+        p.name.toLowerCase().includes(kw) ||
+        p.summary.toLowerCase().includes(kw) ||
+        (p.aliases ?? []).some((a) => a.toLowerCase().includes(kw))
+      );
+    }
+
+    const sortBy = projectsFilters.sortBy;
+    list = [...list].sort((a, b) => {
+      if (sortBy === "name") return a.name.localeCompare(b.name, "zh-CN");
+      const aVal = a[sortBy] ?? "";
+      const bVal = b[sortBy] ?? "";
+      return bVal.localeCompare(aVal); // 降序
+    });
+    return list;
+  }, [todayData.projects, archivedProjects, projectsFilters]);
 
   const handleOpenDetail = (id: string) => {
     setSelectedProjectId(id);
@@ -647,18 +699,56 @@ export function ProjectsPage() {
         </div>
       )}
 
+      {/* 筛选栏 */}
+      <div className="memory-filters">
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">搜索</label>
+          <input
+            type="text"
+            className="memory-filters__input"
+            placeholder="项目名 / 摘要 / 别名"
+            value={projectsFilters.keyword}
+            onChange={(e) => setProjectsFilters({ keyword: e.target.value })}
+          />
+        </div>
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">状态</label>
+          <select
+            className="memory-filters__select"
+            value={projectsFilters.status}
+            onChange={(e) => setProjectsFilters({ status: e.target.value as "all" | "active" | "archived" })}
+          >
+            <option value="active">活跃</option>
+            <option value="archived">已归档</option>
+            <option value="all">全部</option>
+          </select>
+        </div>
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">排序</label>
+          <select
+            className="memory-filters__select"
+            value={projectsFilters.sortBy}
+            onChange={(e) => setProjectsFilters({ sortBy: e.target.value as "lastActiveAt" | "createdAt" | "name" })}
+          >
+            <option value="lastActiveAt">最后活跃</option>
+            <option value="createdAt">创建时间</option>
+            <option value="name">名称</option>
+          </select>
+        </div>
+      </div>
+
       {todayLoading && todayData.projects.length === 0 ? (
         <p className="state-loading">正在加载项目...</p>
-      ) : todayData.projects.length === 0 ? (
+      ) : filteredProjects.length === 0 ? (
         <div className="empty-state">
-          <p>当前没有项目。</p>
+          <p>当前没有符合筛选条件的项目。</p>
           <p className="empty-state__hint">
-            持续观察后，Recall 会把同一主题的工作归纳为项目。
+            调整搜索关键词或筛选条件，或持续观察让 Recall 归纳更多项目。
           </p>
         </div>
       ) : (
         <div className="projects-grid">
-          {todayData.projects.map((project) => {
+          {filteredProjects.map((project) => {
             const stat = projectStats.get(project.id) ?? {
               openTaskCount: 0,
               decisionCount: 0,

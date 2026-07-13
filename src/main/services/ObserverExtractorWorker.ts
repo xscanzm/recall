@@ -452,7 +452,7 @@ export class ObserverExtractorWorker {
               jobType: "observer_extractor_batch",
               jobInputJson,
               reasoningEffort: "none", // 关键参数（阶段一验证：禁用 reasoning，避免 content 为空）
-              maxTokens: 8192,
+              maxTokens: 16_384,
               timeoutMs: 180_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
             },
             BatchObserverExtractorOutputSchema
@@ -577,7 +577,7 @@ export class ObserverExtractorWorker {
               jobType: "observer_batch",
               jobInputJson,
               reasoningEffort: "none",
-              maxTokens: 8192,
+              maxTokens: 16_384,
               timeoutMs: 180_000,
             },
             BatchObserverOutputSchema

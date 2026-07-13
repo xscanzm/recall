@@ -63,6 +63,41 @@ afterEach(() => {
 });
 
 describe("ModelGateway response diagnostics", () => {
+  it("uses the expanded default max_tokens for extraction requests", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal({ ...input(), maxTokens: undefined }, schema);
+
+    expect(result.ok).toBe(true);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.max_tokens).toBe(16_384);
+  });
+
+  it("omits response_format for text fallback requests", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal({ ...input(), responseFormat: "text" }, schema);
+
+    expect(result.ok).toBe(true);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.response_format).toBeUndefined();
+  });
+
+  it("does not call repair when disableRepair is enabled", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "not json" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal({ ...input(), disableRepair: true }, schema);
+
+    expect(result).toMatchObject({ ok: false, errorCode: "invalid_json", attempts: 1 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("returns output_truncated without attempting JSON repair when finish_reason is length", async () => {
     const setup = makeGateway(Response.json({
       choices: [{ message: { content: "{\"blocks\":[" }, finish_reason: "length" }],

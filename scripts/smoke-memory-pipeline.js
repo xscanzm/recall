@@ -68,6 +68,7 @@ function makeObservation(index) {
       {
         type: "chat",
         summary: "微信聊天围绕 Recall 记忆系统重构、批次观察、片段和事实沉淀展开。",
+        fullText: "L0 只做识别\nN 帧形成片段\n事实继续沉淀到项目和人物",
         keyTextSnippets: ["L0 只做识别", "N 帧形成片段", "事实继续沉淀到项目和人物"],
       },
     ],

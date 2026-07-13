@@ -107,6 +107,10 @@ const recallApi = {
   memory: {
     listToday: <T>(): Promise<T> => ipcRenderer.invoke("memory:listToday"),
     search: (input: IpcRequest<"memory:search">) => invokeValidated(ipcRenderer, "memory:search", input),
+    expandSearch: (input: IpcRequest<"memory:expandSearch">) => invokeValidated(ipcRenderer, "memory:expandSearch", input),
+    getDetail: (input: IpcRequest<"memory:getDetail">) => invokeValidated(ipcRenderer, "memory:getDetail", input),
+    getSourcePreview: (input: IpcRequest<"memory:getSourcePreview">) => invokeValidated(ipcRenderer, "memory:getSourcePreview", input),
+    openSourceUrl: (input: IpcRequest<"memory:openSourceUrl">) => invokeValidated(ipcRenderer, "memory:openSourceUrl", input),
     updateFact: (input: unknown): Promise<{ ok: true }> =>
       ipcRenderer.invoke("memory:updateFact", input),
     updateTask: (input: unknown): Promise<{ ok: true }> =>
@@ -114,22 +118,7 @@ const recallApi = {
     deleteObject: (input: { id: string; type: string }): Promise<{ ok: true }> =>
       ipcRenderer.invoke("memory:deleteObject", input),
     // M7 新增：轻量问答
-    ask: (input: {
-      question: string;
-      limit?: number;
-    }): Promise<{
-      ok: boolean;
-      answer?: string;
-      sources?: Array<{
-        id: string;
-        type: "fact" | "scene" | "task" | "project" | "decision" | "report" | "person";
-        title: string;
-        summary?: string;
-      }>;
-      searchCount?: number;
-      code?: string;
-      message?: string;
-    }> => ipcRenderer.invoke("memory:ask", input),
+    ask: (input: IpcRequest<"memory:ask">) => invokeValidated(ipcRenderer, "memory:ask", input),
     // M7 新增：用户纠错
     createUserFeedback: (input: {
       targetType: "fact" | "task" | "scene" | "project" | "person" | "decision" | "reminder";
@@ -198,7 +187,7 @@ const recallApi = {
     }> => ipcRenderer.invoke("memory:listAllAliases"),
     // 012 新增：列出所有人物 / 项目（人物/项目页用）
     listPeople: <T>(): Promise<{ ok: true; people: T[] }> => ipcRenderer.invoke("memory:listPeople"),
-    listProjects: <T>(): Promise<{ ok: true; projects: T[] }> => ipcRenderer.invoke("memory:listProjects"),
+    listProjects: <T>(input?: { includeArchived?: boolean }): Promise<{ ok: true; projects: T[] }> => ipcRenderer.invoke("memory:listProjects", input),
   },
 
   // -------------------- reminders --------------------

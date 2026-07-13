@@ -341,17 +341,25 @@ export const MemoryAskInputSchema = z.object({
  */
 export const MemoryAskOutputSchema = z.object({
   answer: z.string().max(2000),
+  caveat: z.string().max(500).optional(),
   sourceIds: z.array(z.string()).optional(),
   sources: z.array(
     z.object({
       id: z.string(),
-      type: z.enum(["fact", "scene", "task", "project", "decision", "report", "person"]),
+      type: z.enum(["fact", "scene", "task", "project", "decision", "report", "person", "record"]),
       title: z.string(),
       summary: z.string().optional(),
     })
   ).optional(),
 }).refine((value) => value.sourceIds !== undefined || value.sources !== undefined, {
   message: "sourceIds or sources is required",
+});
+
+export const MemorySearchExpansionOutputSchema = z.object({
+  terms: z.array(z.string().min(1).max(80)).max(12),
+  timeFrom: z.string().optional(),
+  timeTo: z.string().optional(),
+  type: z.enum(["fact", "scene", "task", "project", "decision", "report", "person", "record"]).optional(),
 });
 
 /**
@@ -408,6 +416,7 @@ const VisionObservationOutputCoreSchema = z.object({
         "unknown",
       ]),
       summary: SummarySchema,
+      fullText: z.string(),
       keyTextSnippets: z.array(z.string().max(TEXT_LIMITS.evidenceText)),
     })
   ),
@@ -2111,6 +2120,7 @@ const ObserverOutputV2CoreSchema = z.object({
         "unknown",
       ]),
       summary: SummarySchema,
+      fullText: z.string(),
       keyTextSnippets: z.array(z.string().max(TEXT_LIMITS.evidenceText)),
     })
   ),

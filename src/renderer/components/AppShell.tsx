@@ -62,6 +62,14 @@ export const AppShell = ({ children }: AppShellProps) => {
   const appStatus = useAppStore((s) => s.appStatus);
   const isDebugEnabled = useAppStore((s) => s.settings?.debug?.enabled ?? false);
 
+  // 全局二次确认对话框（由 store 控制，任意页面可通过 requestConfirm 触发）
+  const showConfirmDialog = useAppStore((s) => s.showConfirmDialog);
+  const confirmDialogTitle = useAppStore((s) => s.confirmDialogTitle);
+  const confirmDialogMessage = useAppStore((s) => s.confirmDialogMessage);
+  const confirmDialogConfirmText = useAppStore((s) => s.confirmDialogConfirmText);
+  const closeConfirmDialog = useAppStore((s) => s.closeConfirmDialog);
+  const executeConfirm = useAppStore((s) => s.executeConfirm);
+
   const isObserving = appStatus.observing && !appStatus.paused;
   const navItems = isDebugEnabled ? [...NAV_ITEMS, DEBUG_NAV_ITEM] : NAV_ITEMS;
 
@@ -127,6 +135,40 @@ export const AppShell = ({ children }: AppShellProps) => {
         </header>
         <div className="app-shell__content">{children}</div>
       </main>
+
+      {/* 全局二次确认对话框（由 store 控制） */}
+      {showConfirmDialog && (
+        <div
+          className="confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-dialog-title"
+          onClick={closeConfirmDialog}
+        >
+          <div className="confirm-dialog__box" onClick={(e) => e.stopPropagation()}>
+            <h3 id="confirm-dialog-title" className="confirm-dialog__title">
+              {confirmDialogTitle}
+            </h3>
+            <p className="confirm-dialog__message">{confirmDialogMessage}</p>
+            <div className="confirm-dialog__actions">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={closeConfirmDialog}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                onClick={executeConfirm}
+              >
+                {confirmDialogConfirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

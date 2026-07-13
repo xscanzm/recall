@@ -15,9 +15,10 @@ interface TimelineListProps {
   loading: boolean;
   organizing?: boolean;
   viewMode: TimelineViewMode;
+  onOpenDetail: (block: TimelineBlock) => void;
 }
 
-export function TimelineList({ blocks, loading, organizing = false, viewMode }: TimelineListProps) {
+export function TimelineList({ blocks, loading, organizing = false, viewMode, onOpenDetail }: TimelineListProps) {
   if (loading) {
     return <TimelineSkeleton />;
   }
@@ -55,6 +56,7 @@ export function TimelineList({ blocks, loading, organizing = false, viewMode }: 
           key={block.id}
           block={block}
           detailMode={viewMode === "detail"}
+          onOpenDetail={() => onOpenDetail(block)}
         />
       ))}
     </div>

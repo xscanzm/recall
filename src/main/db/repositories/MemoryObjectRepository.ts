@@ -31,6 +31,8 @@ interface ProjectRow {
   archived_at: string | null;
   // 003 字段
   orphan_status: string | null;
+  // 012 字段
+  aliases_json: string | null;
 }
 
 interface TaskRow {
@@ -168,6 +170,37 @@ export class MemoryObjectRepository {
       .prepare(`SELECT * FROM projects WHERE ${where} ORDER BY updated_at DESC LIMIT 1`)
       .get(name) as ProjectRow | undefined;
     return row ? mapProjectRow(row) : null;
+  }
+
+  /**
+   * 按名字或别名模糊查找 active 项目（增强去重）
+   * 匹配顺序：精确(name) → 别名(aliases_json) → 规范化名字包含
+   * - 规范化：去括号、去空格、转小写
+   * - 包含匹配要求规范化后长度 >= 2，避免过短名字误匹配
+   */
+  findActiveProjectByFuzzyName(title: string): Project | null {
+    const normalized = normalizeName(title);
+    const titleLower = title.toLowerCase();
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM projects WHERE status = 'active' AND archived_at IS NULL ORDER BY updated_at DESC LIMIT 50`
+      )
+      .all() as ProjectRow[];
+    for (const row of rows) {
+      // 1. 精确匹配（大小写不敏感）
+      if (row.name.toLowerCase() === titleLower) return mapProjectRow(row);
+      // 2. 别名匹配
+      const aliases = row.aliases_json ? safeParseArray<string>(row.aliases_json) : [];
+      if (aliases.some((a) => a.toLowerCase() === titleLower)) return mapProjectRow(row);
+      // 3. 规范化包含匹配
+      if (normalized.length >= 2) {
+        const rowNorm = normalizeName(row.name);
+        if (rowNorm.length >= 2 && (rowNorm.includes(normalized) || normalized.includes(rowNorm))) {
+          return mapProjectRow(row);
+        }
+      }
+    }
+    return null;
   }
 
   listProjects(opts: {
@@ -412,6 +445,37 @@ export class MemoryObjectRepository {
       )
       .get(name) as PersonRow | undefined;
     return row ? mapPersonRow(row) : null;
+  }
+
+  /**
+   * 按名字或别名模糊查找人物（增强去重）
+   * 匹配顺序：精确(name) → 别名(aliases_json) → 规范化名字包含
+   * - 规范化：去括号、去空格、转小写
+   * - 包含匹配要求规范化后长度 >= 2，避免过短名字误匹配
+   */
+  findPersonByFuzzyName(title: string): Person | null {
+    const normalized = normalizeName(title);
+    const titleLower = title.toLowerCase();
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM people WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 50`
+      )
+      .all() as PersonRow[];
+    for (const row of rows) {
+      // 1. 精确匹配（大小写不敏感）
+      if (row.name.toLowerCase() === titleLower) return mapPersonRow(row);
+      // 2. 别名匹配
+      const aliases = row.aliases_json ? safeParseArray<string>(row.aliases_json) : [];
+      if (aliases.some((a) => a.toLowerCase() === titleLower)) return mapPersonRow(row);
+      // 3. 规范化包含匹配
+      if (normalized.length >= 2) {
+        const rowNorm = normalizeName(row.name);
+        if (rowNorm.length >= 2 && (rowNorm.includes(normalized) || normalized.includes(rowNorm))) {
+          return mapPersonRow(row);
+        }
+      }
+    }
+    return null;
   }
 
   listPeople(opts: { includeDeleted?: boolean; limit?: number; offset?: number } = {}): Person[] {
@@ -816,6 +880,8 @@ function mapProjectRow(row: ProjectRow): Project {
     archivedAt: row.archived_at,
     // 003 字段
     orphanStatus: row.orphan_status,
+    // 012 字段
+    aliases: row.aliases_json ? safeParseArray<string>(row.aliases_json) : [],
   };
 }
 
@@ -881,6 +947,20 @@ function safeParseArray<T = unknown>(json: string): T[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 名字规范化（用于模糊去重）
+ * - 转小写
+ * - 去除括号及括号内内容（中文括号（）和英文括号 ()）
+ * - 去除首尾空格
+ * 例："陈章（耀石锂电hr）" → "陈章"
+ */
+function normalizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[（(][^）)]*[）)]/g, "") // 去除中文/英文括号及内容
+    .trim();
 }
 
 function generateId(prefix: string): string {

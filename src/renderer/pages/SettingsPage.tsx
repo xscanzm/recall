@@ -99,14 +99,8 @@ export function SettingsPage() {
   const clearScreenshotsOnly = useAppStore((s) => s.clearScreenshotsOnly);
   const getCacheSize = useAppStore((s) => s.getCacheSize);
 
-  // 二次确认对话框
-  const showConfirmDialog = useAppStore((s) => s.showConfirmDialog);
-  const confirmDialogTitle = useAppStore((s) => s.confirmDialogTitle);
-  const confirmDialogMessage = useAppStore((s) => s.confirmDialogMessage);
-  const confirmDialogConfirmText = useAppStore((s) => s.confirmDialogConfirmText);
+  // 二次确认对话框（触发用 requestConfirm，渲染由 AppShell 全局处理）
   const requestConfirm = useAppStore((s) => s.requestConfirm);
-  const closeConfirmDialog = useAppStore((s) => s.closeConfirmDialog);
-  const executeConfirm = useAppStore((s) => s.executeConfirm);
   const clearingData = useAppStore((s) => s.clearingData);
   const setClearingData = useAppStore((s) => s.setClearingData);
 
@@ -1069,44 +1063,7 @@ export function SettingsPage() {
         </div>
       </section>
 
-      {/* ============ 二次确认对话框（全局，由 store 控制） ============ */}
-      {showConfirmDialog && (
-        <div
-          className="confirm-dialog"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="confirm-dialog-title"
-          onClick={closeConfirmDialog}
-        >
-          <div
-            className="confirm-dialog__box"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="confirm-dialog-title" className="confirm-dialog__title">
-              {confirmDialogTitle}
-            </h3>
-            <p className="confirm-dialog__message">{confirmDialogMessage}</p>
-            <div className="confirm-dialog__actions">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={closeConfirmDialog}
-                disabled={clearingData}
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                className="btn btn-danger"
-                onClick={executeConfirm}
-                disabled={clearingData}
-              >
-                {clearingData ? "处理中..." : confirmDialogConfirmText}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 二次确认对话框已移至 AppShell 全局渲染 */}
     </div>
   );
 }

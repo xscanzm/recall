@@ -6,7 +6,17 @@ import { invokeValidated } from "./invokeValidated";
 
 describe("IPC contracts", () => {
   it("applies request defaults and rejects malformed values", () => {
-    expect(ipcContracts["memory:search"].request.parse({ query: "recall" })).toEqual({ query: "recall", limit: 50, offset: 0 });
+    expect(ipcContracts["memory:search"].request.parse({ query: "recall" })).toEqual({ query: "recall", limit: 50, offset: 0, filters: {} });
+    expect(ipcContracts["memory:ask"].request.parse({ mode: "summary", candidates: [{ id: "fact-1", type: "fact" }] })).toEqual({
+      mode: "summary",
+      candidates: [{ id: "fact-1", type: "fact" }],
+    });
+    expect(() => ipcContracts["memory:ask"].request.parse({ mode: "answer", candidates: [{ id: "fact-1", type: "fact" }] })).toThrow();
+    expect(ipcContracts["memory:ask"].request.parse({ mode: "answer", question: "为什么这样决定？", candidates: [{ id: "fact-1", type: "fact" }] })).toMatchObject({
+      mode: "answer",
+      question: "为什么这样决定？",
+    });
+    expect(ipcContracts["memory:getDetail"].request.parse({ id: "block-1", type: "timeline" })).toEqual({ id: "block-1", type: "timeline" });
     expect(() => ipcContracts["workReport:generate"].request.parse({ dateKey: "bad", selectedBlockIds: [], style: "brief" })).toThrow();
     expect(() => ipcContracts["timeline:get"].response.parse({ ok: true, data: [{ id: "incomplete" }] })).toThrow();
   });
@@ -14,24 +24,26 @@ describe("IPC contracts", () => {
   it("validates handler input and output with a stable error code", async () => {
     let registered: ((event: never, input: unknown) => Promise<unknown>) | undefined;
     const ipc = { removeHandler: vi.fn(), handle: vi.fn((_channel, handler) => { registered = handler; }) };
-    handleValidated(ipc as never, "memory:search", () => ({ results: [], total: 0 }));
+    handleValidated(ipc as never, "memory:search", () => ({ results: [], total: 0, quality: "none", queryTerms: [] }));
     await expect(registered!(undefined as never, { query: "" })).rejects.toMatchObject({ code: "schema_invalid" });
 
-    handleValidated(ipc as never, "memory:search", () => ({ results: [], total: -1 }));
+    handleValidated(ipc as never, "memory:search", () => ({ results: [], total: -1, quality: "none", queryTerms: [] }));
     await expect(registered!(undefined as never, { query: "valid" })).rejects.toMatchObject({ code: "schema_invalid" });
   });
 
   it("validates preload invocations in both directions", async () => {
-    const ipc = { invoke: vi.fn(async () => ({ results: [], total: 0 })) };
-    await expect(invokeValidated(ipc as never, "memory:search", { query: "recall" })).resolves.toEqual({ results: [], total: 0 });
-    expect(ipc.invoke).toHaveBeenCalledWith("memory:search", { query: "recall", limit: 50, offset: 0 });
-    ipc.invoke.mockResolvedValueOnce({ results: [], total: -1 });
+    const ipc = { invoke: vi.fn(async () => ({ results: [], total: 0, quality: "none", queryTerms: [] })) };
+    await expect(invokeValidated(ipc as never, "memory:search", { query: "recall" })).resolves.toEqual({ results: [], total: 0, quality: "none", queryTerms: [] });
+    expect(ipc.invoke).toHaveBeenCalledWith("memory:search", { query: "recall", limit: 50, offset: 0, filters: {} });
+    ipc.invoke.mockResolvedValueOnce({ results: [], total: -1, quality: "none", queryTerms: [] });
     await expect(invokeValidated(ipc as never, "memory:search", { query: "recall" })).rejects.toThrow();
   });
 
   it("derives preload signatures from the shared contract", () => {
     expectTypeOf<Parameters<RecallApi["memory"]["search"]>[0]>().toEqualTypeOf<IpcRequest<"memory:search">>();
     expectTypeOf<Awaited<ReturnType<RecallApi["memory"]["search"]>>>().toEqualTypeOf<IpcResponse<"memory:search">>();
+    expectTypeOf<Parameters<RecallApi["memory"]["getDetail"]>[0]>().toEqualTypeOf<IpcRequest<"memory:getDetail">>();
+    expectTypeOf<Awaited<ReturnType<RecallApi["memory"]["ask"]>>>().toEqualTypeOf<IpcResponse<"memory:ask">>();
     expectTypeOf<Parameters<RecallApi["workReport"]["generate"]>[0]>().toEqualTypeOf<IpcRequest<"workReport:generate">>();
   });
 

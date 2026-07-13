@@ -767,6 +767,7 @@ export interface ObserverOutputV2 {
       | "terminal"
       | "unknown";
     summary: string;
+    fullText: string;
     keyTextSnippets: string[];
   }>;
   detectedEntities: Array<{

@@ -63,6 +63,9 @@ export function PeoplePage() {
   const todayLoading = useAppStore((s) => s.todayLoading);
   const todayError = useAppStore((s) => s.todayError);
   const loadToday = useAppStore((s) => s.loadToday);
+  const deleteObject = useAppStore((s) => s.deleteObject);
+  const peopleFilters = useAppStore((s) => s.peopleFilters);
+  const setPeopleFilters = useAppStore((s) => s.setPeopleFilters);
 
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
   const [personDetail, setPersonDetail] = useState<PersonDetailData | null>(null);
@@ -147,6 +150,34 @@ export function PeoplePage() {
     return stats;
   }, [todayData.people, todayData.tasks, todayData.projects]);
 
+  // 客户端过滤 + 排序
+  const filteredPeople = useMemo(() => {
+    let list = todayData.people.filter((p) => !p.deletedAt);
+
+    const kw = peopleFilters.keyword.trim().toLowerCase();
+    if (kw) {
+      list = list.filter((p) =>
+        p.name.toLowerCase().includes(kw) ||
+        (p.role ?? "").toLowerCase().includes(kw) ||
+        (p.organization ?? "").toLowerCase().includes(kw) ||
+        (p.aliases ?? []).some((a) => a.toLowerCase().includes(kw))
+      );
+    }
+
+    if (peopleFilters.projectId) {
+      list = list.filter((p) => p.relatedProjectIds.includes(peopleFilters.projectId));
+    }
+
+    const sortBy = peopleFilters.sortBy;
+    list = [...list].sort((a, b) => {
+      if (sortBy === "name") return a.name.localeCompare(b.name, "zh-CN");
+      const aVal = a[sortBy] ?? "";
+      const bVal = b[sortBy] ?? "";
+      return bVal.localeCompare(aVal); // 降序
+    });
+    return list;
+  }, [todayData.people, peopleFilters]);
+
   if (!isReady) {
     return (
       <div className="people-page">
@@ -157,6 +188,25 @@ export function PeoplePage() {
       </div>
     );
   }
+
+  /** 删除人物（软删除，保留 source 链路可恢复） */
+  const handleDeletePerson = (id: string) => {
+    useAppStore.getState().requestConfirm({
+      title: "删除人物",
+      message: "确定要删除这个人物吗？删除后仍保留 source 链路，可恢复。",
+      confirmText: "确认",
+      onConfirm: async () => {
+        try {
+          await deleteObject(id, "person");
+          if (selectedPersonId === id) {
+            setSelectedPersonId(null);
+          }
+        } catch (err) {
+          console.error("删除人物失败:", err);
+        }
+      },
+    });
+  };
 
   // 详情视图
   if (selectedPersonId) {
@@ -201,7 +251,18 @@ export function PeoplePage() {
         <div className="person-detail">
           {/* 人物概览 */}
           <section className="card person-detail__section">
-            <h3 className="card__title">人物概览</h3>
+            <div className="person-detail__section-header">
+              <h3 className="card__title">人物概览</h3>
+              <div className="person-detail__actions">
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => handleDeletePerson(person.id)}
+                >
+                  删除
+                </button>
+              </div>
+            </div>
             <div className="card__body">
               <p className="person-detail__summary">
                 {person.summary || "暂无概览信息。"}
@@ -371,18 +432,57 @@ export function PeoplePage() {
         </div>
       )}
 
+      {/* 筛选栏 */}
+      <div className="memory-filters">
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">搜索</label>
+          <input
+            type="text"
+            className="memory-filters__input"
+            placeholder="姓名 / 角色 / 组织 / 别名"
+            value={peopleFilters.keyword}
+            onChange={(e) => setPeopleFilters({ keyword: e.target.value })}
+          />
+        </div>
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">关联项目</label>
+          <select
+            className="memory-filters__select"
+            value={peopleFilters.projectId}
+            onChange={(e) => setPeopleFilters({ projectId: e.target.value })}
+          >
+            <option value="">全部项目</option>
+            {todayData.projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="memory-filters__group">
+          <label className="memory-filters__label">排序</label>
+          <select
+            className="memory-filters__select"
+            value={peopleFilters.sortBy}
+            onChange={(e) => setPeopleFilters({ sortBy: e.target.value as "updatedAt" | "createdAt" | "name" })}
+          >
+            <option value="updatedAt">最近协作</option>
+            <option value="createdAt">创建时间</option>
+            <option value="name">姓名</option>
+          </select>
+        </div>
+      </div>
+
       {todayLoading && todayData.people.length === 0 ? (
         <p className="state-loading">正在加载人物...</p>
-      ) : todayData.people.length === 0 ? (
+      ) : filteredPeople.length === 0 ? (
         <div className="empty-state">
-          <p>当前没有人物记录。</p>
+          <p>当前没有符合筛选条件的人物。</p>
           <p className="empty-state__hint">
-            持续观察后，Recall 会从工作上下文中识别相关人物。
+            调整搜索关键词或筛选条件，或持续观察让 Recall 识别更多人物。
           </p>
         </div>
       ) : (
         <div className="people-grid">
-          {todayData.people.map((person) => {
+          {filteredPeople.map((person) => {
             const stat = peopleStats.get(person.id) ?? {
               latestInteraction: null,
               unfinishedCount: 0,
@@ -417,6 +517,17 @@ export function PeoplePage() {
                       title="把此人合并到其他人物（来自同一人但识别成多个名字时）"
                     >
                       合并到...
+                    </button>
+                    <button
+                      type="button"
+                      className="person-card__delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeletePerson(person.id);
+                      }}
+                      title="删除此人物（软删除，可恢复）"
+                    >
+                      删除
                     </button>
                   </div>
                 </div>

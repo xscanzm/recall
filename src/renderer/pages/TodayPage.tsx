@@ -28,6 +28,7 @@ import { TodaySidePanel } from "./today/TodaySidePanel";
 import { WorkReportSelectionPanel } from "./today/WorkReportSelectionPanel";
 import { WorkReportPreviewModal } from "./today/WorkReportPreviewModal";
 import { friendlyDateLabel, isWorkCategory, todayDateKey } from "./today/helpers";
+import { MemoryDetailPage, type MemoryDetailRef } from "./MemoryDetailPage";
 
 export function TodayPage() {
   const isReady = useAppStore((s) => s.isReady);
@@ -50,6 +51,7 @@ export function TodayPage() {
   const [viewMode, setViewMode] = useState<TimelineViewMode>("segments");
   const [onlyWork, setOnlyWork] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
+  const [selectedDetail, setSelectedDetail] = useState<MemoryDetailRef | null>(null);
 
   // 首次进入或 dateKey 变化时加载（选择模式中不重载，避免清空选区）
   useEffect(() => {
@@ -103,6 +105,17 @@ export function TodayPage() {
 
   const handleGoSettings = () => setPage("settings");
   const handleRetry = () => void refreshTodayPageData();
+
+  if (selectedDetail) {
+    return (
+      <MemoryDetailPage
+        detailRef={selectedDetail}
+        backLabel="返回今日时间轴"
+        onBack={() => setSelectedDetail(null)}
+        onOpenRelation={(relation) => setSelectedDetail(relation)}
+      />
+    );
+  }
 
   // ---- 全页空状态 / 错误状态 ----
 
@@ -176,6 +189,7 @@ export function TodayPage() {
       onToggleDrawer={() => setSidePanelDrawerOpen(!sidePanelDrawerOpen)}
       onRetry={handleRetry}
       onGoSettings={handleGoSettings}
+      onOpenDetail={(id) => setSelectedDetail({ id, type: "timeline" })}
     />
   );
 }
@@ -202,6 +216,7 @@ interface TodayPageLayoutProps {
   onToggleDrawer: () => void;
   onRetry: () => void;
   onGoSettings: () => void;
+  onOpenDetail: (id: string) => void;
 }
 
 function TodayPageLayout(props: TodayPageLayoutProps) {
@@ -223,6 +238,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     onToggleDrawer,
     onRetry,
     onGoSettings,
+    onOpenDetail,
   } = props;
 
   // 过滤时间轴：忽略列表 + 仅看工作 + 搜索，并按开始时间倒序（最近发生的事先看到）
@@ -289,6 +305,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
             loading={showSkeleton}
             organizing={todayPageLoading && !!todayPageData && filteredBlocks.length === 0}
             viewMode={viewMode}
+            onOpenDetail={(block) => onOpenDetail(block.id)}
           />
         )}
 
