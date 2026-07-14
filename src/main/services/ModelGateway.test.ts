@@ -5,7 +5,10 @@ const schema = {
   safeParse: (input: unknown) => ({ success: true as const, data: input }),
 };
 
-function makeGateway(response: Response | Response[]) {
+function makeGateway(response: Response | Response[], config: {
+  model?: string;
+  optionsJson?: string;
+} = {}) {
   const responses = Array.isArray(response) ? [...response] : [response];
   vi.stubGlobal("fetch", vi.fn(async () => {
     const next = responses.shift();
@@ -20,9 +23,9 @@ function makeGateway(response: Response | Response[]) {
         id: "model",
         kind: "multimodal",
         endpoint: "https://example.test/v1",
-        model: "test-model",
+        model: config.model ?? "test-model",
         enabled: true,
-        optionsJson: "{}",
+        optionsJson: config.optionsJson ?? "{}",
       })),
       isVerboseModelIO: vi.fn(() => false),
     } as never,
@@ -73,6 +76,59 @@ describe("ModelGateway response diagnostics", () => {
     expect(result.ok).toBe(true);
     const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(request.max_tokens).toBe(16_384);
+  });
+
+  it("does not send reasoning_effort to generic models", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result.ok).toBe(true);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.reasoning_effort).toBeUndefined();
+  });
+
+  it("defaults SenseNova flash-lite requests to reasoning_effort none", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }), { model: "SenseTime/sensenova-6.7-flash-lite" });
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result.ok).toBe(true);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.reasoning_effort).toBe("none");
+  });
+
+  it("preserves an explicit reasoning_effort option for SenseNova", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }), {
+      model: "sensenova-6.7-flash-lite",
+      optionsJson: JSON.stringify({ reasoning_effort: "low" }),
+    });
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result.ok).toBe(true);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.reasoning_effort).toBe("low");
+  });
+
+  it("applies SenseNova reasoning compatibility to JSON repair requests", async () => {
+    const setup = makeGateway([
+      Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }),
+      Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }),
+    ], { model: "sensenova-6.7-flash-lite" });
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const repairRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
+    expect(repairRequest.reasoning_effort).toBe("none");
   });
 
   it("omits response_format for text fallback requests", async () => {

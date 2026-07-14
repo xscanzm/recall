@@ -105,12 +105,6 @@ export interface ModelCallInput {
   /** max tokens（覆盖配置 options） */
   maxTokens?: number;
   /**
-   * reasoning effort（仅部分模型支持，如 sensenova-6.7-flash-lite）
-   * - "none"：禁用推理模式，避免 content 为空（阶段一验证此参数为必须）
-   * - 其他值由调用方按需传入
-   */
-  reasoningEffort?: "none" | "low" | "medium" | "high";
-  /**
    * 单次调用超时覆盖（毫秒）。未指定时使用实例默认超时（120s）。
    * 批次模式（默认 6 帧多图）需要 180s，普通模式保持 120s。
    */
@@ -460,16 +454,13 @@ export class ModelGateway {
       requestBody.stream = true;
       requestBody.stream_options = { include_usage: true };
     }
-    // 透传 reasoning_effort（阶段一验证：sensenova-6.7-flash-lite 必须设为 "none" 否则 content 为空）
-    if (input.reasoningEffort) {
-      requestBody.reasoning_effort = input.reasoningEffort;
-    }
     // 合并 extra options（除 temperature/max_tokens 外的字段）
     for (const [k, v] of Object.entries(extraOptions)) {
       if (k !== "temperature" && k !== "max_tokens" && !requestBody.hasOwnProperty(k)) {
         requestBody[k] = v;
       }
     }
+    applyModelCompatibilityOptions(requestBody, config.model, extraOptions);
 
     let attempts = 0;
     let lastErrorCode: ModelJobErrorCode | undefined;
@@ -535,6 +526,7 @@ export class ModelGateway {
           rawOutput,
           lastErrorMessage ?? "",
           maxTokens,
+          extraOptions,
           input.timeoutMs,
           input.streaming ?? false
         );
@@ -604,6 +596,7 @@ export class ModelGateway {
     badOutput: string,
     errorMessage: string,
     maxTokens: number,
+    extraOptions: Record<string, unknown>,
     timeoutMs?: number,
     streaming = false
   ): Promise<{
@@ -638,6 +631,7 @@ export class ModelGateway {
       requestBody.stream = true;
       requestBody.stream_options = { include_usage: true };
     }
+    applyModelCompatibilityOptions(requestBody, config.model, extraOptions);
     const result = streaming
       ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, timeoutMs)
       : await this.sendRequest(url, apiKey, requestBody, timeoutMs);
@@ -964,6 +958,21 @@ function safeParseOptionsJson(optionsJson: string | null | undefined): Record<st
     return {};
   } catch {
     return {};
+  }
+}
+
+function applyModelCompatibilityOptions(
+  requestBody: Record<string, unknown>,
+  model: string,
+  extraOptions: Record<string, unknown>
+): void {
+  if (Object.prototype.hasOwnProperty.call(extraOptions, "reasoning_effort")) {
+    requestBody.reasoning_effort = extraOptions.reasoning_effort;
+    return;
+  }
+  const modelName = model.trim().toLowerCase().split("/").at(-1);
+  if (modelName === "sensenova-6.7-flash-lite") {
+    requestBody.reasoning_effort = "none";
   }
 }
 

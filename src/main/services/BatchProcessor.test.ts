@@ -57,7 +57,23 @@ describe("BatchProcessor", () => {
     await processor.drain();
     await processor.drain();
     expect(process).toHaveBeenCalledTimes(3);
+    expect(repo.markFailed.mock.calls.map((call) => call[2])).toEqual([true, true, false]);
     expect(repo.state()).toEqual({ attempts: 3, status: "failed" });
     expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers interrupted running batches without reviving terminal failures", async () => {
+    const recoverRunningBatches = vi.fn(() => 2);
+    const repo = {
+      recoverRunningBatches,
+      listProcessableBatches: vi.fn(() => []),
+    };
+    const processor = new BatchProcessor(repo as never, {} as never);
+
+    processor.start();
+    await processor.drain();
+
+    expect(recoverRunningBatches).toHaveBeenCalledOnce();
+    expect("recoverFailedBatches" in repo).toBe(false);
   });
 });

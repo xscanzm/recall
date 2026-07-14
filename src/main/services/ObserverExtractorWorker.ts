@@ -347,7 +347,6 @@ export class ObserverExtractorWorker {
    * - 使用 compressedImagePaths（多张压缩 JPEG q=25）
    * - 使用 BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE（批次版 prompt）
    * - 使用 BatchObserverExtractorOutputSchema（observations 数组）
-   * - 调用 callMultimodal 时传 reasoningEffort: "none"
    * - 不在此处写 facts（由 MemoryPipeline 两阶段写入回填真实 observationId）
    *
    * @param input.batchBundle 批次 CaptureBundle
@@ -451,7 +450,6 @@ export class ObserverExtractorWorker {
               imagePaths,
               jobType: "observer_extractor_batch",
               jobInputJson,
-              reasoningEffort: "none", // 关键参数（阶段一验证：禁用 reasoning，避免 content 为空）
               maxTokens: 16_384,
               timeoutMs: 180_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
             },
@@ -576,7 +574,6 @@ export class ObserverExtractorWorker {
               imagePaths,
               jobType: "observer_batch",
               jobInputJson,
-              reasoningEffort: "none",
               maxTokens: 16_384,
               timeoutMs: 180_000,
             },
