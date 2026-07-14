@@ -47,6 +47,7 @@ export type IpcChannel =
   | "memory:openSourceUrl"
   | "memory:updateFact"
   | "memory:updateTask"
+  | "memory:updatePerson"
   | "memory:deleteObject"
   | "memory:ask"
   | "memory:createUserFeedback"
@@ -127,6 +128,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "memory:openSourceUrl",
   "memory:updateFact",
   "memory:updateTask",
+  "memory:updatePerson",
   "memory:deleteObject",
   "memory:ask",
   "memory:createUserFeedback",

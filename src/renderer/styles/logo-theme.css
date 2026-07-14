@@ -1,0 +1,24 @@
+:root {
+  --recall-accent-soft-strong: #6f9b83;
+  --recall-echo-line: rgba(45, 106, 82, 0.12);
+}
+
+.sidebar-nav-container {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sidebar-nav-group-main,
+.sidebar-nav-group-utils {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sidebar-nav-group-utils {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid var(--recall-border);
+}

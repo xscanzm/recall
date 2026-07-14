@@ -122,6 +122,9 @@ export function applyCorrection(
       } else if (targetType === "person" && deps.memoryObjectRepo) {
         const patch: Record<string, unknown> = {};
         if (typeof objectPatch?.name === "string") patch.name = objectPatch.name;
+        if (typeof objectPatch?.role === "string" || objectPatch?.role === null) patch.role = objectPatch.role;
+        if (typeof objectPatch?.organization === "string" || objectPatch?.organization === null) patch.organization = objectPatch.organization;
+        if (typeof objectPatch?.relationship === "string" || objectPatch?.relationship === null) patch.relationship = objectPatch.relationship;
         if (typeof objectPatch?.summary === "string") patch.summary = objectPatch.summary;
         if (Object.keys(patch).length > 0) {
           deps.memoryObjectRepo.updatePerson(targetId, patch);

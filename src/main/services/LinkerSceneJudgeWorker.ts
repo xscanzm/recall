@@ -833,13 +833,16 @@ export class LinkerSceneJudgeWorker {
           });
           this.linkFactIdsToExisting("person", existingId, sourceFactIds);
           this.finalizeObjectFactLinks("person", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
+          // dedup 命中时，若现有 person 的 role/organization 为空且模型本次输出了值，补齐
+          this.backfillPersonRoleOrganization(existingId, newObj);
           return true;
         }
         const inferredProjectId = this.inferProjectIdFromFacts(sourceFactIds);
         const created = this.memoryObjectRepo.createPerson({
           name: newObj.title,
-          role: null,
-          organization: null,
+          role: newObj.role ?? null,
+          organization: newObj.organization ?? null,
+          relationship: null,
           summary: newObj.summary,
           relatedProjectIds: inferredProjectId ? [inferredProjectId] : [],
           sourceFactIds,
@@ -922,6 +925,31 @@ export class LinkerSceneJudgeWorker {
       // 去重查询失败不阻断创建流程
     }
     return null;
+  }
+
+  /**
+   * dedup 命中时，若现有人物的 role/organization 为空且 LLM 本次输出了值，则补齐。
+   * 约束：不覆盖用户/LLM 已填写的非空值（"只填空、不覆盖"）。
+   */
+  private backfillPersonRoleOrganization(
+    personId: string,
+    newObj: { role?: string | null; organization?: string | null }
+  ): void {
+    try {
+      const existing = this.memoryObjectRepo.getPersonByIdActive(personId);
+      if (!existing) return;
+      const patch: { role?: string | null; organization?: string | null } = {};
+      if (!existing.role && newObj.role) patch.role = newObj.role;
+      if (!existing.organization && newObj.organization) patch.organization = newObj.organization;
+      if (Object.keys(patch).length > 0) {
+        this.memoryObjectRepo.updatePerson(personId, patch);
+      }
+    } catch (err) {
+      logger.debug({
+        jobType: "linker_scene_judge",
+        message: `[LinkerSceneJudgeWorker] backfillPersonRoleOrganization 失败（不阻断）: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 
   /**

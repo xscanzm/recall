@@ -30,6 +30,7 @@ import {
   MemoryDeleteObjectInputSchema,
   MemoryUpdateFactInputSchema,
   MemoryUpdateTaskInputSchema,
+  MemoryUpdatePersonInputSchema,
   MergeObjectsInputSchema,
   ModelDeleteConfigInputSchema,
   ModelSaveConfigInputSchema,
@@ -518,6 +519,28 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       fail("not_found", `未找到任务 ${parsed.data.id}`);
     }
     return { ok: true, task: updated };
+  });
+
+  ipcMain.handle("memory:updatePerson", (_event, input: unknown) => {
+    const parsed = MemoryUpdatePersonInputSchema.safeParse(input);
+    if (!parsed.success) {
+      fail("schema_invalid", `memory:updatePerson 参数校验失败: ${parsed.error.message}`);
+    }
+    if (!deps.memoryObjectRepo) {
+      fail("not_ready", "MemoryObjectRepository 未初始化");
+    }
+    // 重要约束：Person.summary 是非空 string，null 转为 ""（允许用户清空简介）
+    const patch: Record<string, unknown> = {};
+    if (parsed.data.name !== undefined) patch.name = parsed.data.name;
+    if (parsed.data.role !== undefined) patch.role = parsed.data.role;
+    if (parsed.data.organization !== undefined) patch.organization = parsed.data.organization;
+    if (parsed.data.relationship !== undefined) patch.relationship = parsed.data.relationship;
+    if (parsed.data.summary !== undefined) patch.summary = parsed.data.summary === null ? "" : parsed.data.summary;
+    const updated = deps.memoryObjectRepo.updatePerson(parsed.data.id, patch);
+    if (!updated) {
+      fail("not_found", `未找到人物 ${parsed.data.id}`);
+    }
+    return { ok: true, person: updated };
   });
 
   ipcMain.handle("memory:deleteObject", (_event, input: unknown) => {

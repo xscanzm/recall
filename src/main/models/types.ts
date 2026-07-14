@@ -500,6 +500,8 @@ export interface Person {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** 022 字段：用户与该人物的关系（手动编辑，如"同事""客户""朋友"） */
+  relationship: string | null;
   /**
    * 012 字段：别名列表（合并过的旧名字）
    * - 例：人物「陈章」合并过「陈章（耀石锂电 hr）」「耀石锂电 hr」，则 to.aliases = ['陈章（耀石锂电 hr）', '耀石锂电 hr']

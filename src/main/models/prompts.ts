@@ -1935,7 +1935,10 @@ newObjects 元素 schema：
   "title": "字符串，最大长度 120，对象名/标题",
   "summary": "字符串，最大长度 1000，简短描述（中文）",
   "sourceFactIds": ["字符串数组，关联的 fact id（必填，从 newFacts 中选，不能为空）"],
-  "confidence": "数值，范围 [0,1]"
+  "confidence": "数值，范围 [0,1]",
+  // 仅 objectType="person" 时输出以下字段；其他 objectType 不要输出
+  "role": "字符串或 null，人物角色/职位（如"产品经理"、"hr"、"CTO"）。fact 中未明确提及则填 null",
+  "organization": "字符串或 null，人物所属组织/公司（如"耀石锂电"、"腾讯"）。fact 中未明确提及则填 null"
 }
 
 mergedObjects 元素 schema（对应原 LINKER_PROMPT_TEMPLATE 的 mergeSuggestions 数组）：
@@ -1951,9 +1954,17 @@ mergedObjects 元素 schema（对应原 LINKER_PROMPT_TEMPLATE 的 mergeSuggesti
 - linkedFacts / newObjects / mergedObjects 三个数组都必须存在，没有内容则填空数组 []
 - linkedFacts 每个对象必须包含 sourceFactId、targetType、targetId、relationship、confidence、reason
 - newObjects 每个对象必须包含 objectType、title、summary、sourceFactIds、confidence
+- newObjects 中 objectType="person" 时必须额外输出 role 和 organization 字段（无信息则填 null）
 - sourceFactIds 不能为空数组，且必须来自 newFacts
 - 不要输出 action、factIds、name、rationale、keepId、mergeId、tags、displayName、projectHint 等 schema 之外字段
-- 不要创造 schema 之外的字段
+- 不要创造 schema 之外的字段（role/organization 是 schema 内字段，仅 person 输出）
+
+【newObjects 中 person 的 role/organization 抽取规则】
+- 仅当 objectType="person" 时输出 role / organization 两个字段
+- 仅当 fact.content / fact.peopleHints / fact.projectHint 中明确提及角色的关键词（如"产品经理"、"CTO"、"hr"、"总监"）时填 role 字符串，否则填 null
+- 仅当 fact 明确提及组织/公司名（如"耀石锂电"、"腾讯"、"字节"）时填 organization 字符串，否则填 null
+- 不要从常识或名字推测（如"hz"不要推测为"杭州"）
+- 其他 objectType（project/task/decision）不要输出这两个字段
 
 ========================================
 【阶段 2：SceneBuilder — 条件触发】
@@ -2111,7 +2122,9 @@ candidatePeople 为空，should_trigger_scene_builder = "false"
       "title": "hz 蓝佳奇",
       "summary": "微信联系人，讨论过业务范围和能力需求",
       "sourceFactIds": ["fact_123"],
-      "confidence": 0.75
+      "confidence": 0.75,
+      "role": null,
+      "organization": null
     }
   ],
   "mergedObjects": [],

@@ -145,6 +145,8 @@ export interface PersonItem {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  /** 022 字段：用户与该人物的关系（手动编辑，如"同事""客户""朋友"） */
+  relationship: string | null;
   /** 012 字段：别名列表（合并过的旧名字） */
   aliases?: string[];
 }
@@ -720,6 +722,7 @@ interface AppState {
   loadProjectDetail: (id: string) => Promise<void>;
   clearProjectDetail: () => void;
   updateTask: (id: string, patch: Record<string, unknown>) => Promise<void>;
+  updatePerson: (id: string, patch: Record<string, unknown>) => Promise<void>;
   deleteObject: (id: string, type: string) => Promise<void>;
   createUserFeedback: (input: {
     targetType: FeedbackTargetType;
@@ -1321,6 +1324,30 @@ export const useAppStore = create<AppState>((set, get) => ({
           },
         });
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      set({ error: message });
+      throw err;
+    }
+  },
+
+  /**
+   * 更新人物（调用 memory:updatePerson IPC）
+   * 重要约束：不覆盖 source ids（由 main 端 handler 控制）
+   */
+  updatePerson: async (id: string, patch: Record<string, unknown>) => {
+    try {
+      await getIpc().memory.updatePerson({ id, ...patch });
+      // 乐观更新本地状态（todayData.people）
+      const updatePersonInList = (person: PersonItem) =>
+        person.id === id ? { ...person, ...patch } : person;
+      const today = get().todayData;
+      set({
+        todayData: {
+          ...today,
+          people: today.people.map(updatePersonInList),
+        },
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ error: message });

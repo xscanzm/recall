@@ -279,6 +279,15 @@ export const MemoryUpdateTaskInputSchema = z.object({
   summary: z.string().max(TEXT_LIMITS.summary).nullable().optional(),
 });
 
+export const MemoryUpdatePersonInputSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().max(TEXT_LIMITS.title).optional(),
+  role: z.string().max(TEXT_LIMITS.title).nullable().optional(),
+  organization: z.string().max(TEXT_LIMITS.title).nullable().optional(),
+  relationship: z.string().max(TEXT_LIMITS.title).nullable().optional(),
+  summary: z.string().max(TEXT_LIMITS.summary).nullable().optional(),
+});
+
 export const MemoryDeleteObjectInputSchema = z.object({
   id: z.string().min(1),
   type: z.enum(["fact", "task", "scene", "project", "person", "decision"]),
@@ -1072,12 +1081,21 @@ function normalizeLinkerNewObjects(raw: unknown): unknown[] {
         : title.trim();
     const confidence = normalizeNumber(pickFirst(obj, ["confidence", "score"]), 0.6);
 
+    // 仅 person 提取 role/organization
+    const roleRaw = pickFirst(obj, ["role", "personRole", "title_role"]);
+    const organizationRaw = pickFirst(obj, ["organization", "org", "company"]);
+    const role = (typeof roleRaw === "string" && roleRaw.trim())
+      ? roleRaw.trim().slice(0, TEXT_LIMITS.title) : null;
+    const organization = (typeof organizationRaw === "string" && organizationRaw.trim())
+      ? organizationRaw.trim().slice(0, TEXT_LIMITS.title) : null;
+
     result.push({
       objectType,
       title: title.trim().slice(0, TEXT_LIMITS.title),
       summary: summary.slice(0, TEXT_LIMITS.summary),
       sourceFactIds,
       confidence: Math.max(0, Math.min(1, confidence)),
+      ...(objectType === "person" ? { role, organization } : {}),
     });
   }
   return result;
@@ -1152,6 +1170,9 @@ const LinkerOutputCoreSchema = z.object({
       summary: SummarySchema,
       sourceFactIds: z.array(z.string()),
       confidence: ConfidenceSchema,
+      // 仅 objectType="person" 时有意义，其他类型会忽略
+      role: z.string().max(TEXT_LIMITS.title).nullable().optional(),
+      organization: z.string().max(TEXT_LIMITS.title).nullable().optional(),
     })
   ),
   mergeSuggestions: z.array(

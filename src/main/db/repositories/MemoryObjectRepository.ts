@@ -66,6 +66,8 @@ interface PersonRow {
   deleted_at: string | null;
   // 012 字段：别名列表（合并过的旧名字）
   aliases_json: string | null;
+  // 022 字段：用户与该人物的关系
+  relationship: string | null;
 }
 
 interface DecisionRow {
@@ -397,8 +399,8 @@ export class MemoryObjectRepository {
         `INSERT INTO people (
           id, name, role, organization, summary,
           related_project_ids_json, source_fact_ids_json,
-          created_at, updated_at, aliases_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, aliases_json, relationship
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -410,7 +412,8 @@ export class MemoryObjectRepository {
         JSON.stringify(input.sourceFactIds),
         now,
         now,
-        input.aliases ? JSON.stringify(input.aliases) : null
+        input.aliases ? JSON.stringify(input.aliases) : null,
+        input.relationship ?? null
       );
     return this.getPersonById(id)!;
   }
@@ -499,6 +502,7 @@ export class MemoryObjectRepository {
     if (patch.summary !== undefined) { sets.push("summary = ?"); params.push(patch.summary); }
     if (patch.relatedProjectIds !== undefined) { sets.push("related_project_ids_json = ?"); params.push(JSON.stringify(patch.relatedProjectIds)); }
     if (patch.sourceFactIds !== undefined) { sets.push("source_fact_ids_json = ?"); params.push(JSON.stringify(patch.sourceFactIds)); }
+    if (patch.relationship !== undefined) { sets.push("relationship = ?"); params.push(patch.relationship); }
     if (patch.aliases !== undefined) {
       sets.push("aliases_json = ?");
       params.push(patch.aliases.length > 0 ? JSON.stringify(patch.aliases) : null);
@@ -919,6 +923,8 @@ function mapPersonRow(row: PersonRow): Person {
     deletedAt: row.deleted_at,
     // 012 字段
     aliases: row.aliases_json ? safeParseArray<string>(row.aliases_json) : [],
+    // 022 字段
+    relationship: row.relationship,
   };
 }
 

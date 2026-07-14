@@ -19,6 +19,7 @@
 // - 人物页是用户自己的关系记忆，不是监控别人
 
 import { useEffect, useMemo, useState } from "react";
+import { MoreHorizontal } from "lucide-react";
 import { useAppStore } from "../state/store";
 import type { PersonItem, ProjectItem, SceneItem, TaskItem, FactItem } from "../state/store";
 import { getIpc } from "../state/ipc";
@@ -64,6 +65,7 @@ export function PeoplePage() {
   const todayError = useAppStore((s) => s.todayError);
   const loadToday = useAppStore((s) => s.loadToday);
   const deleteObject = useAppStore((s) => s.deleteObject);
+  const updatePerson = useAppStore((s) => s.updatePerson);
   const peopleFilters = useAppStore((s) => s.peopleFilters);
   const setPeopleFilters = useAppStore((s) => s.setPeopleFilters);
 
@@ -74,6 +76,16 @@ export function PeoplePage() {
   const [personDetailReloadKey, setPersonDetailReloadKey] = useState(0);
   // 012 新增：合并对话框状态
   const [mergeFrom, setMergeFrom] = useState<{ id: string; name: string } | null>(null);
+  // 022 新增：人物编辑弹窗状态
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editForm, setEditForm] = useState({
+    name: "",
+    role: "",
+    organization: "",
+    relationship: "",
+    summary: "",
+  });
+  const [editSaving, setEditSaving] = useState(false);
 
   // 进入页面时加载今日数据
   useEffect(() => {
@@ -208,6 +220,41 @@ export function PeoplePage() {
     });
   };
 
+  /** 打开人物编辑弹窗（用当前人物信息初始化表单） */
+  const handleOpenEditDialog = () => {
+    if (!selectedPerson) return;
+    setEditForm({
+      name: selectedPerson.name || "",
+      role: selectedPerson.role || "",
+      organization: selectedPerson.organization || "",
+      relationship: selectedPerson.relationship || "",
+      summary: selectedPerson.summary || "",
+    });
+    setEditDialogOpen(true);
+  };
+
+  /** 保存人物编辑（调用 IPC + 触发详情重新拉取） */
+  const handleSavePerson = async () => {
+    if (!selectedPerson) return;
+    setEditSaving(true);
+    try {
+      await updatePerson(selectedPerson.id, {
+        name: editForm.name.trim() || undefined,
+        role: editForm.role.trim() || null,
+        organization: editForm.organization.trim() || null,
+        relationship: editForm.relationship.trim() || null,
+        summary: editForm.summary.trim() || null,
+      });
+      setEditDialogOpen(false);
+      // 重新拉取详情以同步展示
+      setPersonDetailReloadKey((key) => key + 1);
+    } catch (err) {
+      console.error("保存人物失败:", err);
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   // 详情视图
   if (selectedPersonId) {
     const person = selectedPerson;
@@ -256,6 +303,13 @@ export function PeoplePage() {
               <div className="person-detail__actions">
                 <button
                   type="button"
+                  className="btn btn-secondary"
+                  onClick={handleOpenEditDialog}
+                >
+                  编辑
+                </button>
+                <button
+                  type="button"
                   className="btn btn-danger"
                   onClick={() => handleDeletePerson(person.id)}
                 >
@@ -268,6 +322,7 @@ export function PeoplePage() {
                 {person.summary || "暂无概览信息。"}
               </p>
               <div className="person-detail__meta">
+                {person.relationship && <span>关系：{person.relationship}</span>}
                 {person.role && <span>角色：{person.role}</span>}
                 {person.organization && <span>组织：{person.organization}</span>}
               </div>
@@ -411,6 +466,89 @@ export function PeoplePage() {
           </section>
         </div>
         )}
+
+        {/* 022 新增：人物编辑弹窗 */}
+        {editDialogOpen && (
+          <div
+            className="person-edit-dialog__overlay"
+            onClick={() => !editSaving && setEditDialogOpen(false)}
+          >
+            <div
+              className="person-edit-dialog"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <h3 className="person-edit-dialog__title">编辑人物信息</h3>
+              <div className="person-edit-dialog__form">
+                <label className="person-edit-dialog__field">
+                  <span>姓名</span>
+                  <input
+                    type="text"
+                    value={editForm.name}
+                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                    maxLength={120}
+                  />
+                </label>
+                <label className="person-edit-dialog__field">
+                  <span>角色</span>
+                  <input
+                    type="text"
+                    value={editForm.role}
+                    onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                    placeholder="如：产品经理、设计师"
+                    maxLength={120}
+                  />
+                </label>
+                <label className="person-edit-dialog__field">
+                  <span>组织</span>
+                  <input
+                    type="text"
+                    value={editForm.organization}
+                    onChange={(e) => setEditForm({ ...editForm, organization: e.target.value })}
+                    placeholder="如：腾讯、字节跳动"
+                    maxLength={120}
+                  />
+                </label>
+                <label className="person-edit-dialog__field">
+                  <span>关系</span>
+                  <input
+                    type="text"
+                    value={editForm.relationship}
+                    onChange={(e) => setEditForm({ ...editForm, relationship: e.target.value })}
+                    placeholder="如：同事、客户、朋友"
+                    maxLength={120}
+                  />
+                </label>
+                <label className="person-edit-dialog__field">
+                  <span>简介</span>
+                  <textarea
+                    value={editForm.summary}
+                    onChange={(e) => setEditForm({ ...editForm, summary: e.target.value })}
+                    rows={3}
+                    maxLength={1000}
+                  />
+                </label>
+              </div>
+              <div className="person-edit-dialog__actions">
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditDialogOpen(false)}
+                  disabled={editSaving}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSavePerson}
+                  disabled={editSaving}
+                >
+                  {editSaving ? "保存中..." : "保存"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -507,28 +645,13 @@ export function PeoplePage() {
                     {stat.unfinishedCount > 0 && (
                       <span className="person-card__badge">{stat.unfinishedCount} 项待办</span>
                     )}
-                    <button
-                      type="button"
-                      className="person-card__merge-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setMergeFrom({ id: person.id, name: person.name });
-                      }}
-                      title="把此人合并到其他人物（来自同一人但识别成多个名字时）"
-                    >
-                      合并到...
-                    </button>
-                    <button
-                      type="button"
-                      className="person-card__delete-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeletePerson(person.id);
-                      }}
-                      title="删除此人物（软删除，可恢复）"
-                    >
-                      删除
-                    </button>
+                    <details className="person-card__menu">
+                      <summary aria-label="人物操作" title="人物操作"><MoreHorizontal size={17} /></summary>
+                      <div className="person-card__menu-popover">
+                        <button type="button" onClick={(e) => { e.stopPropagation(); setMergeFrom({ id: person.id, name: person.name }); }}>合并到...</button>
+                        <button type="button" className="is-danger" onClick={(e) => { e.stopPropagation(); handleDeletePerson(person.id); }}>删除</button>
+                      </div>
+                    </details>
                   </div>
                 </div>
                 {person.aliases && person.aliases.length > 0 && (
@@ -538,7 +661,9 @@ export function PeoplePage() {
                 )}
                 <div className="person-card__body" onClick={() => setSelectedPersonId(person.id)}>
                   <div className="person-card__role">
-                    {[person.role, person.organization].filter(Boolean).join(" · ") || "角色未知"}
+                    {person.relationship
+                      || [person.role, person.organization].filter(Boolean).join(" · ")
+                      || "角色未知"}
                   </div>
                   <div className="person-card__projects">
                     {stat.projectNames.length > 0

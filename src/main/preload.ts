@@ -115,6 +115,8 @@ const recallApi = {
       ipcRenderer.invoke("memory:updateFact", input),
     updateTask: (input: unknown): Promise<{ ok: true }> =>
       ipcRenderer.invoke("memory:updateTask", input),
+    updatePerson: (input: unknown): Promise<{ ok: true }> =>
+      ipcRenderer.invoke("memory:updatePerson", input),
     deleteObject: (input: { id: string; type: string }): Promise<{ ok: true }> =>
       ipcRenderer.invoke("memory:deleteObject", input),
     // M7 新增：轻量问答

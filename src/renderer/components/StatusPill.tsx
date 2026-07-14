@@ -105,39 +105,26 @@ function derivePillConfig(appStatus: AppStatus): PillConfig {
  * - blocked/error：danger
  * - idle：neutral
  */
-const VARIANT_COLORS: Record<PillVariant, { bg: string; fg: string; dot: string }> = {
-  idle: { bg: "#f0eee7", fg: "#66706d", dot: "#9aa3a1" },
-  observing: { bg: "#eef3f1", fg: "#2f8f83", dot: "#2f8f83" },
-  paused: { bg: "#fdf3e3", fg: "#d9912b", dot: "#d9912b" },
-  blocked: { bg: "#fbeeeb", fg: "#c74d3c", dot: "#c74d3c" },
-  sensitive: { bg: "#fdf3e3", fg: "#d9912b", dot: "#d9912b" },
-  error: { bg: "#fbeeeb", fg: "#c74d3c", dot: "#c74d3c" },
-  processing: { bg: "#eef3f1", fg: "#2f8f83", dot: "#2f8f83" },
-};
+export interface StatusPillProps {
+  onClick?: () => void;
+  actionLabel?: string;
+}
 
-export function StatusPill() {
+export function StatusPill({ onClick, actionLabel }: StatusPillProps) {
   const appStatus = useAppStore((s) => s.appStatus);
   const config = derivePillConfig(appStatus);
-  const colors = VARIANT_COLORS[config.variant];
-
-  return (
-    <div
-      className="status-pill"
-      style={{
-        backgroundColor: colors.bg,
-        color: colors.fg,
-      }}
-      role="status"
-      aria-live="polite"
-    >
-      <span
-        className="status-pill__dot"
-        style={{ backgroundColor: colors.dot }}
-      />
+  const className = `status-pill status-pill--${config.variant}`;
+  const content = (
+    <>
+      <span className="status-pill__dot" aria-hidden="true" />
       <span className="status-pill__label">{config.label}</span>
-      {config.detail ? (
-        <span className="status-pill__detail">{config.detail}</span>
-      ) : null}
-    </div>
+      {config.detail ? <span className="status-pill__detail">{config.detail}</span> : null}
+      {actionLabel && <span className="status-pill__action">{actionLabel}</span>}
+    </>
   );
+
+  if (onClick) {
+    return <button type="button" className={`${className} status-pill--interactive`} onClick={onClick} aria-live="polite">{content}</button>;
+  }
+  return <div className={className} role="status" aria-live="polite">{content}</div>;
 }

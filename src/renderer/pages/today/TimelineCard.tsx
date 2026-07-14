@@ -11,6 +11,7 @@
 // - 关键产出 chips
 // - 底部操作：查看来源 / 加入日报 / 忽略
 
+import { MoreHorizontal } from "lucide-react";
 import type { TodayTimelineProjection } from "../../../shared/types";
 import { Tag } from "../../components/Tag";
 import { SourceLink } from "../../components/SourceLink";
@@ -162,20 +163,13 @@ export function TimelineCard({ block, detailMode, onOpenDetail }: TimelineCardPr
               sourceTime={timeRange ? formatTimeRange(block.startAt, block.endAt).split(" - ")[0] : undefined}
               onClick={onOpenDetail}
             />
-            <button
-              type="button"
-              className="timeline-card__action"
-              onClick={() => enterSelectionWithBlock(block.id)}
-            >
-              加入日报
-            </button>
-            <button
-              type="button"
-              className="timeline-card__action timeline-card__action--ghost"
-              onClick={() => ignoreTimelineBlock(block.id)}
-            >
-              忽略
-            </button>
+            <details className="timeline-card__menu">
+              <summary aria-label="更多操作" title="更多操作"><MoreHorizontal size={16} /></summary>
+              <div className="timeline-card__menu-popover">
+                <button type="button" onClick={() => enterSelectionWithBlock(block.id)}>加入日报</button>
+                <button type="button" onClick={() => ignoreTimelineBlock(block.id)}>忽略</button>
+              </div>
+            </details>
           </div>
         )}
       </div>
