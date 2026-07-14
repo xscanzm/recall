@@ -570,6 +570,14 @@ export class ReportScheduler {
   ): Promise<boolean> {
     if (!this.personalReviewWriterWorker) return false;
     try {
+      // 报告生成前先触发 buildTimeline 收尾，确保最后一段未落盘的数据已持久化
+      if (this.timelineBuilderWorker) {
+        try {
+          await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
+        } catch {
+          // buildTimeline 失败不阻断报告生成，继续使用已有 timeline_blocks
+        }
+      }
       const result = await this.personalReviewWriterWorker.writePersonalReview(dateKey);
       if (result.ok && result.reportRecord) {
         this.markPersonalReviewDone(dateKey);

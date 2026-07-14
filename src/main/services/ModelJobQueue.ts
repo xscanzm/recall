@@ -140,9 +140,9 @@ function computeBackoffMs(errorCode: string | undefined, attempts: number): numb
  * 多模态任务并发上限
  *
  * 改造前：vision=2, llm=1（串行）
- * 改造后：统一 3 并发（激进合并后单次 capture 只需 2 次调用，总调用量大幅下降，可安全提升并发）
+ * 改造后：统一 5 并发（激进合并后单次 capture 只需 2 次调用，总调用量大幅下降，可安全提升并发）
  */
-const MULTIMODAL_CONCURRENCY = 3;
+const MULTIMODAL_CONCURRENCY = 5;
 
 /**
  * 内部任务条目

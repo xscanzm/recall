@@ -20,9 +20,14 @@ describe("TimelineBuilderWorker", () => {
 
   function makeWorker(output: TimelineBuilderOutput | null, opts: {
     observations?: Observation[]; facts?: Fact[]; scenes?: Scene[]; checkpoint?: string | null;
-    existing?: unknown[]; failed?: boolean; observationError?: Error;
+    existing?: unknown[]; failed?: boolean; observationError?: Error; checkpointWriteError?: Error;
   } = {}) {
-    const replaceWindowAndCheckpoint = vi.fn((input) => input.blocks.map((value: object, index: number) => ({ ...value, id: `saved-${index}` })));
+    let checkpoint = opts.checkpoint ?? null;
+    const replaceWindowAndCheckpoint = vi.fn((input) => {
+      if (opts.checkpointWriteError) throw opts.checkpointWriteError;
+      checkpoint = input.processedThrough;
+      return input.blocks.map((value: object, index: number) => ({ ...value, id: `saved-${index}` }));
+    });
     const callMultimodal = vi.fn(async (_input: unknown, _schema: unknown) => ({
       ok: true,
       data: output,
@@ -45,7 +50,7 @@ describe("TimelineBuilderWorker", () => {
       factRepo: { listByCreatedAt: vi.fn(() => opts.facts ?? []) } as never,
       sceneRepo: { listByStartAt: vi.fn(() => [...(opts.scenes ?? [])]) } as never,
       timelineBlockRepo: { findOverlapping: vi.fn(() => opts.existing ?? []), replaceWindowAndCheckpoint } as never,
-      timelineBuildCheckpointRepo: { get: vi.fn(() => opts.checkpoint ?? null) } as never,
+      timelineBuildCheckpointRepo: { get: vi.fn(() => checkpoint) } as never,
       settingsService: { listMultimodalModelConfigs: vi.fn(() => [{ id: "model", enabled: true }]) } as never,
     });
     return { worker, callMultimodal, enqueueMultimodalJob, replaceWindowAndCheckpoint };
@@ -164,6 +169,35 @@ describe("TimelineBuilderWorker", () => {
     expect(result.ok).toBe(true);
     expect(setup.enqueueMultimodalJob).not.toHaveBeenCalled();
     expect(setup.replaceWindowAndCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ blocks: existing, processedThrough: "2026-07-11T11:50:00.000Z" }));
+  });
+
+  it("reports a data error when an empty window checkpoint cannot be persisted", async () => {
+    const setup = makeWorker(null, { checkpointWriteError: new Error("database locked") });
+    const result = await setup.worker.buildTimeline("2026-07-11");
+    expect(result).toMatchObject({ ok: false, errorCode: "timeline_data_error" });
+    expect(setup.enqueueMultimodalJob).not.toHaveBeenCalled();
+  });
+
+  it("reorganizes through early empty windows before processing later observations", async () => {
+    const obs = observation("o-later", "2026-07-11T03:59:00.000Z");
+    const output = {
+      dateKey: "2026-07-11", dayStartSummary: "", dayMainThread: "",
+      blocks: [block({ sourceObservationIds: ["o-later"] })],
+    };
+    const setup = makeWorker(output, { observations: [obs] });
+
+    const result = await setup.worker.reorganizeDay("2026-07-11");
+
+    expect(result.ok).toBe(true);
+    expect(setup.callMultimodal).toHaveBeenCalled();
+    expect(setup.callMultimodal.mock.calls.some(([input]) =>
+      (input as { userPrompt: string }).userPrompt.includes('"id":"o-later"')
+    )).toBe(true);
+    const processedThrough = setup.replaceWindowAndCheckpoint.mock.calls
+      .map(([input]) => input.processedThrough as string);
+    expect(processedThrough.length).toBeGreaterThan(1);
+    expect(new Set(processedThrough).size).toBe(processedThrough.length);
+    expect(processedThrough.at(-1)).toBe("2026-07-11T12:00:00.000Z");
   });
 
   it("force-finalizes through now while full-day reorganization starts at local midnight", async () => {

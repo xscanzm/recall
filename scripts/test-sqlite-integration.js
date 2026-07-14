@@ -244,12 +244,15 @@ async function main() {
   const failureDb = new Database(failurePath);
   try {
     const files = migrations();
-    migrate(failureDb, files.slice(0, -1));
+    const targetMigration = "021_observation_search_fts.sql";
+    const targetIndex = files.indexOf(targetMigration);
+    assert.notEqual(targetIndex, -1, `${targetMigration} is present`);
+    migrate(failureDb, files.slice(0, targetIndex));
     failureDb.exec("CREATE TABLE preserved_user_data (value TEXT NOT NULL); INSERT INTO preserved_user_data VALUES ('keep-me');");
     failureDb.exec("CREATE TABLE observation_search_fts (value TEXT)");
-    assert.throws(() => migrate(failureDb), /already exists/);
+    assert.throws(() => migrate(failureDb, files.slice(0, targetIndex + 1)), /already exists/);
     assert.equal(failureDb.prepare("SELECT value FROM preserved_user_data").get().value, "keep-me");
-    assert.equal(failureDb.prepare("SELECT COUNT(*) count FROM _migrations WHERE version = ?").get(files.at(-1)).count, 0);
+    assert.equal(failureDb.prepare("SELECT COUNT(*) count FROM _migrations WHERE version = ?").get(targetMigration).count, 0);
   } finally {
     failureDb.close();
   }
