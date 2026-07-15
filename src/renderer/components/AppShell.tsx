@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
+import { UpdateBadge } from "./UpdateBadge";
 import { getIpc } from "../state/ipc";
 
 interface NavItem {
@@ -127,6 +128,9 @@ export const AppShell = ({ children }: AppShellProps) => {
             onClick={handlePauseToggle}
             actionLabel={isObserving ? "暂停观察" : "开始观察"}
           />
+          <div className="app-shell__topbar-actions">
+            <UpdateBadge />
+          </div>
         </header>
         <div className="app-shell__content">{children}</div>
       </main>

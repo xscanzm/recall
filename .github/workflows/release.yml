@@ -1,0 +1,117 @@
+name: Release
+
+# 触发条件：推送 v*.*.* 格式的 tag（如 v0.2.0、v1.0.3）
+# 标准发布流程：本地改版本号 → git tag → git push --tags → Actions 自动构建+上传 R2
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# 防止并发发布
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # 用于创建 GitHub Release
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CI: "1"
+      ELECTRON_DISABLE_GPU: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & package NSIS installer
+        run: npm run package
+        env:
+          # electron-builder 在 CI 环境会尝试发布到 GitHub Release
+          # 这里允许它创建 draft release（需要 GH_TOKEN 才会真正发布）
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read version from package.json
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "filename=Recall-${VERSION}-setup.exe" >> $GITHUB_OUTPUT
+          echo "Released version: $VERSION"
+
+      - name: Calculate SHA256
+        id: sha
+        shell: bash
+        run: |
+          SHA=$(sha256sum "release/${{ steps.version.outputs.filename }}" | awk '{print $1}')
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "SHA256: $SHA"
+
+      - name: Upload installer to Cloudflare R2
+        working-directory: cloudflare/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler r2 object put "recall-releases/${{ steps.version.outputs.filename }}" --file="../../release/${{ steps.version.outputs.filename }}"
+
+      - name: Generate and upload manifest.json
+        working-directory: cloudflare/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+          PUBLISHED_AT: ${{ steps.version.outputs.publishedAt }}
+        run: |
+          # 读取 release-notes.md，生成 manifest.json，上传到 R2
+          PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          node -e '
+            const fs = require("fs");
+            const data = {
+              version: process.env.VERSION,
+              downloadUrl: `/download/Recall-${process.env.VERSION}-setup.exe`,
+              sha256: process.env.SHA256,
+              releaseNotes: fs.readFileSync("release-notes.md", "utf8"),
+              publishedAt: process.env.PUBLISHED_AT
+            };
+            fs.writeFileSync("manifest.release.json", JSON.stringify(data, null, 2) + "\n");
+            console.log(JSON.stringify(data, null, 2));
+          '
+          npx wrangler r2 object put "recall-releases/manifest.json" --file="manifest.release.json"
+
+      - name: Verify deployment
+        env:
+          WORKER_URL: https://recall-update.ppclaw.online
+        run: |
+          Write-Host "Verifying deployment..."
+          $response = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
+          Write-Host "Latest version on R2: $($response.version)"
+          Write-Host "SHA256: $($response.sha256)"
+          if ($response.version -ne "${{ steps.version.outputs.version }}") {
+            Write-Host "ERROR: Version mismatch! Expected ${{ steps.version.outputs.version }}, got $($response.version)"
+            exit 1
+          }
+          Write-Host "✓ Deployment verified"
+
+      - name: Upload installer to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/Recall-${{ steps.version.outputs.version }}-setup.exe
+          body_path: cloudflare/worker/release-notes.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,6 +12,8 @@ import type {
   WorkReport,
   TodayPageData,
 } from "../../shared/types";
+import type { UpdateSettings } from "../../shared/updateTypes";
+import { DEFAULT_UPDATE_SETTINGS } from "../../shared/updateTypes";
 
 /**
  * Re-export 共享类型，便于 main 内部统一从 @/models/types 引用
@@ -119,6 +121,11 @@ export interface AppSettings {
     enabled: boolean;
     verboseModelIO: boolean;
   };
+  /**
+   * 版本更新检查状态（持久化到 settings.json）
+   * - lastCheckedAt / latestVersion / dismissedVersion / downloadedInstallerPath
+   */
+  update: UpdateSettings;
 }
 
 /**
@@ -164,6 +171,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     enabled: false,
     verboseModelIO: false,
   },
+  update: { ...DEFAULT_UPDATE_SETTINGS },
 };
 
 /**

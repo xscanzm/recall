@@ -29,6 +29,7 @@ const recallApi = {
     pauseObserving: () => invokeValidated(ipcRenderer, "app:pauseObserving"),
     getLaunchAtLogin: () => invokeValidated(ipcRenderer, "app:getLaunchAtLogin"),
     setLaunchAtLogin: (input: IpcRequest<"app:setLaunchAtLogin">) => invokeValidated(ipcRenderer, "app:setLaunchAtLogin", input),
+    getVersion: () => invokeValidated(ipcRenderer, "app:getVersion"),
     onStatusChanged: (callback: (status: AppStatus) => void): (() => void) => {
       const handler = (_event: IpcRendererEvent, status: AppStatus): void => callback(status);
       ipcRenderer.on("app:statusChanged", handler);
@@ -337,6 +338,29 @@ const recallApi = {
         }
       | { ok: false; error: string; code?: string }
     > => ipcRenderer.invoke("debug:getRelatedRecords", input),
+  },
+
+  // -------------------- update（版本更新） --------------------
+  update: {
+    check: (input?: IpcRequest<"update:check">) => invokeValidated(ipcRenderer, "update:check", input),
+    download: () => invokeValidated(ipcRenderer, "update:download"),
+    installAndQuit: (input: IpcRequest<"update:installAndQuit">) => invokeValidated(ipcRenderer, "update:installAndQuit", input),
+    getStatus: () => invokeValidated(ipcRenderer, "update:getStatus"),
+    dismissVersion: (input: IpcRequest<"update:dismissVersion">) => invokeValidated(ipcRenderer, "update:dismissVersion", input),
+    onProgress: (callback: (progress: { bytesDownloaded: number; bytesTotal: number; percent: number }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, progress: { bytesDownloaded: number; bytesTotal: number; percent: number }): void => callback(progress);
+      ipcRenderer.on("update:progress", handler);
+      return () => {
+        ipcRenderer.removeListener("update:progress", handler);
+      };
+    },
+    onStatusChanged: (callback: (status: unknown) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, status: unknown): void => callback(status);
+      ipcRenderer.on("update:statusChanged", handler);
+      return () => {
+        ipcRenderer.removeListener("update:statusChanged", handler);
+      };
+    },
   },
 };
 

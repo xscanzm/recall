@@ -23,6 +23,7 @@ import { TrustCenterPage } from "./pages/TrustCenterPage";
 import { DebugPage } from "./pages/DebugPage";
 import { useAppStore, type AppSettingsState } from "./state/store";
 import { getIpc } from "./state/ipc";
+import type { UpdateStatus } from "../shared/updateTypes";
 
 export default function App() {
   const currentPage = useAppStore((s) => s.currentPage);
@@ -31,6 +32,10 @@ export default function App() {
   const setError = useAppStore((s) => s.setError);
   const settings = useAppStore((s) => s.settings);
   const loadSettings = useAppStore((s) => s.loadSettings);
+  const setUpdateStatus = useAppStore((s) => s.setUpdateStatus);
+  const setDownloadProgress = useAppStore((s) => s.setDownloadProgress);
+  const loadUpdateStatus = useAppStore((s) => s.loadUpdateStatus);
+  const loadCurrentVersion = useAppStore((s) => s.loadCurrentVersion);
   const [bootError, setBootError] = useState<string | null>(null);
   const [bootState, setBootState] = useState<"loading" | "ready" | "onboarding">("loading");
 
@@ -44,6 +49,8 @@ export default function App() {
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
+    let unsubProgress: (() => void) | undefined;
+    let unsubUpdateStatus: (() => void) | undefined;
     let cancelled = false;
 
     async function boot() {
@@ -77,6 +84,19 @@ export default function App() {
         unsub = ipc.app.onStatusChanged((next) => {
           setAppStatus(next);
         });
+
+        // 订阅版本更新进度
+        unsubProgress = ipc.update.onProgress((progress) => {
+          setDownloadProgress(progress);
+        });
+        // 订阅版本更新状态变化
+        unsubUpdateStatus = ipc.update.onStatusChanged((status) => {
+          setUpdateStatus(status as UpdateStatus);
+        });
+
+        // 加载更新状态和当前版本号
+        void loadUpdateStatus();
+        void loadCurrentVersion();
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setBootError(message);
@@ -89,6 +109,8 @@ export default function App() {
     return () => {
       cancelled = true;
       if (unsub) unsub();
+      if (unsubProgress) unsubProgress();
+      if (unsubUpdateStatus) unsubUpdateStatus();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

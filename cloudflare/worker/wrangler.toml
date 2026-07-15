@@ -1,0 +1,31 @@
+# Cloudflare Worker 配置：Recall 桌面端更新分发后端
+# 详细文档见 README.md
+
+name = "recall-update-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# 自定义域名路由（国内可访问）
+# 在 Cloudflare Dashboard 中已将 recall-update.ppclaw.online 绑定到此 Worker
+routes = [
+  { pattern = "recall-update.ppclaw.online/*", zone_name = "ppclaw.online" }
+]
+
+# ─────────────────────────────────────────────────────────────
+# R2 存储桶绑定：保存 manifest.json 与安装包
+# 创建存储桶：
+#   npx wrangler r2 bucket create recall-releases
+# ─────────────────────────────────────────────────────────────
+[[r2_buckets]]
+binding = "RELEASES"
+bucket_name = "recall-releases"
+
+# ─────────────────────────────────────────────────────────────
+# KV 命名空间绑定：保存客户端版本检查统计
+# 创建命名空间：
+#   npx wrangler kv namespace create recall-stats
+# 创建后把返回的 id 填到下方 id 字段
+# ─────────────────────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "STATS"
+id = "390817d3c39c4fc38e290fea1d9a6739"

@@ -23,6 +23,8 @@ import {
   type UpdatePrivacyRuleInput,
   type CreateUserFeedbackInput,
 } from "../models/types";
+import type { UpdateSettings } from "../../shared/updateTypes";
+import { DEFAULT_UPDATE_SETTINGS } from "../../shared/updateTypes";
 import type { ModelConfig, PrivacyRule } from "../../shared/types";
 import type { UserFeedback } from "../models/types";
 import { SettingsRepository } from "../db/repositories/SettingsRepository";
@@ -81,6 +83,7 @@ export class SettingsService {
       onboardingCompleted:
         patch.onboardingCompleted ?? this.cache.onboardingCompleted,
       debug: patch.debug ?? this.cache.debug,
+      update: patch.update ?? this.cache.update,
     };
 
     this.saveToFile(this.cache);
@@ -115,6 +118,21 @@ export class SettingsService {
     this.cache = {
       ...this.cache,
       schedule: { ...this.cache.schedule, ...patch },
+    };
+    this.saveToFile(this.cache);
+    return this.cache;
+  }
+
+  /**
+   * 仅更新 update 字段（用于 UpdateService 持久化检查结果/忽略版本/下载路径）
+   * - 单独方法避免误覆盖其他字段
+   * - 同步写 settings.json 保证重启后能恢复
+   */
+  setUpdateSettings(patch: Partial<UpdateSettings>): AppSettings {
+    if (!this.initialized) this.init();
+    this.cache = {
+      ...this.cache,
+      update: { ...this.cache.update, ...patch },
     };
     this.saveToFile(this.cache);
     return this.cache;
@@ -274,6 +292,7 @@ export class SettingsService {
         onboardingCompleted:
           parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,
         debug: { ...DEFAULT_SETTINGS.debug, ...(parsed.debug ?? {}) },
+        update: { ...DEFAULT_UPDATE_SETTINGS, ...(parsed.update ?? {}) },
       };
     } catch {
       // 文件损坏时回退到默认值

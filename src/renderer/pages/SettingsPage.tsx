@@ -15,11 +15,80 @@
 // - 危险操作（清空所有 / 删除今天 / 忘掉最近）必须二次确认
 // - 二次确认对话框使用 store 中的 showConfirmDialog / requestConfirm / executeConfirm
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ModelConfigForm } from "../components/ModelConfigForm";
 import { PrivacyRuleList } from "../components/PrivacyRuleList";
 import { useAppStore, type ScreenshotRetentionPolicy } from "../state/store";
 import { getIpc } from "../state/ipc";
+// 打包时嵌入当前版本的更新说明（Vite ?raw import，构建时把 markdown 作为字符串嵌入 bundle）
+import currentReleaseNotes from "../../../cloudflare/worker/release-notes.md?raw";
+
+/**
+ * 极简 Markdown 渲染
+ * 仅处理 release-notes.md 用到的语法：## / ### / - / **bold** / `code` / 普通段落
+ * 不引入外部库，与报告页结构化渲染风格一致
+ */
+function renderSimpleMarkdown(md: string): ReactNode {
+  const lines = md.split("\n");
+  const blocks: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    blocks.push(
+      <ul key={`ul-${blocks.length}`} className="release-notes__list">
+        {listItems.map((item, i) => (
+          <li key={i}>{renderInline(item)}</li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  /** 渲染行内 **bold** 和 `code` */
+  const renderInline = (text: string): ReactNode => {
+    const parts: ReactNode[] = [];
+    let remaining = text;
+    let key = 0;
+    while (remaining.length > 0) {
+      const bold = remaining.match(/\*\*(.+?)\*\*/);
+      const code = remaining.match(/`(.+?)`/);
+      const next = [bold, code].filter(Boolean).sort((a, b) => (a!.index! - b!.index!))[0];
+      if (!next) {
+        parts.push(remaining);
+        break;
+      }
+      if (next.index! > 0) parts.push(remaining.slice(0, next.index!));
+      if (next === bold) {
+        parts.push(<strong key={key++}>{next[1]}</strong>);
+      } else {
+        parts.push(<code key={key++} className="release-notes__code">{next[1]}</code>);
+      }
+      remaining = remaining.slice(next.index! + next[0].length);
+    }
+    return parts;
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trimEnd();
+    if (trimmed.startsWith("## ")) {
+      flushList();
+      blocks.push(<h4 key={blocks.length} className="release-notes__h">{trimmed.slice(3)}</h4>);
+    } else if (trimmed.startsWith("### ")) {
+      flushList();
+      blocks.push(<h5 key={blocks.length} className="release-notes__h">{trimmed.slice(4)}</h5>);
+    } else if (trimmed.startsWith("- ")) {
+      listItems.push(trimmed.slice(2));
+    } else if (trimmed === "") {
+      flushList();
+    } else {
+      flushList();
+      blocks.push(<p key={blocks.length} className="release-notes__p">{renderInline(trimmed)}</p>);
+    }
+  }
+  flushList();
+  return blocks;
+}
 
 /**
  * 截图保留策略选项（spec 行 2344-2352）
@@ -103,6 +172,21 @@ export function SettingsPage() {
   const requestConfirm = useAppStore((s) => s.requestConfirm);
   const clearingData = useAppStore((s) => s.clearingData);
   const setClearingData = useAppStore((s) => s.setClearingData);
+
+  // 版本更新
+  const currentVersion = useAppStore((s) => s.currentVersion);
+  const updateStatus = useAppStore((s) => s.updateStatus);
+  const checkForUpdate = useAppStore((s) => s.checkForUpdate);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+
+  const handleCheckUpdate = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      await checkForUpdate();
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
 
   // 本地 UI 状态
   const [retentionPolicy, setRetentionPolicy] = useState<ScreenshotRetentionPolicy>("today");
@@ -1059,6 +1143,52 @@ export function SettingsPage() {
                 </button>
               </div>
             </>
+          )}
+        </div>
+      </section>
+
+      {/* 8. 关于 */}
+      <section className="settings-section">
+        <header className="settings-section__header">
+          <h3 className="settings-section__title">8. 关于</h3>
+          <p className="settings-section__hint">当前版本与更新检查</p>
+        </header>
+        <div className="settings-section__content">
+          <div className="settings-section__row">
+            <span>当前版本</span>
+            <span className="settings-section__value">v{currentVersion || "—"}</span>
+          </div>
+
+          {/* 当前版本更新说明（打包时嵌入，离线可用） */}
+          {currentReleaseNotes && (
+            <div className="settings-section__release-notes-wrap">
+              <p className="settings-section__row-label">本次更新内容</p>
+              <div className="settings-section__release-notes">
+                {renderSimpleMarkdown(currentReleaseNotes)}
+              </div>
+            </div>
+          )}
+
+          <div className="settings-section__actions">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleCheckUpdate}
+              disabled={isCheckingUpdate}
+            >
+              {isCheckingUpdate ? "检查中..." : "检查更新"}
+            </button>
+          </div>
+          {updateStatus.state === "hasUpdate" && (
+            <p className="settings-section__hint">
+              发现新版本 v{updateStatus.info.latestVersion}，点击右上角徽章查看详情。
+            </p>
+          )}
+          {updateStatus.state === "noUpdate" && (
+            <p className="settings-section__hint">已是最新版本。</p>
+          )}
+          {updateStatus.state === "error" && (
+            <p className="settings-section__hint">检查更新失败：{updateStatus.message}</p>
           )}
         </div>
       </section>

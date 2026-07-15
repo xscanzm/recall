@@ -66,6 +66,8 @@ import { logger } from "./services/Logger";
 import { cascadeMarkAfterFactSceneDelete } from "./services/cascadeMark";
 import { trayService } from "./services/TrayService";
 import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./services/ScreenshotCacheScheduler";
+import { UpdateService } from "./services/UpdateService";
+import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
 import { formatLocalDateKey } from "./utils/dateKey";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
@@ -139,6 +141,8 @@ let memoryPipeline: MemoryPipeline | null = null;
 // M6：报告调度器
 let reportScheduler: ReportScheduler | null = null;
 let endOfDayReviewService: EndOfDayReviewService | null = null;
+// 版本更新服务
+let updateService: UpdateService | null = null;
 // 长会话场景调度器（C-3 修复：触发 long_session capture bundle）
 let sceneScheduler: SceneScheduler | null = null;
 // 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
@@ -732,6 +736,10 @@ app.whenReady().then(async () => {
   });
   endOfDayReviewService.start();
 
+  // 版本更新服务
+  updateService = new UpdateService({ settingsService });
+  updateService.cleanupIncompleteDownloads(); // 启动时清理 .tmp 残留
+
   // 初始化托盘服务（M9：抽象到 TrayService，支持双击显示/动态菜单）
   initTray();
 
@@ -740,6 +748,15 @@ app.whenReady().then(async () => {
     screenshotCache,
     settingsService,
     intervalMs: 60 * 60 * 1000, // 1 小时
+  });
+
+  // 版本更新定时检查（启动后 10s 首检，之后每 4 小时检查一次）
+  startUpdateCheckerScheduler({
+    updateService,
+    intervalMs: 4 * 60 * 60 * 1000,
+    onHasUpdate: (info) => {
+      logger.info({ message: `Update available: ${info.latestVersion}` });
+    },
   });
 
   // 注册 IPC handlers（注入 M4 repos 用于真实查询）
@@ -786,6 +803,7 @@ app.whenReady().then(async () => {
     correctionLifecycleRepo,
     projectionInvalidationProcessor,
     endOfDayReviewService,
+    updateService,
   });
 
   // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
@@ -833,6 +851,9 @@ app.on("before-quit", (event) => {
   logger.info({ message: "Recall app quitting" });
   // 停止截图缓存定时清理
   stopScreenshotCacheScheduler();
+  // 版本更新：停止调度器 + 清理半成品下载
+  stopUpdateCheckerScheduler();
+  updateService?.cleanupIncompleteDownloads();
   // Phase 2 B2：停止 TimelineBuilder 自动调度
   if (timelineBuilderTimer) {
     clearInterval(timelineBuilderTimer);

@@ -209,6 +209,56 @@ export const ipcContracts = {
   },
   "workReport:get": { request: dateKey, response: ipcResult(WorkReportSchema.nullable()) },
   "workReport:saveSelection": { request: z.object({ dateKey, selectedBlockIds: stringArray, excludedBlockIds: stringArray }), response: ipcResult(z.null()) },
+  // 版本更新
+  "app:getVersion": { request: z.undefined(), response: z.object({ version: z.string() }) },
+  "update:check": {
+    request: z.object({ force: z.boolean().optional() }).default({}),
+    response: z.object({
+      hasUpdate: z.boolean(),
+      currentVersion: z.string(),
+      latestVersion: z.string(),
+      downloadUrl: z.string(),
+      sha256: z.string(),
+      releaseNotes: z.string(),
+      publishedAt: z.string(),
+    }),
+  },
+  "update:download": {
+    request: z.undefined(),
+    response: z.object({ installerPath: z.string() }),
+  },
+  "update:installAndQuit": {
+    request: z.object({ installerPath: z.string() }),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "update:getStatus": {
+    request: z.undefined(),
+    response: z.union([
+      z.object({ state: z.literal("idle") }),
+      z.object({ state: z.literal("checking") }),
+      z.object({ state: z.literal("hasUpdate"), info: z.unknown() }),
+      z.object({ state: z.literal("noUpdate"), info: z.unknown() }),
+      z.object({
+        state: z.literal("downloading"),
+        progress: z.object({
+          bytesDownloaded: z.number(),
+          bytesTotal: z.number(),
+          percent: z.number(),
+        }),
+      }),
+      z.object({
+        state: z.literal("downloaded"),
+        installerPath: z.string(),
+        info: z.unknown(),
+      }),
+      z.object({ state: z.literal("installing") }),
+      z.object({ state: z.literal("error"), message: z.string(), code: z.string().optional() }),
+    ]),
+  },
+  "update:dismissVersion": {
+    request: z.object({ version: z.string() }),
+    response: z.object({ ok: z.literal(true) }),
+  },
 } as const;
 
 export type ValidatedIpcChannel = keyof typeof ipcContracts;

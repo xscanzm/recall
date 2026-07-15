@@ -14,6 +14,7 @@ import type {
   WorkReport,
   UnfinishedThread,
 } from "../../shared/types";
+import type { UpdateStatus, DownloadProgress } from "../../shared/updateTypes";
 import { getIpc, fetchTodayPageData } from "./ipc";
 import { isCurrentTodayPageRequest, shouldRollOverTodayDate } from "./todayNavigation";
 import { clearAllDataAction, clearScreenshotsOnlyAction, exportDataAction, forgetRecentAction, getCacheSizeAction, searchMemoryAction } from "./searchDataActions";
@@ -593,6 +594,10 @@ interface AppState {
   settingsLoading: boolean;
   settingsError: string | null;
 
+  // 版本更新
+  updateStatus: UpdateStatus;
+  currentVersion: string;
+
   // Phase 3 新增：今日页（doc 21）完整数据与工作日报选择模式
   todayPageData: TodayPageData | null;
   todayPageLoading: boolean;
@@ -798,6 +803,16 @@ interface AppState {
   loadSettings: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettingsState>) => Promise<{ ok: boolean; error?: string }>;
 
+  // 版本更新
+  loadUpdateStatus: () => Promise<void>;
+  loadCurrentVersion: () => Promise<void>;
+  checkForUpdate: () => Promise<void>;
+  downloadUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
+  dismissUpdateVersion: (version: string) => Promise<void>;
+  setUpdateStatus: (status: UpdateStatus) => void;
+  setDownloadProgress: (progress: DownloadProgress) => void;
+
   // M8 新增：数据导出 / 清空 / 缓存大小
   exportData: (input: { includeScreenshots?: boolean }) => Promise<{
     ok: boolean;
@@ -954,6 +969,11 @@ const DEFAULT_APP_STATUS: AppStatus = {
 };
 
 /**
+ * 默认更新状态
+ */
+const DEFAULT_UPDATE_STATUS: UpdateStatus = { state: "idle" };
+
+/**
  * 生成当今日 dateKey（YYYY-MM-DD，本地时区）
  */
 function todayDateKey(): string {
@@ -1056,6 +1076,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   settingsLoading: false,
   settingsError: null,
+
+  // 版本更新
+  updateStatus: DEFAULT_UPDATE_STATUS,
+  currentVersion: "",
 
   // Phase 3 新增：今日页初始状态
   todayPageData: null,
@@ -1704,6 +1728,90 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ settings: previous, settingsError: message });
       return { ok: false, error: message };
     }
+  },
+
+  // -------------------- 版本更新 --------------------
+
+  /**
+   * 加载当前更新状态（应用启动时调用）
+   */
+  loadUpdateStatus: async () => {
+    try {
+      const status = (await getIpc().update.getStatus()) as UpdateStatus;
+      set({ updateStatus: status });
+    } catch {
+      // 静默失败
+    }
+  },
+
+  /**
+   * 加载当前应用版本号
+   */
+  loadCurrentVersion: async () => {
+    try {
+      const { version } = await getIpc().app.getVersion();
+      set({ currentVersion: version });
+    } catch {
+      // 静默失败
+    }
+  },
+
+  /**
+   * 检查更新（手动触发）
+   */
+  checkForUpdate: async () => {
+    try {
+      await getIpc().update.check({ force: true });
+    } catch {
+      // 错误状态由 onStatusChanged push
+    }
+  },
+
+  /**
+   * 下载更新
+   */
+  downloadUpdate: async () => {
+    try {
+      await getIpc().update.download();
+    } catch {
+      // 错误状态由 onStatusChanged push
+    }
+  },
+
+  /**
+   * 安装并退出
+   */
+  installUpdate: async () => {
+    const { updateStatus } = get();
+    if (updateStatus.state !== "downloaded") return;
+    try {
+      await getIpc().update.installAndQuit({ installerPath: updateStatus.installerPath });
+    } catch {
+      // 错误状态由 onStatusChanged push
+    }
+  },
+
+  /**
+   * 忽略某版本
+   */
+  dismissUpdateVersion: async (version: string) => {
+    try {
+      await getIpc().update.dismissVersion({ version });
+    } catch {
+      // 静默失败
+    }
+  },
+
+  /**
+   * 设置更新状态（IPC push 回调）
+   */
+  setUpdateStatus: (status: UpdateStatus) => set({ updateStatus: status }),
+
+  /**
+   * 设置下载进度（IPC push 回调）
+   */
+  setDownloadProgress: (progress: DownloadProgress) => {
+    set({ updateStatus: { state: "downloading", progress } });
   },
 
   /**

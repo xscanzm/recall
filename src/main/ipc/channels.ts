@@ -87,14 +87,23 @@ export type IpcChannel =
   | "unfinishedThreads:updateStatus"
   | "debug:listJobs"
   | "debug:getJobDetails"
-  | "debug:getRelatedRecords";
+  | "debug:getRelatedRecords"
+  // 版本更新
+  | "app:getVersion"
+  | "update:check"
+  | "update:download"
+  | "update:installAndQuit"
+  | "update:getStatus"
+  | "update:dismissVersion";
 
 /**
  * 主进程主动推送到 renderer 的 channel（不是 invoke 通道，是 send 通道）
  */
 export type IpcPushChannel =
   | "app:statusChanged" // AppStatus 变化时推送
-  | "pipeline:progress"; // pipeline 进度（M4 使用）
+  | "pipeline:progress" // pipeline 进度（M4 使用）
+  | "update:progress" // 下载进度推送
+  | "update:statusChanged"; // 更新状态变化推送
 
 /**
  * 全部 invoke channel 列表（用于白名单校验）
@@ -168,6 +177,13 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "debug:listJobs",
   "debug:getJobDetails",
   "debug:getRelatedRecords",
+  // 版本更新
+  "app:getVersion",
+  "update:check",
+  "update:download",
+  "update:installAndQuit",
+  "update:getStatus",
+  "update:dismissVersion",
 ] as const;
 
 /**
@@ -183,6 +199,8 @@ export function isInvokeChannel(value: string): value is IpcChannel {
 export const ALL_PUSH_CHANNELS: readonly IpcPushChannel[] = [
   "app:statusChanged",
   "pipeline:progress",
+  "update:progress",
+  "update:statusChanged",
 ] as const;
 
 export function isPushChannel(value: string): value is IpcPushChannel {

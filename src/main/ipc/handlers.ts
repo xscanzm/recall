@@ -91,6 +91,8 @@ import { registerAppHandlers } from "./handlers/appHandlers";
 import { registerDataLifecycleHandlers } from "./handlers/dataLifecycleHandlers";
 import { registerMemorySearchHandlers } from "./handlers/memorySearchHandlers";
 import { registerTimelineHandlers, registerWorkReportHandlers } from "./handlers/timelineHandlers";
+import type { UpdateService } from "../services/UpdateService";
+import { registerUpdateHandlers } from "./handlers/updateHandlers";
 
 /**
  * IpcDeps：handler 所需的 main 进程依赖
@@ -149,6 +151,8 @@ export interface IpcDeps {
   correctionLifecycleRepo?: CorrectionLifecycleRepository;
   projectionInvalidationProcessor?: ProjectionInvalidationProcessor;
   endOfDayReviewService?: EndOfDayReviewService;
+  // 版本更新服务（UpdateService，可选；为空时 update 相关 channel 返回 update_service_unavailable）
+  updateService?: UpdateService;
 }
 
 /**
@@ -1926,6 +1930,7 @@ ${context}
   registerDataLifecycleHandlers(deps);
   registerTimelineHandlers(deps);
   registerWorkReportHandlers(deps);
+  registerUpdateHandlers(deps);
 }
 
 function readCorrectionTarget(
@@ -2008,6 +2013,13 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "debug:listJobs",
   "debug:getJobDetails",
   "debug:getRelatedRecords",
+  // 版本更新
+  "app:getVersion",
+  "update:check",
+  "update:download",
+  "update:installAndQuit",
+  "update:getStatus",
+  "update:dismissVersion",
 ] as const;
 
 // ============================================================================
