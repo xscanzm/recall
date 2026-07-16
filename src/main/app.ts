@@ -757,6 +757,10 @@ app.whenReady().then(async () => {
     onHasUpdate: (info) => {
       logger.info({ message: `Update available: ${info.latestVersion}` });
     },
+    onStatusChange: (status) => {
+      // 推送状态到 renderer（让顶栏徽章实时响应）
+      mainWindow?.webContents.send("update:statusChanged", status);
+    },
   });
 
   // 注册 IPC handlers（注入 M4 repos 用于真实查询）

@@ -29,6 +29,11 @@ import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { SettingsService } from "./SettingsService";
+import { buildBatchOcrEvidenceJson } from "./BatchOcrEvidence";
+import {
+  buildObserverBatchFramePlan,
+  expandObserverObservations,
+} from "./ObserverBatchFrames";
 
 /**
  * Observation 摘要（用于 extractorInput.recentObservations）
@@ -344,7 +349,7 @@ export class ObserverExtractorWorker {
    * 批次模式：一次性处理多帧截图
    *
    * 与单帧 run() 的差异：
-   * - 使用 compressedImagePaths（多张压缩 JPEG q=25）
+   * - 使用 compressedImagePaths（多张优化彩色 JPEG q=45）
    * - 使用 BATCH_OBSERVER_EXTRACTOR_PROMPT_TEMPLATE（批次版 prompt）
    * - 使用 BatchObserverExtractorOutputSchema（observations 数组）
    * - 不在此处写 facts（由 MemoryPipeline 两阶段写入回填真实 observationId）
@@ -359,10 +364,12 @@ export class ObserverExtractorWorker {
     const { batchBundle, multimodalModelConfigId } = input;
 
     // 1. 收集压缩图路径（过滤空路径，跳过压缩失败的帧）
-    const availableFrames = batchBundle.compressedImagePaths
-      .map((imagePath, frameIndex) => ({ imagePath, frameIndex }))
-      .filter((item) => item.imagePath.length > 0);
-    const imagePaths = availableFrames.map((item) => item.imagePath);
+    const framePlan = buildObserverBatchFramePlan(batchBundle);
+    const imagePaths = framePlan.submittedFrames.map((item) => item.imagePath);
+    const framesOcrJson = buildBatchOcrEvidenceJson(
+      batchBundle.ocrResults,
+      framePlan.submittedFrames.map((item) => item.originalFrameIndex)
+    );
 
     if (imagePaths.length === 0) {
       return {
@@ -373,8 +380,8 @@ export class ObserverExtractorWorker {
     }
 
     // 2. 构造每帧元数据数组（frameIndex + capturedAt + appName + windowTitle）
-    const framesMetadata = availableFrames.map(({ frameIndex: originalIndex }, i) => {
-      const frame = batchBundle.frames[originalIndex];
+    const framesMetadata = framePlan.submittedFrames.map(({ originalFrameIndex }, i) => {
+      const frame = batchBundle.frames[originalFrameIndex];
       return {
         frameIndex: i + 1,
         capturedAt: frame.capturedAt,
@@ -420,7 +427,8 @@ export class ObserverExtractorWorker {
       .replace("{{batch_end_at}}", batchBundle.capturedAtEnd)
       .replace("{{batch_timezone}}", batchBundle.timezone)
       .replace("{{extractor_input_json}}", extractorInputJson)
-      .replace("{{known_aliases_block}}", knownAliasesBlock);
+      .replace("{{known_aliases_block}}", knownAliasesBlock)
+      .replace("{{frames_ocr_json}}", framesOcrJson);
 
     // 6. 构造脱敏 jobInputJson
     const jobInputJson = JSON.stringify({
@@ -428,6 +436,7 @@ export class ObserverExtractorWorker {
       capturedAtStart: batchBundle.capturedAtStart,
       capturedAtEnd: batchBundle.capturedAtEnd,
       frameCount: imagePaths.length,
+      originalFrameCount: framePlan.availableFrames.length,
       primaryAppName: batchBundle.appName,
       primaryWindowTitle: batchBundle.windowTitle,
       recentObservationCount: recentObservations.length,
@@ -451,7 +460,7 @@ export class ObserverExtractorWorker {
               jobType: "observer_extractor_batch",
               jobInputJson,
               maxTokens: 16_384,
-              timeoutMs: 180_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
+              timeoutMs: 240_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
             },
             BatchObserverExtractorOutputSchema
           );
@@ -473,7 +482,7 @@ export class ObserverExtractorWorker {
     return {
       ok: true,
       data: {
-        observations: result.data.observations,
+        observations: expandObserverObservations(result.data.observations, framePlan),
         facts: result.data.facts,
         discardedNoise: result.data.discardedNoise,
         modelJobId: result.modelJobId ?? "",
@@ -499,10 +508,12 @@ export class ObserverExtractorWorker {
   }): Promise<JobResult<BatchObserverWorkerResult>> {
     const { batchBundle, multimodalModelConfigId } = input;
 
-    const availableFrames = batchBundle.compressedImagePaths
-      .map((imagePath, frameIndex) => ({ imagePath, frameIndex }))
-      .filter((item) => item.imagePath.length > 0);
-    const imagePaths = availableFrames.map((item) => item.imagePath);
+    const framePlan = buildObserverBatchFramePlan(batchBundle);
+    const imagePaths = framePlan.submittedFrames.map((item) => item.imagePath);
+    const framesOcrJson = buildBatchOcrEvidenceJson(
+      batchBundle.ocrResults,
+      framePlan.submittedFrames.map((item) => item.originalFrameIndex)
+    );
 
     if (imagePaths.length === 0) {
       return {
@@ -512,8 +523,8 @@ export class ObserverExtractorWorker {
       };
     }
 
-    const framesMetadata = availableFrames.map(({ frameIndex: originalIndex }, i) => {
-      const frame = batchBundle.frames[originalIndex];
+    const framesMetadata = framePlan.submittedFrames.map(({ originalFrameIndex }, i) => {
+      const frame = batchBundle.frames[originalFrameIndex];
       return {
         frameIndex: i + 1,
         capturedAt: frame.capturedAt,
@@ -547,13 +558,15 @@ export class ObserverExtractorWorker {
       .replace("{{batch_start_at}}", batchBundle.capturedAtStart)
       .replace("{{batch_end_at}}", batchBundle.capturedAtEnd)
       .replace("{{batch_timezone}}", batchBundle.timezone)
-      .replace("{{recent_observations_json}}", recentObservationsJson);
+      .replace("{{recent_observations_json}}", recentObservationsJson)
+      .replace("{{frames_ocr_json}}", framesOcrJson);
 
     const jobInputJson = JSON.stringify({
       batchId: batchBundle.batchId,
       capturedAtStart: batchBundle.capturedAtStart,
       capturedAtEnd: batchBundle.capturedAtEnd,
       frameCount: imagePaths.length,
+      originalFrameCount: framePlan.availableFrames.length,
       primaryAppName: batchBundle.appName,
       primaryWindowTitle: batchBundle.windowTitle,
       recentObservationCount: recentObservations.length,
@@ -575,7 +588,7 @@ export class ObserverExtractorWorker {
               jobType: "observer_batch",
               jobInputJson,
               maxTokens: 16_384,
-              timeoutMs: 180_000,
+              timeoutMs: 240_000,
             },
             BatchObserverOutputSchema
           );
@@ -596,7 +609,7 @@ export class ObserverExtractorWorker {
     return {
       ok: true,
       data: {
-        observations: result.data.observations,
+        observations: expandObserverObservations(result.data.observations, framePlan),
         modelJobId: result.modelJobId ?? "",
         attempts: result.attempts ?? 1,
       },

@@ -18,7 +18,7 @@ import {
 import logoUrl from "../../src/renderer/public/logo.png";
 import "./styles.css";
 
-const DOWNLOAD_URL = "https://github.com/xscanzm/recall-releases";
+const DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/latest";
 const SOURCE_URL = "https://github.com/xscanzm/recall";
 
 function Mark({ compact = false }: { compact?: boolean }) {
@@ -84,7 +84,7 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.1.0</p>
+            <p className="eyebrow"><span /> Windows 公开测试版 · 0.2.1</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
@@ -164,7 +164,7 @@ function App() {
         <section className="before-section" id="before">
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 92 MB，版本 0.1.0。</small></p>
+            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 92 MB，版本 0.2.1。</small></p>
             <p><span>02</span><b>需要自备模型服务</b><small>首次使用需填写兼容模型的 Endpoint、模型名和 API Key。</small></p>
             <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
           </div>
@@ -174,8 +174,8 @@ function App() {
           <Mark />
           <p>一天会过去。</p>
           <h2>但你走过的路，<br />可以留下回声。</h2>
-          <DownloadLink>去 GitHub 下载公开测试版</DownloadLink>
-          <small>Windows x64 · v0.1.0 · 自带 API Key</small>
+          <DownloadLink>下载 Windows 公开测试版</DownloadLink>
+          <small>Windows x64 · v0.2.1 · 自带 API Key</small>
         </section>
       </main>
 

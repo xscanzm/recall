@@ -1,5 +1,5 @@
 // Recall 桌面端更新分发 Worker 主入口
-// 提供 4 个端点：/api/latest, /api/check, /api/ping, /download/:filename
+// 提供 5 个端点：/api/latest, /api/check, /api/ping, /download/latest, /download/:filename
 
 import { compareVersions } from "./version";
 import { readManifest, type UpdateManifest } from "./manifest";
@@ -155,6 +155,26 @@ export default {
         // 异步写入统计，立即返回响应
         ctx.waitUntil(recordPing(env.STATS, version));
         return jsonResponse({ ok: true });
+      }
+
+      // ─── GET /download/latest ──────────────────────
+      // 读取 manifest，302 重定向到最新版安装包（供网站下载按钮使用，始终指向最新版）
+      if (path === "/download/latest") {
+        const manifest = await readManifest(env.RELEASES);
+        if (manifest === null) {
+          return jsonResponse({ error: "no manifest" }, 404);
+        }
+        // manifest.downloadUrl 是相对路径（如 "/download/Recall-0.2.1-setup.exe"），构造绝对 URL
+        const location = new URL(manifest.downloadUrl, url.origin).href;
+        return withCors(
+          new Response(null, {
+            status: 302,
+            headers: {
+              Location: location,
+              "Cache-Control": "no-store",
+            },
+          })
+        );
       }
 
       // ─── GET /download/:filename ────────────────────

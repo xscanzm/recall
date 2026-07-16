@@ -1,6 +1,6 @@
 {
   "name": "recall",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "回声 Recall - 主动型桌面上下文记忆助理",
   "main": "dist/main/app.js",
   "author": "Recall Contributors",

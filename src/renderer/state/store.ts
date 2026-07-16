@@ -429,6 +429,8 @@ export interface DebugJobSummary {
   errorMessage: string | null;
   /** 丢弃事件数量（从 debugEventsJson 解析，null/无事件为 0） */
   debugEventCount: number;
+  /** 脱敏后的输入摘要 JSON（含 imageCount/frameCount/hasStitchedImage 等），用于统计图片数和 OCR 状态 */
+  inputJson: string;
 }
 
 /**
@@ -2521,6 +2523,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             errorCode: (j.errorCode ?? j.error_code ?? null) as string | null,
             errorMessage: (j.errorMessage ?? j.error_message ?? null) as string | null,
             debugEventCount,
+            inputJson: typeof j.inputJson === "string" ? j.inputJson : (typeof j.input_json === "string" ? j.input_json : ""),
           };
         });
         set({ debugJobs: jobs, debugJobsLoading: false });

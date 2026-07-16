@@ -4,7 +4,7 @@
 // 职责：
 // - 收集 CaptureService 发出的 capture-bundle，攒满 6 帧后合并提交
 // - 未满 6 帧时，5 分钟超时兜底也提交（避免长时间等待）
-// - 攒批时对每张 PNG 截图做 resize 800px + JPEG q=25 压缩，输出临时文件
+// - 先对每张原始 PNG 做 Windows OCR，再生成 resize 800px + JPEG q=45 临时文件
 // - flush 时构造 BatchCaptureBundle，emit "batch-ready" 事件
 // - 暂停/退出时主动 flush，避免丢攽批
 //
@@ -16,9 +16,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import sharp from "sharp";
-import type { BatchCaptureBundle, CaptureBundle } from "../models/types";
+import type { BatchCaptureBundle, BatchFrameOcrResult, CaptureBundle } from "../models/types";
 import type { CaptureInboxRepository } from "../db/repositories/CaptureInboxRepository";
 import { logger } from "./Logger";
+import { WindowsOcrService } from "./WindowsOcrService";
+import { OcrFrameProcessor, type PreparedOcrBatch } from "./OcrFrameProcessor";
 
 /**
  * 攒批参数
@@ -26,13 +28,16 @@ import { logger } from "./Logger";
 const BATCH_SIZE = 6; // 攒满 6 帧立即提交，避免 JSON 输出过长被截断
 const FLUSH_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟超时兜底
 const FRAME_TARGET_WIDTH = 800; // 每帧 resize 到 800px 宽（等比缩放）
-const JPEG_QUALITY = 25; // JPEG q=25（阶段一验证参数）
+const JPEG_QUALITY = 45;
+const JPEG_CHROMA_SUBSAMPLING = "4:2:0";
 
 /**
  * CaptureBatcher 配置
  */
 export interface CaptureBatcherConfig {
   repository: CaptureInboxRepository;
+  ocrService?: Pick<WindowsOcrService, "recognizeImages">;
+  ocrFrameProcessor?: Pick<OcrFrameProcessor, "prepareBatch">;
   /**
    * 压缩图临时目录。默认用 os.tmpdir()/recall-batch
    * 压缩图使用后由调用方（ObserverExtractorWorker）清理
@@ -56,6 +61,7 @@ export class CaptureBatcher extends EventEmitter {
   private flushTimer: NodeJS.Timeout | null = null;
   private readonly compressedDir: string;
   private readonly repository: CaptureInboxRepository;
+  private readonly ocrFrameProcessor: Pick<OcrFrameProcessor, "prepareBatch">;
   private isFlushing = false;
   private flushPromise: Promise<void> | null = null;
   private accepting = true;
@@ -63,6 +69,9 @@ export class CaptureBatcher extends EventEmitter {
   constructor(config: CaptureBatcherConfig) {
     super();
     this.repository = config.repository;
+    this.ocrFrameProcessor = config.ocrFrameProcessor ?? new OcrFrameProcessor({
+      ocrService: config.ocrService ?? new WindowsOcrService(),
+    });
     this.compressedDir =
       config.compressedDir ?? path.join(os.tmpdir(), "recall-batch");
     fs.mkdirSync(this.compressedDir, { recursive: true });
@@ -114,7 +123,7 @@ export class CaptureBatcher extends EventEmitter {
   /**
    * 冲刷当前攽批，构造 BatchCaptureBundle 并 emit "batch-ready"
    * - 清除超时定时器
-   * - 压缩所有 PNG 为 JPEG q=25 临时文件
+   * - 使用未压缩原图做 Windows OCR，再生成 JPEG q=45 临时文件
    * - 即使未满 6 帧也会提交（用于暂停/退出/long_session 触发）
    * - 队列为空时无操作
    *
@@ -152,11 +161,21 @@ export class CaptureBatcher extends EventEmitter {
     });
 
     try {
-      // 压缩所有帧为 JPEG q=25
+      // OCR 必须读取原始截图；识别完成后再生成模型使用的压缩图。
+      const preparedOcr = await this.prepareOriginalImageOcr(frames);
+      const ocrResults = preparedOcr.results;
       const compressedImagePaths = await this.compressImages(frames, batchId);
 
-      const batchBundle = this.composeBatch(frames, compressedImagePaths, batchId);
+      const batchBundle = this.composeBatch(
+        frames,
+        compressedImagePaths,
+        ocrResults,
+        batchId
+      );
       if (this.repository.createBatch(batchBundle)) {
+        // Match Screenpipe's durability boundary: cache is visible only after
+        // the OCR-bearing batch bundle has been committed to SQLite.
+        preparedOcr.commit();
         this.emit("batch-ready");
       }
     } catch (err) {
@@ -205,8 +224,31 @@ export class CaptureBatcher extends EventEmitter {
     this.stop();
   }
 
+  private async prepareOriginalImageOcr(frames: CaptureBundle[]): Promise<PreparedOcrBatch> {
+    try {
+      return await this.ocrFrameProcessor.prepareBatch(frames);
+    } catch (error) {
+      logger.warn({
+        jobType: "windows_ocr",
+        status: "failed",
+        errorCode: "windows_ocr_unhandled_error",
+        message: `Windows OCR integration failed: ${error instanceof Error ? error.name : "unknown_error"}`,
+      });
+      return {
+        results: frames.map((_, index) => ({
+          frameIndex: index + 1,
+          text: "",
+          lines: [],
+          blocks: [],
+          errorCode: "windows_ocr_unhandled_error",
+        })),
+        commit: () => undefined,
+      };
+    }
+  }
+
   /**
-   * 压缩所有 PNG 截图为 JPEG q=25（resize 到 800px 宽）
+   * 压缩所有 PNG 截图为优化彩色 JPEG q=45（resize 到 800px 宽）
    * - 输出到 compressedDir 临时目录
    * - 文件名：batch_<batchId>_frame_<idx>.jpg
    * - 返回压缩后的文件路径数组（与 frames 顺序对应）
@@ -235,7 +277,11 @@ export class CaptureBatcher extends EventEmitter {
       try {
         await sharp(srcPath)
           .resize({ width: FRAME_TARGET_WIDTH })
-          .jpeg({ quality: JPEG_QUALITY })
+          .jpeg({
+            quality: JPEG_QUALITY,
+            chromaSubsampling: JPEG_CHROMA_SUBSAMPLING,
+            mozjpeg: true,
+          })
           .toFile(outPath);
         paths.push(outPath);
       } catch (err) {
@@ -258,6 +304,7 @@ export class CaptureBatcher extends EventEmitter {
   private composeBatch(
     frames: CaptureBundle[],
     compressedImagePaths: string[],
+    ocrResults: BatchFrameOcrResult[],
     batchId: string
   ): BatchCaptureBundle {
     const mid = Math.floor(frames.length / 2);
@@ -272,6 +319,7 @@ export class CaptureBatcher extends EventEmitter {
       captureReason: "batch_flush",
       imagePaths: frames.flatMap((f) => f.imagePaths),
       compressedImagePaths,
+      ocrResults,
       retentionPolicy: frames[0].retentionPolicy,
     };
   }
@@ -321,7 +369,11 @@ export class CaptureBatcher extends EventEmitter {
       try {
         await sharp(source)
           .resize({ width: FRAME_TARGET_WIDTH })
-          .jpeg({ quality: JPEG_QUALITY })
+          .jpeg({
+            quality: JPEG_QUALITY,
+            chromaSubsampling: JPEG_CHROMA_SUBSAMPLING,
+            mozjpeg: true,
+          })
           .toFile(output);
         bundle.compressedImagePaths[i] = output;
       } catch {

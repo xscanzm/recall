@@ -3,7 +3,7 @@
 //
 // 根据 updateStatus 状态机派生不同 UI：
 // - idle / checking / noUpdate：不渲染
-// - hasUpdate：红点 + "新版本可用" 按钮 → 打开 UpdatePanel
+// - hasUpdate：红点 + "有升级，更新" 按钮 → 打开 UpdatePanel
 // - downloading：进度条 + 百分比（不可点击）
 // - downloaded："立即安装" 按钮 → 二次确认后调用 installUpdate
 // - installing："正在安装..." + spinner
@@ -48,7 +48,7 @@ export const UpdateBadge = () => {
             className="btn btn-ghost btn-sm"
             onClick={() => setShowPanel(true)}
           >
-            新版本可用
+            有升级，更新
           </button>
         </div>
         {showPanel && <UpdatePanel onClose={() => setShowPanel(false)} />}

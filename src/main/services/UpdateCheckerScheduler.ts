@@ -4,14 +4,14 @@
 // 职责：
 // - 应用启动 10 秒后首次检查
 // - 之后每 4 小时检查一次
-// - 检测到新版本时回调通知（由 app.ts 推送给 renderer）
+// - 检查完成后（无论是否有更新）通过 onStatusChange 回调推送最新状态到 renderer
 // - 失败不阻断主流程（仅记录日志）
 // - 在应用退出前停止定时器
 //
 // 参考 ScreenshotCacheScheduler.ts 模板
 
 import type { UpdateService } from "./UpdateService";
-import type { UpdateInfo } from "../../shared/updateTypes";
+import type { UpdateInfo, UpdateStatus } from "../../shared/updateTypes";
 import { logger } from "./Logger";
 
 export interface UpdateCheckerConfig {
@@ -20,6 +20,8 @@ export interface UpdateCheckerConfig {
   intervalMs?: number;
   /** 检测到新版本时的回调 */
   onHasUpdate: (info: UpdateInfo) => void;
+  /** 检查完成后（无论结果）的回调，用于推送状态到 renderer */
+  onStatusChange?: (status: UpdateStatus) => void;
 }
 
 let timer: NodeJS.Timeout | null = null;
@@ -50,6 +52,8 @@ export function startUpdateCheckerScheduler(config: UpdateCheckerConfig): void {
       }
 
       const info = await config.updateService.checkForUpdates();
+      // 推送最新状态（不管有没有更新，都让 renderer 同步）
+      config.onStatusChange?.(config.updateService.getStatus());
       if (info.hasUpdate) {
         config.onHasUpdate(info);
       }
@@ -60,6 +64,8 @@ export function startUpdateCheckerScheduler(config: UpdateCheckerConfig): void {
         errorCode: "scheduled_check_failed",
         message: err instanceof Error ? err.message : String(err),
       });
+      // 失败也推送状态（让 renderer 显示 error）
+      config.onStatusChange?.(config.updateService.getStatus());
     }
   };
 

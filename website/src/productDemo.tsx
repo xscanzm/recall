@@ -80,6 +80,7 @@ const demoPeople = [
     createdAt: `${demoDateKey}T09:30:00`,
     updatedAt: `${demoDateKey}T15:40:00`,
     deletedAt: null,
+    relationship: null,
   },
   {
     id: "person-zhou",
@@ -92,6 +93,7 @@ const demoPeople = [
     createdAt: `${demoDateKey}T10:10:00`,
     updatedAt: `${demoDateKey}T17:10:00`,
     deletedAt: null,
+    relationship: null,
   },
   {
     id: "person-chen",
@@ -104,6 +106,7 @@ const demoPeople = [
     createdAt: `${demoDateKey}T11:00:00`,
     updatedAt: `${demoDateKey}T14:20:00`,
     deletedAt: null,
+    relationship: null,
   },
 ];
 
@@ -215,6 +218,8 @@ const searchResults = [
     projectId: demoProject.id,
     sourceType: "fact" as const,
     sourceId: "fact-copy",
+    matchReasons: [],
+    sourceCount: 1,
   },
   {
     id: "search-scene",
@@ -226,6 +231,8 @@ const searchResults = [
     projectId: demoProject.id,
     sourceType: "scene" as const,
     sourceId: "scene-copy",
+    matchReasons: [],
+    sourceCount: 1,
   },
   {
     id: "search-report",
@@ -237,6 +244,8 @@ const searchResults = [
     projectId: demoProject.id,
     sourceType: "report" as const,
     sourceId: demoReview.id,
+    matchReasons: [],
+    sourceCount: 1,
   },
 ];
 
@@ -254,6 +263,11 @@ const demoSettings = {
     desktopNotifications: true,
     dailyReportTime: "18:00",
     weeklyReportTime: "17:30",
+  },
+  endOfDayReview: {
+    enabled: true,
+    firstTime: "17:30",
+    secondTime: "18:00",
   },
   dailyReport: { autoGenerate: false, time: "18:00" },
   onboardingCompleted: true,
@@ -377,12 +391,14 @@ async function mountDemo() {
     searchQuery: "首页标题",
     searchResults,
     searchSearched: true,
-    askQuestion: "上次那个首页标题，最后是怎么定的？",
-    askResult: {
+    followupQuestion: "上次那个首页标题，最后是怎么定的？",
+    aiMode: "answer",
+    aiResult: {
       ok: true,
+      mode: "answer",
       answer: "你最后决定从用户的一天出发，用“让认真度过的一天，被好好记住”作为首页主张。",
       sources: searchResults.slice(0, 2),
-      searchCount: 3,
+      candidateCount: 3,
     },
   });
 

@@ -302,7 +302,7 @@ export interface CaptureBundle {
  *
  * 由 CaptureBatcher 攒批后产出，交 MemoryPipeline.processBatchCaptureBundle 处理。
  * - frames：原始的多条单帧 CaptureBundle（保留帧级元数据，用于 normalizer 落 observation）
- * - compressedImagePaths：每帧 resize 到 800px 宽 + JPEG q=25 的临时文件路径
+ * - compressedImagePaths：每帧 resize 到 800px 宽 + 优化彩色 JPEG q=45 的临时文件路径
  *   由 CaptureBatcher.compressImages 生成，使用后由调用方负责清理
  */
 export interface BatchCaptureBundle {
@@ -324,10 +324,88 @@ export interface BatchCaptureBundle {
   captureReason: CaptureBundle["captureReason"] | "batch_flush";
   /** 原始截图路径（扁平化 frames[].imagePaths） */
   imagePaths: string[];
-  /** 压缩后的 JPEG q=25 临时文件路径 */
+  /** 压缩后的 JPEG q=45 临时文件路径 */
   compressedImagePaths: string[];
+  /**
+   * Windows 内置 OCR 从未压缩原图提取的逐帧文字证据。
+   * 可选以兼容功能上线前已经持久化的批次。
+   */
+  ocrResults?: BatchFrameOcrResult[];
   /** 截图保留策略（取首帧） */
   retentionPolicy: ScreenshotRetentionPolicy;
+}
+
+export interface BatchFrameOcrResult {
+  /** 原始 batch frames 中的 1-based 帧序号 */
+  frameIndex: number;
+  /** Windows OCR 返回的完整文本 */
+  text: string;
+  /** 按视觉阅读顺序返回的逐行文本 */
+  lines: string[];
+  /** Windows OCR 返回的结构化逐行文字块；旧批次可缺失 */
+  blocks?: OcrTextBlock[];
+  /** 实际使用的 Windows OCR 语言，如 zh-Hans-CN */
+  language?: string;
+  /** 非敏感错误码；单帧失败不阻断批次 */
+  errorCode?: string;
+  /** 当前原图的稳定签名；用于精确复用和诊断，不作为近似帧跳过条件 */
+  screenSignature?: OcrScreenSignature;
+  /** 提交给模型的 OCR 证据模式 */
+  mode?: "full" | "exact_reuse" | "delta";
+  /** 当前批次内可安全复用的原始 1-based 帧序号 */
+  reuseFromFrameIndex?: number;
+  /** delta 所基于的当前批次原始 1-based 帧序号；跨批次时缺失 */
+  deltaFromFrameIndex?: number;
+  /** 跨批次复用 OCR 时的来源 captureId；不会用于省略当前模型图片 */
+  reusedFromCaptureId?: string;
+  /** 相对上一 OCR 状态的保守文字块差异 */
+  delta?: OcrFrameDelta;
+}
+
+export interface OcrBoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OcrWordResult {
+  text: string;
+  boundingBox: OcrBoundingBox;
+  /** 某些 OCR 引擎可提供；Windows.Media.Ocr 当前不提供，禁止伪造 */
+  confidence?: number;
+}
+
+export interface OcrTextBlock {
+  /** 当前 OCR 上下文内稳定的块 id */
+  id: string;
+  text: string;
+  boundingBox: OcrBoundingBox;
+  words: OcrWordResult[];
+  confidence?: number;
+  /** 对原图文字区域做灰度量化后得到的签名 */
+  visualHash?: string;
+}
+
+export interface OcrChangedBlock {
+  previousBlockId: string;
+  block: OcrTextBlock;
+}
+
+export interface OcrFrameDelta {
+  unchangedBlockIds: string[];
+  addedBlocks: OcrTextBlock[];
+  changedBlocks: OcrChangedBlock[];
+  removedBlocks: OcrTextBlock[];
+}
+
+export interface OcrScreenSignature {
+  /** 解码后完整 RGBA 像素的 SHA-256；只有相等时才允许跳过 OCR */
+  pixelHash: string;
+  /** 仅用于诊断/排序的 64-bit dHash，不允许单独决定跳过 */
+  dHash: string;
+  width: number;
+  height: number;
 }
 
 /**

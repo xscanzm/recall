@@ -3,7 +3,7 @@
 //
 // 用途：
 // - 由 UpdateBadge 在检测到新版本（updateStatus.state === "hasUpdate"）时触发显示
-// - 展示版本对比 / 发布时间 / 更新日志 / SHA256
+// - 展示版本对比 / 更新日志 / SHA256
 // - 提供三个操作：立即下载 / 跳过此版本 / 稍后提醒
 //
 // 行为：
@@ -12,8 +12,9 @@
 // - updateStatus 不再是 hasUpdate 时（如下载已开始）自动关闭
 
 import { useEffect } from "react";
-import { X, Download, SkipForward, Clock } from "lucide-react";
+import { X, Download, SkipForward } from "lucide-react";
 import { useAppStore } from "../state/store";
+import { renderSimpleMarkdown } from "../utils/simpleMarkdown";
 
 export interface UpdatePanelProps {
   onClose: () => void;
@@ -37,7 +38,6 @@ export const UpdatePanel = ({ onClose }: UpdatePanelProps) => {
   }
 
   const { info } = updateStatus;
-  const publishedAt = new Date(info.publishedAt).toLocaleString("zh-CN");
   const shaTruncated = info.sha256.slice(0, 16) + "...";
 
   const handleDownload = () => {
@@ -84,12 +84,9 @@ export const UpdatePanel = ({ onClose }: UpdatePanelProps) => {
             <span>最新版本 v{info.latestVersion}</span>
           </div>
 
-          <div className="update-panel__meta">
-            <Clock size={14} />
-            <span>发布时间：{publishedAt}</span>
+          <div className="update-panel__release-notes">
+            {renderSimpleMarkdown(info.releaseNotes)}
           </div>
-
-          <pre className="update-panel__release-notes">{info.releaseNotes}</pre>
 
           <div className="update-panel__sha" title={info.sha256}>
             SHA256：{shaTruncated}
@@ -167,27 +164,43 @@ export const UpdatePanel = ({ onClose }: UpdatePanelProps) => {
         .update-panel__arrow {
           color: var(--recall-text-muted);
         }
-        .update-panel__meta {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 12px;
-          color: var(--recall-text-muted);
-        }
         .update-panel__release-notes {
-          margin: 0;
           padding: 12px 14px;
           max-height: 220px;
           overflow: auto;
           background: var(--recall-surface-muted);
           border: 1px solid var(--recall-border);
           border-radius: var(--radius-md);
+          font-size: 13px;
+          line-height: 1.7;
+          color: var(--recall-text);
+        }
+        .update-panel__release-notes .release-notes__h {
+          margin: 12px 0 6px;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--recall-text);
+        }
+        .update-panel__release-notes .release-notes__h:first-child {
+          margin-top: 0;
+        }
+        .update-panel__release-notes .release-notes__list {
+          margin: 4px 0;
+          padding-left: 20px;
+          list-style: disc;
+        }
+        .update-panel__release-notes .release-notes__list li {
+          margin: 2px 0;
+        }
+        .update-panel__release-notes .release-notes__p {
+          margin: 4px 0;
+        }
+        .update-panel__release-notes .release-notes__code {
+          padding: 1px 4px;
+          background: var(--recall-bg);
+          border-radius: 3px;
           font-family: var(--font-mono, ui-monospace, monospace);
           font-size: 12px;
-          line-height: 1.6;
-          color: var(--recall-text);
-          white-space: pre-wrap;
-          word-break: break-word;
         }
         .update-panel__sha {
           font-family: var(--font-mono, ui-monospace, monospace);

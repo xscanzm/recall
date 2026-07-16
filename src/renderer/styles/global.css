@@ -4821,6 +4821,23 @@ a:hover {
 .debug-layer--proactive { background: #E2E0D8; color: #66706D; }
 .debug-error { padding: 8px 12px; background: #FBE8E6; color: #C74D3C; border-radius: 6px; }
 
+/* DebugPage 统计面板 info 色调（L0 调用 / 提交图片） */
+.debug-stats__item--info .debug-stats__value { color: #3B6FB6; }
+
+/* DebugPage 列表：图片数 / 弱化文本 */
+.debug-img-count { display: inline-block; min-width: 24px; text-align: center; padding: 2px 6px; border-radius: 4px; font-size: 12px; background: #E8F0FB; color: #3B6FB6; }
+.debug-table__muted { color: var(--recall-text-secondary, #66706D); }
+
+/* DebugPage 详情抽屉：OCR 证据 tab */
+.debug-ocr__summary { display: flex; gap: 16px; padding: 12px; background: var(--recall-bg-elevated, #FAFAF7); border-radius: 8px; margin-bottom: 12px; }
+.debug-ocr__empty { padding: 16px; color: var(--recall-text-secondary, #66706D); }
+.debug-ocr__hint { margin-top: 8px; font-size: 12px; line-height: 1.6; }
+.debug-ocr__status { padding: 2px 8px; border-radius: 4px; font-size: 12px; display: inline-block; }
+.debug-ocr__status--ok { background: #E8F4F2; color: #2F8F83; }
+.debug-ocr__status--err { background: #FBE8E6; color: #C74D3C; }
+.debug-ocr__text { max-width: 480px; white-space: pre-wrap; word-break: break-word; font-family: monospace; font-size: 12px; }
+.debug-table--ocr td { vertical-align: top; }
+
 .reports-copy-hint {
   padding: 8px 14px;
   background-color: var(--recall-accent-soft);
