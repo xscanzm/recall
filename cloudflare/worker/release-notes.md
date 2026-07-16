@@ -1,3 +1,20 @@
+## v0.3.1 — OCR + 大模型双管线（Beta · 稳定性更新）
+
+本次版本为 v0.3.0 的稳定性更新，延续 OCR + 大模型双管线架构，并对 OCR 证据传输与 observation 归一化做了可靠性优化。
+
+### 稳定性更新（v0.3.1）
+
+- 优化 OCR 证据传输格式：blocks 改用紧凑 tuple `[id, text, confidence?]`，减少模型 token 消耗
+- 新增 `full_text` 模式：对未被 delta/exact_reuse 引用的帧，自动选择更小的 `full_text` 替代完整 `full` blocks
+- `ObservationNormalizer` 在 visibleContent 附加本地 OCR 证据，便于后续追溯
+- `OcrFrameProcessor` commit 时清理 batchFrameIndex，避免跨批次上下文污染
+- block id 前缀缩短为 `b`，进一步压缩传输体积
+- prompt 规则同步更新，说明新增 `full_text` 模式与紧凑 tuple 格式
+
+---
+
+以下为 v0.3.0 的原始发布说明：
+
 ## v0.3.0 — OCR + 大模型双管线（Beta）
 
 本次版本为**重大架构升级**，引入 Windows OCR 与多模态大模型并行的双管线识别机制，显著提升屏幕文字内容的识别保真度。

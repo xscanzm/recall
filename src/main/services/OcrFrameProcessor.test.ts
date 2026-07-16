@@ -95,6 +95,23 @@ describe("OcrFrameProcessor", () => {
 
     expect(processor.getCommittedContextCount()).toBe(1);
   });
+
+  it("does not leak a previous batch frame index into a new batch delta", async () => {
+    const firstPath = await createImage({ r: 230, g: 230, b: 230 });
+    const secondPath = await createImage({ r: 231, g: 230, b: 230 });
+    const recognizeImages = vi.fn(async (paths: string[]) => ({
+      available: true,
+      frames: paths.map((_imagePath, index) => ocrFrame(index + 1, index === 0 ? "before" : "after")),
+    }));
+    const processor = new OcrFrameProcessor({ ocrService: { recognizeImages } });
+
+    const first = await processor.prepareBatch([frame("capture-1", firstPath)]);
+    first.commit();
+    const second = await processor.prepareBatch([frame("capture-2", secondPath)]);
+
+    expect(second.results[0].mode).toBe("delta");
+    expect(second.results[0].deltaFromFrameIndex).toBeUndefined();
+  });
 });
 
 describe("diffBlocks", () => {

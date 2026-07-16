@@ -108,3 +108,42 @@ Codex 是明确反例：如果设置“相似度大于 99% 就跳过”，会漏
 详细 OCR 文本、变体图片和连续帧指标生成在：
 
 `%TEMP%\recall-ocr-eval-20260716`
+
+## 2026-07-16 实施结果
+
+上述下一层已经落地：
+
+- Windows OCR 返回 line/word bounding boxes；Windows API 不提供 confidence，因此没有伪造。
+- 坐标只用于本地 block 匹配、区域签名和完整 L0 证据，不提交给模型、不面向用户展示。
+- 解码像素完全一致时复用 OCR；同批次精确重复图片不再提交给 VLM，模型返回后克隆源 observation 并恢复每帧对齐。
+- 近似帧仍然完整 OCR 和提交图片，只对 OCR 文字做 conservative block diff。
+- OCR cache 只有在 `capture_batches.bundle_json` 成功写入 SQLite 后才 commit。
+- L0 同时保存模型 `fullText` 和完整本地 `ocrEvidence`，两者互不覆盖。
+- 模型 OCR 证据使用 compact `block id + text`；只有后续 delta 真正引用时才保留结构化 baseline，否则使用更小的 full text。delta/full 的选择按实际 UTF-8 序列化字节决定，不使用人为数量阈值。
+
+最终回归运行时，数据库中的历史截图已被生命周期清理为 0 张可访问原图。因此回归使用早先实验保留的历史截图无损/预处理派生 PNG，并额外在 Codex 历史图底部加入一个明确标注的受控小区域文字变化。受控变化不冒充原始历史记录。
+
+| 指标 | 结果 |
+| --- | ---: |
+| 输入帧 | 9 |
+| 实际 Windows OCR 帧 | 7（减少 22.22%） |
+| 实际 VLM 图片帧 | 7（减少 22.22%） |
+| 旧扁平 OCR evidence | 17,058 bytes |
+| 新 evidence | 11,317 bytes（减少 33.66%） |
+| 每帧本地完整 OCR text | 9/9 保留 |
+
+Codex 序列结果：第一帧 66 blocks；第二帧精确复用；第三帧受控输入变化保留为 58 unchanged、1 added、8 removed，没有被整图相似度跳过。
+
+验证结果：
+
+- 聚焦 OCR/差分/批处理/Normalizer/Schema：34 tests passed。
+- 全量 Vitest：26 files / 112 tests passed。
+- main/renderer typecheck passed。
+- main/renderer build passed。
+- SQLite integration passed。
+- memory smoke passed。
+- renderer smoke passed；同时补齐了原 smoke mock 缺失的 update `onProgress/onStatusChanged` 测试桩。
+
+新增回归命令：
+
+`node scripts/evaluate-ocr-delta-history.js`

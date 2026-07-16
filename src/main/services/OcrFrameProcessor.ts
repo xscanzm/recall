@@ -144,7 +144,11 @@ export class OcrFrameProcessor {
     return {
       results,
       commit: () => {
-        this.committedContexts = trimContexts(stagedContexts, this.maxContexts);
+        const committed = new Map<string, ContextState>();
+        for (const [key, state] of stagedContexts) {
+          committed.set(key, { ...state, batchFrameIndex: undefined });
+        }
+        this.committedContexts = trimContexts(committed, this.maxContexts);
       },
     };
   }
@@ -169,6 +173,7 @@ function cloneExactReuseResult(
       ? undefined
       : plan.sourceFrameIndex + 1,
     reusedFromCaptureId: plan.sourceState?.captureId,
+    deltaFromFrameIndex: undefined,
     delta: source.blocks ? {
       unchangedBlockIds: source.blocks.map((block) => block.id),
       addedBlocks: [],
@@ -362,7 +367,7 @@ function createBlockId(block: OcrTextBlock): string {
     Math.round(box.width / 4),
     Math.round(box.height / 4),
   ].join(":");
-  return `ocr_${createHash("sha256").update(payload).digest("hex").slice(0, 16)}`;
+  return `b${createHash("sha256").update(payload).digest("hex").slice(0, 8)}`;
 }
 
 function normalizeText(value: string): string {

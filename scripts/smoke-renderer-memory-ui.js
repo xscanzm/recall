@@ -329,6 +329,7 @@ const api = {
     pauseObserving: async () => ({ ...appStatus, paused: true, observing: false }),
     getLaunchAtLogin: async () => ({ ok: true, enabled: false }),
     setLaunchAtLogin: async (input) => ({ ok: true, enabled: !!input.enabled }),
+    getVersion: async () => ({ version: "0.3.0" }),
     onStatusChanged: () => () => undefined,
     onNavigate: () => () => undefined,
   },
@@ -479,6 +480,15 @@ const api = {
     listJobs: async () => ({ ok: true, jobs: [] }),
     getJobDetails: async () => ({ ok: true, job: null }),
     getRelatedRecords: async () => ({ ok: true, data: {} }),
+  },
+  update: {
+    check: async () => ({ ok: true }),
+    download: async () => ({ ok: true }),
+    installAndQuit: async () => ({ ok: true }),
+    getStatus: async () => ({ state: "idle" }),
+    dismissVersion: async () => ({ ok: true }),
+    onProgress: () => () => undefined,
+    onStatusChanged: () => () => undefined,
   },
 };
 

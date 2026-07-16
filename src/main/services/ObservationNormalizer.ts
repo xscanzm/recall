@@ -22,7 +22,12 @@
 
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
 import type { Observation, ObserverOutputV2 } from "../models/types";
-import type { CaptureBundle, ScreenshotRetentionPolicy, BatchCaptureBundle } from "../models/types";
+import type {
+  BatchCaptureBundle,
+  BatchFrameOcrResult,
+  CaptureBundle,
+  ScreenshotRetentionPolicy,
+} from "../models/types";
 import type { DebugEvent } from "../models/types";
 import { TEXT_LIMITS } from "../models/schemas";
 import type { PrivacyGuard } from "./PrivacyGuard";
@@ -101,6 +106,7 @@ export class ObservationNormalizer {
     captureBundle: CaptureBundle;
     debugEvents?: DebugEvent[];
     frameIndex?: number;
+    ocrResult?: BatchFrameOcrResult;
   }): NormalizeResult {
     const warnings: string[] = [];
     const { visionOutput, captureBundle } = input;
@@ -142,6 +148,10 @@ export class ObservationNormalizer {
 
     // 2. 清洗过长字段（不修改语义）
     const cleanedVisionOutput = this.truncateLongFields(visionOutput, warnings);
+    const visibleContent = attachLocalOcrEvidence(
+      cleanedVisionOutput.visibleContent,
+      input.ocrResult
+    );
 
     // 3. 附加 capture metadata + 截图状态
     if (captureBundle.retentionPolicy === "delete_immediately") {
@@ -163,7 +173,7 @@ export class ObservationNormalizer {
       urlOrDomain: captureBundle.urlOrDomain ?? null,
       captureReason: captureBundle.captureReason,
       sceneSummary: cleanedVisionOutput.sceneSummary,
-      visibleContent: cleanedVisionOutput.visibleContent,
+      visibleContent,
       detectedEntities: cleanedVisionOutput.detectedEntities,
       possibleIntent: cleanedVisionOutput.possibleUserIntent,
       possibleTasks: cleanedVisionOutput.possibleTasks,
@@ -246,6 +256,7 @@ export class ObservationNormalizer {
           captureBundle: frameBundle,
           debugEvents: input.debugEvents,
           frameIndex: originalFrameIndex,
+          ocrResult: batchBundle.ocrResults?.[originalFrameIndex],
         });
         results.push(result);
         observationIds.push(result.observation?.id ?? null);
@@ -486,6 +497,40 @@ export class ObservationNormalizer {
   private mapRetentionPolicy(policy: ScreenshotRetentionPolicy): ScreenshotRetentionPolicy {
     return policy;
   }
+}
+
+function attachLocalOcrEvidence(
+  visibleContent: ObserverOutputV2["visibleContent"],
+  ocrResult: BatchFrameOcrResult | undefined
+): unknown[] {
+  if (!ocrResult) return visibleContent;
+  const ocrEvidence = {
+    source: "windows_ocr_original_image" as const,
+    available: !ocrResult.errorCode,
+    language: ocrResult.language,
+    text: ocrResult.text,
+    lines: ocrResult.lines,
+    blocks: ocrResult.blocks ?? [],
+    mode: ocrResult.mode,
+    reuseFromFrameIndex: ocrResult.reuseFromFrameIndex,
+    reusedFromCaptureId: ocrResult.reusedFromCaptureId,
+    deltaFromFrameIndex: ocrResult.deltaFromFrameIndex,
+    delta: ocrResult.delta,
+    screenSignature: ocrResult.screenSignature,
+    errorCode: ocrResult.errorCode,
+  };
+  if (visibleContent.length === 0) {
+    return [{
+      type: "unknown",
+      summary: "",
+      fullText: ocrResult.text,
+      keyTextSnippets: [],
+      ocrEvidence,
+    }];
+  }
+  return visibleContent.map((item, index) => index === 0
+    ? { ...item, ocrEvidence }
+    : item);
 }
 
 // ============================================================================
