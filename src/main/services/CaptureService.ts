@@ -30,14 +30,20 @@
 // - 锁屏
 // - 登录页
 
-import { desktopCapturer } from "electron";
+import { desktopCapturer, screen } from "electron";
 import sharp from "sharp";
 import { EventEmitter } from "node:events";
 import type { CaptureBundle, ScreenshotRetentionPolicy } from "../models/types";
-import type { ActivityService, CaptureCandidateEvent, CaptureTriggerReason } from "./ActivityService";
+import type {
+  ActivityService,
+  ActivityWindowInfo,
+  CaptureCandidateEvent,
+  CaptureTriggerReason,
+} from "./ActivityService";
 import type { PrivacyGuard, PreCaptureCheckResult, PreCaptureReason } from "./PrivacyGuard";
 import type { ScreenshotCache } from "./ScreenshotCache";
 import type { SettingsService } from "./SettingsService";
+import { logger } from "./Logger";
 
 /**
  * CaptureService 发出的事件类型
@@ -74,7 +80,36 @@ interface CapturedFrame {
   capturedAt: Date;
   /** 来源 source id（desktopCapturer 返回） */
   sourceId: string;
+  captureMethod: "window" | "screen_crop_fallback";
 }
+
+interface RectangleLike {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface SizeLike {
+  width: number;
+  height: number;
+}
+
+export interface CaptureVisualQuality {
+  nearBlackRatio: number;
+  luminanceStdDev: number;
+  edgeDensity: number;
+  informationScore: number;
+  isDegenerate: boolean;
+}
+
+const QUALITY_SAMPLE_WIDTH = 160;
+const QUALITY_SAMPLE_HEIGHT = 90;
+const NEAR_BLACK_CHANNEL_MAX = 8;
+const DEGENERATE_NEAR_BLACK_RATIO = 0.99;
+const DEGENERATE_EDGE_DENSITY_MAX = 0.02;
+const FALLBACK_MIN_INFORMATION_GAIN = 8;
+const MIN_WINDOW_DISPLAY_COVERAGE = 0.9;
 
 /**
  * CaptureService 配置
@@ -388,6 +423,9 @@ export class CaptureService extends EventEmitter {
       },
       imagePaths: savedPaths,
       stitchedImagePath,
+      captureMethod: frames.some((frame) => frame.captureMethod === "screen_crop_fallback")
+        ? "screen_crop_fallback"
+        : "window",
       retentionPolicy,
     };
 
@@ -455,6 +493,7 @@ export class CaptureService extends EventEmitter {
           buffer: frame.buffer,
           capturedAt,
           sourceId: frame.sourceId,
+          captureMethod: frame.captureMethod,
         });
       }
 
@@ -478,7 +517,11 @@ export class CaptureService extends EventEmitter {
     appName: string;
     windowTitle: string;
     windowId?: number;
-  }): Promise<{ buffer: Buffer; sourceId: string } | null> {
+  }): Promise<{
+    buffer: Buffer;
+    sourceId: string;
+    captureMethod: "window" | "screen_crop_fallback";
+  } | null> {
     try {
       const sources = await desktopCapturer.getSources({
         types: ["window"],
@@ -502,10 +545,95 @@ export class CaptureService extends EventEmitter {
 
       // 将 NativeImage 转换为 PNG buffer
       const pngBuffer = target.thumbnail.toPNG();
-      return { buffer: Buffer.from(pngBuffer), sourceId: target.id };
+      const windowBuffer = Buffer.from(pngBuffer);
+      const windowQuality = await analyzeCaptureVisualQuality(windowBuffer);
+      if (!windowQuality.isDegenerate) {
+        return {
+          buffer: windowBuffer,
+          sourceId: target.id,
+          captureMethod: "window",
+        };
+      }
+
+      const fallback = await this.captureScreenCropFallback(window);
+      if (fallback) {
+        const fallbackQuality = await analyzeCaptureVisualQuality(fallback.buffer);
+        if (shouldUseScreenCropFallback(windowQuality, fallbackQuality)) {
+          logger.info({
+            jobType: "capture",
+            status: "succeeded",
+            message: "screen_crop_fallback_used",
+          });
+          return {
+            buffer: fallback.buffer,
+            sourceId: fallback.sourceId,
+            captureMethod: "screen_crop_fallback",
+          };
+        }
+      }
+
+      logger.warn({
+        jobType: "capture",
+        status: "failed",
+        errorCode: "degenerate_capture",
+        message: "degenerate_window_capture_skipped",
+      });
+      return null;
     } catch {
       return null;
     }
+  }
+
+  private async captureScreenCropFallback(window: {
+    appName: string;
+    windowTitle: string;
+    windowId?: number;
+  }): Promise<{ buffer: Buffer; sourceId: string } | null> {
+    if (!this.activityService) return null;
+
+    const before = await this.activityService.getFreshActiveWindowInfo();
+    if (!before?.bounds || !isSameActivityWindow(window, before)) return null;
+
+    const windowBounds = toElectronDipBounds(before.bounds);
+    const display = screen.getDisplayMatching(windowBounds);
+    const requestedSize = {
+      width: Math.max(1, Math.round(display.bounds.width * display.scaleFactor)),
+      height: Math.max(1, Math.round(display.bounds.height * display.scaleFactor)),
+    };
+    const sources = await desktopCapturer.getSources({
+      types: ["screen"],
+      thumbnailSize: requestedSize,
+      fetchWindowIcons: false,
+    });
+    const target = findMatchingDisplaySource(
+      sources,
+      display.id,
+      screen.getAllDisplays().length
+    );
+    if (!target || !target.thumbnail || target.thumbnail.isEmpty()) return null;
+
+    const crop = calculateScreenCrop(
+      windowBounds,
+      display.bounds,
+      target.thumbnail.getSize()
+    );
+    if (!crop || crop.coverage < MIN_WINDOW_DISPLAY_COVERAGE) return null;
+
+    const cropped = await sharp(target.thumbnail.toPNG())
+      .extract(crop.region)
+      .png()
+      .toBuffer();
+
+    const after = await this.activityService.getFreshActiveWindowInfo();
+    if (
+      !after?.bounds
+      || !isSameActivityWindow(before, after)
+      || !sameRectangle(before.bounds, after.bounds)
+    ) {
+      return null;
+    }
+
+    return { buffer: cropped, sourceId: `${target.id}:window-crop` };
   }
 
   /**
@@ -604,6 +732,190 @@ export class CaptureService extends EventEmitter {
       return "today";
     }
   }
+}
+
+export async function analyzeCaptureVisualQuality(
+  buffer: Buffer
+): Promise<CaptureVisualQuality> {
+  const { data, info } = await sharp(buffer)
+    .resize(QUALITY_SAMPLE_WIDTH, QUALITY_SAMPLE_HEIGHT, { fit: "fill" })
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const channels = info.channels;
+  const pixelCount = info.width * info.height;
+  const luminance = new Float32Array(pixelCount);
+  let nearBlackPixels = 0;
+  let luminanceSum = 0;
+
+  for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+    const offset = pixelIndex * channels;
+    const red = data[offset] ?? 0;
+    const green = data[offset + Math.min(1, channels - 1)] ?? red;
+    const blue = data[offset + Math.min(2, channels - 1)] ?? red;
+    if (Math.max(red, green, blue) <= NEAR_BLACK_CHANNEL_MAX) nearBlackPixels += 1;
+    const value = red * 0.2126 + green * 0.7152 + blue * 0.0722;
+    luminance[pixelIndex] = value;
+    luminanceSum += value;
+  }
+
+  const luminanceMean = pixelCount > 0 ? luminanceSum / pixelCount : 0;
+  let varianceSum = 0;
+  let edgeCount = 0;
+  let edgeComparisons = 0;
+  for (let y = 0; y < info.height; y += 1) {
+    for (let x = 0; x < info.width; x += 1) {
+      const index = y * info.width + x;
+      const value = luminance[index];
+      varianceSum += (value - luminanceMean) ** 2;
+      if (x + 1 < info.width) {
+        edgeComparisons += 1;
+        if (Math.abs(value - luminance[index + 1]) >= 12) edgeCount += 1;
+      }
+      if (y + 1 < info.height) {
+        edgeComparisons += 1;
+        if (Math.abs(value - luminance[index + info.width]) >= 12) edgeCount += 1;
+      }
+    }
+  }
+
+  const nearBlackRatio = pixelCount > 0 ? nearBlackPixels / pixelCount : 1;
+  const luminanceStdDev = pixelCount > 0
+    ? Math.sqrt(varianceSum / pixelCount)
+    : 0;
+  const edgeDensity = edgeComparisons > 0 ? edgeCount / edgeComparisons : 0;
+  const informationScore = luminanceStdDev
+    + edgeDensity * 100
+    + (1 - nearBlackRatio) * 20;
+  return {
+    nearBlackRatio,
+    luminanceStdDev,
+    edgeDensity,
+    informationScore,
+    isDegenerate:
+      nearBlackRatio >= DEGENERATE_NEAR_BLACK_RATIO
+      && edgeDensity <= DEGENERATE_EDGE_DENSITY_MAX,
+  };
+}
+
+export function shouldUseScreenCropFallback(
+  windowQuality: CaptureVisualQuality,
+  fallbackQuality: CaptureVisualQuality
+): boolean {
+  return windowQuality.isDegenerate
+    && !fallbackQuality.isDegenerate
+    && fallbackQuality.informationScore
+      >= windowQuality.informationScore + FALLBACK_MIN_INFORMATION_GAIN;
+}
+
+export function calculateScreenCrop(
+  windowBounds: RectangleLike,
+  displayBounds: RectangleLike,
+  thumbnailSize: SizeLike
+): {
+  region: { left: number; top: number; width: number; height: number };
+  coverage: number;
+} | null {
+  if (
+    windowBounds.width <= 0
+    || windowBounds.height <= 0
+    || displayBounds.width <= 0
+    || displayBounds.height <= 0
+    || thumbnailSize.width <= 0
+    || thumbnailSize.height <= 0
+  ) {
+    return null;
+  }
+
+  const intersectionLeft = Math.max(windowBounds.x, displayBounds.x);
+  const intersectionTop = Math.max(windowBounds.y, displayBounds.y);
+  const intersectionRight = Math.min(
+    windowBounds.x + windowBounds.width,
+    displayBounds.x + displayBounds.width
+  );
+  const intersectionBottom = Math.min(
+    windowBounds.y + windowBounds.height,
+    displayBounds.y + displayBounds.height
+  );
+  if (intersectionRight <= intersectionLeft || intersectionBottom <= intersectionTop) {
+    return null;
+  }
+
+  const scaleX = thumbnailSize.width / displayBounds.width;
+  const scaleY = thumbnailSize.height / displayBounds.height;
+  const left = clampInteger(
+    Math.floor((intersectionLeft - displayBounds.x) * scaleX),
+    0,
+    thumbnailSize.width - 1
+  );
+  const top = clampInteger(
+    Math.floor((intersectionTop - displayBounds.y) * scaleY),
+    0,
+    thumbnailSize.height - 1
+  );
+  const right = clampInteger(
+    Math.ceil((intersectionRight - displayBounds.x) * scaleX),
+    left + 1,
+    thumbnailSize.width
+  );
+  const bottom = clampInteger(
+    Math.ceil((intersectionBottom - displayBounds.y) * scaleY),
+    top + 1,
+    thumbnailSize.height
+  );
+  const intersectionArea =
+    (intersectionRight - intersectionLeft) * (intersectionBottom - intersectionTop);
+  const windowArea = windowBounds.width * windowBounds.height;
+  return {
+    region: { left, top, width: right - left, height: bottom - top },
+    coverage: intersectionArea / windowArea,
+  };
+}
+
+function findMatchingDisplaySource<T extends { display_id: string }>(
+  sources: T[],
+  displayId: number,
+  displayCount: number
+): T | undefined {
+  const match = sources.find((source) => source.display_id === String(displayId));
+  if (match) return match;
+  return displayCount === 1 && sources.length === 1 ? sources[0] : undefined;
+}
+
+function isSameActivityWindow(
+  expected: Pick<ActivityWindowInfo, "appName" | "windowTitle" | "windowId">,
+  actual: Pick<ActivityWindowInfo, "appName" | "windowTitle" | "windowId">
+): boolean {
+  if (
+    expected.windowId !== undefined
+    && actual.windowId !== undefined
+    && expected.windowId !== actual.windowId
+  ) {
+    return false;
+  }
+  return expected.appName.trim() === actual.appName.trim()
+    && expected.windowTitle.trim() === actual.windowTitle.trim();
+}
+
+function sameRectangle(left: RectangleLike, right: RectangleLike): boolean {
+  const tolerance = 2;
+  return Math.abs(left.x - right.x) <= tolerance
+    && Math.abs(left.y - right.y) <= tolerance
+    && Math.abs(left.width - right.width) <= tolerance
+    && Math.abs(left.height - right.height) <= tolerance;
+}
+
+function toElectronDipBounds(bounds: RectangleLike): RectangleLike {
+  if (process.platform !== "win32") return { ...bounds };
+  try {
+    return screen.screenToDipRect(null, bounds);
+  } catch {
+    return { ...bounds };
+  }
+}
+
+function clampInteger(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 export function findMatchingWindowSource<T extends { id: string; name: string }>(

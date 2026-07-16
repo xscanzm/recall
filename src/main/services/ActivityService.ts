@@ -53,6 +53,13 @@ export interface ActivityWindowInfo {
   windowId?: number;
   /** 进程 id */
   processId?: number;
+  /** 活动窗口在虚拟桌面中的原始边界（Windows 原生屏幕坐标） */
+  bounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
 /**
@@ -223,6 +230,14 @@ export class ActivityService extends EventEmitter {
    */
   getCurrentWindow(): ActivityWindowInfo | null {
     return this.currentWindow;
+  }
+
+  /**
+   * 重新读取当前活动窗口，而不是返回轮询缓存。
+   * 屏幕裁剪 fallback 在捕获前后调用，防止窗口切换后裁到其他应用。
+   */
+  async getFreshActiveWindowInfo(): Promise<ActivityWindowInfo | null> {
+    return this.getActiveWindowInfo();
   }
 
   /**
@@ -526,6 +541,12 @@ export class ActivityService extends EventEmitter {
         urlOrDomain,
         windowId: result.id,
         processId: result.owner.processId,
+        bounds: {
+          x: result.bounds.x,
+          y: result.bounds.y,
+          width: result.bounds.width,
+          height: result.bounds.height,
+        },
       };
     } catch {
       return null;

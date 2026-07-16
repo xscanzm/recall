@@ -294,6 +294,8 @@ export interface CaptureBundle {
   recentSceneSummary?: string;
   imagePaths: string[];
   stitchedImagePath?: string;
+  /** 实际采用的截图路径；屏幕 fallback 只会持久化裁剪后的窗口区域 */
+  captureMethod?: "window" | "screen_crop_fallback";
   retentionPolicy: "delete_immediately" | "1h" | "6h" | "today" | "3d" | "7d";
 }
 
