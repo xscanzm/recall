@@ -76,6 +76,12 @@ export const DEFAULT_TEMPERATURE = 0.3;
 export const DEFAULT_MAX_TOKENS = 16_384;
 
 /**
+ * Final text-only request guard. Worker-level budgets should be much smaller;
+ * this prevents accidental multi-megabyte prompts from reaching any provider.
+ */
+export const MAX_MODEL_PROMPT_TEXT_CHARS = 500_000;
+
+/**
  * zod schema 接口（兼容 z.ZodType）
  */
 export interface ZodSchemaLike<T> {
@@ -429,6 +435,28 @@ export class ModelGateway {
     const url = `${endpoint}/v1/chat/completions`;
     const temperature = input.temperature ?? numericOption(extraOptions.temperature) ?? DEFAULT_TEMPERATURE;
     const maxTokens = input.maxTokens ?? numericOption(extraOptions.max_tokens) ?? DEFAULT_MAX_TOKENS;
+
+    const promptTextChars = COMMON_SYSTEM_PROMPT.length + 2
+      + input.systemPrompt.length
+      + input.userPrompt.length;
+    if (promptTextChars > MAX_MODEL_PROMPT_TEXT_CHARS) {
+      const errorMessage =
+        `模型输入文本 ${promptTextChars} 字符超过本地安全上限 ${MAX_MODEL_PROMPT_TEXT_CHARS}，已在提交前拦截`;
+      this.modelJobRepo.markFailed(
+        job.id,
+        "input_too_large",
+        errorMessage,
+        0
+      );
+      return {
+        ok: false,
+        errorCode: "input_too_large",
+        errorMessage,
+        jobId: job.id,
+        modelJobId: job.id,
+        attempts: 0,
+      };
+    }
 
     const messages = buildMessages({
       kind: input.kind,

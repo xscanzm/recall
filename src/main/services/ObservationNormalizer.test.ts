@@ -3,7 +3,7 @@ import type { CaptureBundle, ObserverOutputV2 } from "../models/types";
 import { ObservationNormalizer } from "./ObservationNormalizer";
 
 describe("ObservationNormalizer local OCR evidence", () => {
-  it("persists complete structured OCR evidence without replacing model fullText", () => {
+  it("persists complete OCR text without transient coordinates", () => {
     const create = vi.fn((input) => ({
       ...input,
       id: "obs-1",
@@ -47,8 +47,10 @@ describe("ObservationNormalizer local OCR evidence", () => {
       source: "windows_ocr_original_image",
       text: "原始 OCR 全文",
       mode: "delta",
-      blocks: [{ id: "block-1", text: "原始 OCR 全文" }],
     });
+    expect(visibleContent[0].ocrEvidence).not.toHaveProperty("blocks");
+    expect(visibleContent[0].ocrEvidence).not.toHaveProperty("delta");
+    expect(visibleContent[0].ocrEvidence).not.toHaveProperty("screenSignature");
   });
 
   it("keeps old observations unchanged when a batch has no OCR result", () => {

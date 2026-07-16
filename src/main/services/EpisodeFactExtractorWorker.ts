@@ -40,6 +40,15 @@ interface EpisodePayload {
   observations: Array<Record<string, unknown>>;
 }
 
+interface EpisodeExtractorInput {
+  episodes: EpisodePayload[];
+  activeKnownProjects: ProjectSummary[];
+  activeTasks: TaskSummary[];
+  userFeedbackSummary: string;
+}
+
+export const EPISODE_FACT_PROMPT_CHAR_BUDGET = 120_000;
+
 export interface EpisodeFactExtractorResult {
   facts: Fact[];
   discardedNoise: ExtractorOutputV2["discardedNoise"];
@@ -103,12 +112,33 @@ export class EpisodeFactExtractorWorker {
       activeTasks: this.fetchActiveTasks(),
       userFeedbackSummary: this.fetchUserFeedbackSummary(),
     };
-    const inputJson = JSON.stringify(extractorInput, null, 2);
     const knownAliasesBlock = this.buildKnownAliasesBlock();
-    const userPrompt = EPISODE_FACT_EXTRACTOR_PROMPT_TEMPLATE.replace(
-      "{{episode_extractor_input_json}}",
-      inputJson
-    ).replace("{{known_aliases_block}}", knownAliasesBlock);
+    let promptBuild: EpisodeFactPromptBuildResult;
+    try {
+      promptBuild = buildEpisodeFactPrompt(extractorInput, knownAliasesBlock);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      debugEvents?.push({
+        layer: "L2",
+        action: "skip",
+        reason: "episode_fact_prompt_exceeds_local_budget",
+      });
+      return {
+        ok: false,
+        errorCode: "input_too_large",
+        errorMessage,
+        modelJobId: "",
+        attempts: 0,
+      };
+    }
+    const userPrompt = promptBuild.userPrompt;
+    if (promptBuild.compactedFullTextCount > 0) {
+      debugEvents?.push({
+        layer: "L2",
+        action: "downgrade",
+        reason: "episode_fact_prompt_full_text_compacted",
+      });
+    }
 
     const jobInputJson = JSON.stringify({
       sceneIds: scenes.map((scene) => scene.id),
@@ -118,6 +148,9 @@ export class EpisodeFactExtractorWorker {
       ),
       projectCount: extractorInput.activeKnownProjects.length,
       taskCount: extractorInput.activeTasks.length,
+      promptChars: promptBuild.promptChars,
+      originalInputChars: promptBuild.originalInputChars,
+      compactedFullTextCount: promptBuild.compactedFullTextCount,
     });
 
     const result = await this.modelJobQueue.enqueueMultimodalJob<ExtractorOutputV2>({
@@ -232,7 +265,7 @@ export class EpisodeFactExtractorWorker {
       sceneSummary: obs.sceneSummary,
       userFacingSummary: obs.userFacingSummary ?? null,
       likelyWorkPurpose: obs.likelyWorkPurpose ?? null,
-      visibleContent: obs.visibleContent,
+      visibleContent: sanitizeVisibleContentForEpisodeFacts(obs.visibleContent),
       detectedEntities: obs.detectedEntities,
       possibleIntent: obs.possibleIntent,
       possibleTasks: obs.possibleTasks,
@@ -340,4 +373,134 @@ export class EpisodeFactExtractorWorker {
       return "（无法加载已知别名）";
     }
   }
+}
+
+interface EpisodeFactPromptBuildResult {
+  userPrompt: string;
+  promptChars: number;
+  originalInputChars: number;
+  compactedFullTextCount: number;
+}
+
+/**
+ * OCR geometry is transient processing state and is never persisted. L2 only
+ * needs the stored text and semantic fields to extract facts.
+ */
+export function sanitizeVisibleContentForEpisodeFacts(
+  visibleContent: unknown[]
+): Array<Record<string, unknown>> {
+  return visibleContent.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    return [{
+      type: typeof record.type === "string" ? record.type : "unknown",
+      summary: typeof record.summary === "string" ? record.summary : "",
+      fullText: typeof record.fullText === "string" ? record.fullText : "",
+      keyTextSnippets: Array.isArray(record.keyTextSnippets)
+        ? record.keyTextSnippets.filter((value): value is string => typeof value === "string")
+        : [],
+    }];
+  });
+}
+
+export function buildEpisodeFactPrompt(
+  extractorInput: EpisodeExtractorInput,
+  knownAliasesBlock: string,
+  maxPromptChars = EPISODE_FACT_PROMPT_CHAR_BUDGET
+): EpisodeFactPromptBuildResult {
+  const workingInput = JSON.parse(JSON.stringify(extractorInput)) as EpisodeExtractorInput;
+  const originalInputChars = JSON.stringify(workingInput).length;
+  const fullTextRefs = collectFullTextRefs(workingInput);
+  const render = () => EPISODE_FACT_EXTRACTOR_PROMPT_TEMPLATE.replace(
+    "{{episode_extractor_input_json}}",
+    JSON.stringify(workingInput, null, 2)
+  ).replace("{{known_aliases_block}}", knownAliasesBlock);
+
+  let userPrompt = render();
+  if (userPrompt.length <= maxPromptChars) {
+    return {
+      userPrompt,
+      promptChars: userPrompt.length,
+      originalInputChars,
+      compactedFullTextCount: 0,
+    };
+  }
+
+  const originals = fullTextRefs.map(({ owner }) => String(owner.fullText ?? ""));
+  let low = 0;
+  let high = originals.reduce((max, text) => Math.max(max, text.length), 0);
+  let bestPrompt: string | null = null;
+  let bestCap = -1;
+
+  while (low <= high) {
+    const cap = Math.floor((low + high) / 2);
+    for (let index = 0; index < fullTextRefs.length; index += 1) {
+      fullTextRefs[index].owner.fullText = compactTextForModel(originals[index], cap);
+    }
+    const candidate = render();
+    if (candidate.length <= maxPromptChars) {
+      bestPrompt = candidate;
+      bestCap = cap;
+      low = cap + 1;
+    } else {
+      high = cap - 1;
+    }
+  }
+
+  if (!bestPrompt) {
+    for (const { owner } of fullTextRefs) {
+      owner.fullText = "";
+      owner.keyTextSnippets = [];
+    }
+    bestPrompt = render();
+  } else {
+    for (let index = 0; index < fullTextRefs.length; index += 1) {
+      fullTextRefs[index].owner.fullText = compactTextForModel(originals[index], bestCap);
+    }
+  }
+
+  if (bestPrompt.length > maxPromptChars) {
+    throw new Error(
+      `episode fact prompt ${bestPrompt.length} chars exceeds local budget ${maxPromptChars}`
+    );
+  }
+
+  userPrompt = bestPrompt;
+  return {
+    userPrompt,
+    promptChars: userPrompt.length,
+    originalInputChars,
+    compactedFullTextCount: originals.filter((text, index) =>
+      String(fullTextRefs[index].owner.fullText ?? "") !== text
+    ).length,
+  };
+}
+
+function collectFullTextRefs(
+  input: EpisodeExtractorInput
+): Array<{ owner: Record<string, unknown> }> {
+  const refs: Array<{ owner: Record<string, unknown> }> = [];
+  for (const episode of input.episodes) {
+    for (const observation of episode.observations) {
+      const visibleContent = observation.visibleContent;
+      if (!Array.isArray(visibleContent)) continue;
+      for (const item of visibleContent) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          refs.push({ owner: item as Record<string, unknown> });
+        }
+      }
+    }
+  }
+  return refs;
+}
+
+function compactTextForModel(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  if (maxChars <= 0) return "";
+  const marker = `\n[本次模型输入省略 ${text.length - maxChars} 个字符；完整原文保留在本地 L0]\n`;
+  if (marker.length >= maxChars) return text.slice(0, maxChars);
+  const available = maxChars - marker.length;
+  const prefixLength = Math.ceil(available * 0.7);
+  const suffixLength = available - prefixLength;
+  return `${text.slice(0, prefixLength)}${marker}${text.slice(text.length - suffixLength)}`;
 }

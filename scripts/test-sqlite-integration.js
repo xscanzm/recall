@@ -257,7 +257,39 @@ async function main() {
     failureDb.close();
   }
 
-  console.log("SQLite integration passed: migrations/failure preservation, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
+  const ocrMigrationPath = path.join(root, "ocr-migration.db");
+  const ocrMigrationDb = new Database(ocrMigrationPath);
+  try {
+    const files = migrations();
+    const targetMigration = "023_compact_persisted_ocr_evidence.sql";
+    const targetIndex = files.indexOf(targetMigration);
+    assert.notEqual(targetIndex, -1, `${targetMigration} is present`);
+    migrate(ocrMigrationDb, files.slice(0, targetIndex));
+    insertObservation(ocrMigrationDb, "obs-ocr", "cap-ocr", "2026-07-16T00:00:00.000Z");
+    const originalOcrText = "完整 OCR 原文";
+    ocrMigrationDb.prepare("UPDATE observations SET visible_content_json = ? WHERE id = ?").run(JSON.stringify([{
+      type: "document", summary: "summary", fullText: "model text", keyTextSnippets: [],
+      ocrEvidence: {
+        source: "windows_ocr_original_image", text: originalOcrText, lines: [originalOcrText],
+        blocks: [{ id: "b1", text: originalOcrText, boundingBox: { x: 1, y: 2, width: 3, height: 4 }, words: [] }],
+        delta: { unchangedBlockIds: [], addedBlocks: [], changedBlocks: [], removedBlocks: [] },
+        screenSignature: { pixelHash: "hash", dHash: "hash", width: 100, height: 100 },
+      },
+    }]), "obs-ocr");
+
+    migrate(ocrMigrationDb);
+    const migrated = JSON.parse(ocrMigrationDb.prepare(
+      "SELECT visible_content_json FROM observations WHERE id = ?"
+    ).get("obs-ocr").visible_content_json);
+    assert.equal(migrated[0].ocrEvidence.text, originalOcrText, "OCR text survives geometry cleanup");
+    assert.equal("blocks" in migrated[0].ocrEvidence, false);
+    assert.equal("delta" in migrated[0].ocrEvidence, false);
+    assert.equal("screenSignature" in migrated[0].ocrEvidence, false);
+  } finally {
+    ocrMigrationDb.close();
+  }
+
+  console.log("SQLite integration passed: migrations/failure preservation, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

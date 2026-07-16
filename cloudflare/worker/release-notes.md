@@ -1,3 +1,28 @@
+## v0.3.2 — OCR 双管线严重问题修复
+
+本次版本为**严重问题修复**，解决 v0.3.0/v0.3.1 引入的 OCR 双管线在 L2 episode_fact_extractor 阶段造成的巨量数据问题。建议所有 v0.3.x 用户立即升级。
+
+### 修复
+
+- **修复 episode_fact_extractor 重复提交 OCR 几何结构的严重问题**：L2 事实抽取阶段错误地将 visibleContent 中的 `ocrEvidence.blocks`（含 boundingBox 坐标）、`delta`（含 addedBlocks/changedBlocks/removedBlocks）、`screenSignature`（含 pixelHash/dHash）等瞬态几何结构提交给模型，导致单次请求 prompt 体积爆炸
+  - 新增 `sanitizeVisibleContentForEpisodeFacts`：L2 输入仅保留 `type/summary/fullText/keyTextSnippets` 四个语义字段，剥离所有 OCR 几何坐标与词框结构
+  - 新增 `buildEpisodeFactPrompt` 字符预算控制：120,000 字符上限，超限时二分查找截断 `fullText`，保留首尾并标注省略标记
+  - 新增 `input_too_large` 错误码：本地预算超限直接快速失败，不进入模型队列
+- **ModelGateway 新增 500,000 字符硬上限**：作为最终安全网，阻止任何意外的大体积 prompt 到达模型 provider，超限直接 `markFailed` 并返回 `input_too_large`
+- **ObservationNormalizer 不再持久化 OCR 几何结构**：`visibleContent.ocrEvidence` 仅保留 `text/lines/mode/reuseFromFrameIndex/reusedFromCaptureId/deltaFromFrameIndex/errorCode`，不再写入 `blocks/delta/screenSignature`
+- **新增 migration 023**：清理历史 observations 中已持久化的 `ocrEvidence.blocks/delta/screenSignature`，保留 OCR 文本与行数据
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- EpisodeFactExtractorWorker / ModelGateway / ObservationNormalizer 单元测试通过
+- SQLite migration 023 集成测试通过（OCR 文本保留、几何字段清除）
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.3.1 — OCR + 大模型双管线（Beta · 稳定性更新）
 
 本次版本为 v0.3.0 的稳定性更新，延续 OCR + 大模型双管线架构，并对 OCR 证据传输与 observation 归一化做了可靠性优化。

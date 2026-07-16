@@ -33,6 +33,7 @@ export type ModelJobErrorCode =
   | "rate_limited"
   | "invalid_json"
   | "schema_invalid"
+  | "input_too_large"
   | "output_truncated"
   | "response_invalid"
   | "safety_blocked"

@@ -510,13 +510,10 @@ function attachLocalOcrEvidence(
     language: ocrResult.language,
     text: ocrResult.text,
     lines: ocrResult.lines,
-    blocks: ocrResult.blocks ?? [],
     mode: ocrResult.mode,
     reuseFromFrameIndex: ocrResult.reuseFromFrameIndex,
     reusedFromCaptureId: ocrResult.reusedFromCaptureId,
     deltaFromFrameIndex: ocrResult.deltaFromFrameIndex,
-    delta: ocrResult.delta,
-    screenSignature: ocrResult.screenSignature,
     errorCode: ocrResult.errorCode,
   };
   if (visibleContent.length === 0) {

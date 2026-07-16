@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelGateway } from "./ModelGateway";
+import { MAX_MODEL_PROMPT_TEXT_CHARS, ModelGateway } from "./ModelGateway";
 
 const schema = {
   safeParse: (input: unknown) => ({ success: true as const, data: input }),
@@ -66,6 +66,30 @@ afterEach(() => {
 });
 
 describe("ModelGateway response diagnostics", () => {
+  it("blocks oversized prompt text before network submission", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal({
+      ...input(),
+      userPrompt: "x".repeat(MAX_MODEL_PROMPT_TEXT_CHARS + 1),
+    }, schema);
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "input_too_large",
+      attempts: 0,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(setup.markFailed).toHaveBeenCalledWith(
+      "job-1",
+      "input_too_large",
+      expect.stringContaining("已在提交前拦截"),
+      0
+    );
+  });
+
   it("uses the expanded default max_tokens for extraction requests", async () => {
     const setup = makeGateway(Response.json({
       choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
