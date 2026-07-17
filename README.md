@@ -11,23 +11,22 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 ## 直接下载（用户版）
 
-最新可执行文件统一从 **[xscanzm/recall-releases](https://github.com/xscanzm/recall-releases)** 获取：
+- **官网**：<https://recall.ppclaw.online/>（含产品介绍与演示）
+- **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 92 MB）
+- **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-- **NSIS 安装包（推荐）**：`Recall-0.1.0-setup.exe`，约 92 MB
-- **绿色版**（免安装）：`Recall.exe`，约 178 MB
-- **SHA-256**：见发布仓库的 [`SHA256SUMS.txt`](https://github.com/xscanzm/recall-releases/blob/main/SHA256SUMS.txt)
-
-下载后请用发布仓库 `SHA256SUMS.txt` 校验文件完整性。
+> 下载后可校验完整性：`certutil -hashfile Recall-0.4.1-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
 
 ---
 
 ## 核心特性
 
 - **安静观察，主动不冒犯**：默认不弹桌面通知，应用内提醒克制呈现。
-- **截图只作输入**：默认保留当天，可配置数小时到 7 天；UI 不展示截图墙。
-- **L0 → L1 → L2 → L3 自动记忆**：观察、抽取、关联、主动性判断、日报由视觉模型自动完成；用户可以编辑、删除、合并、纠错。
+- **OCR + 大模型双管线**：Windows.Media.Ocr 读取未压缩原图文字 + 多模态大模型理解压缩图，小字保真度从 26% 提升到 90%+。
+- **L0 → L1 → L2 → L3 自动记忆**：观察、抽取、关联、主动性判断、日报由模型自动完成；用户可以编辑、删除、合并、纠错。
+- **今日活动可视化**：注意力甜甜圈、一天节奏路径、关键词云三卡看板，基于 Episode 活动分类（11 类）一眼掌握当天的注意力分布与节奏。
 - **每日工作主线**：今日页按时间轴呈现今天的主线、线索、提醒和复盘。
-- **双轨报告**：工作日报 + 个人复盘，固定时间自动生成草稿，可编辑可复制。
+- **双轨报告 + 报告需求系统**：工作日报 + 个人复盘，固定时间自动生成草稿；可长期维护 4 类报告的「重点关注 / 呈现要求 / 注意提醒」，并支持每次生成时附加补充要求。
 - **本地优先 + 隐私边界**：截图与数据库全在本地，不上传到 Recall 自有服务器；自带 API Key，模型调用直连你自己的 endpoint。
 - **可审计开源**：完整源码公开（BUSL 1.1），无后门，无远程上传。
 
@@ -40,37 +39,31 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
        ↓
 本地事件触发采集（黑名单与敏感场景自动跳过）
        ↓
-视觉模型理解：L0 Observation
+Windows OCR + 多模态大模型双管线理解：L0 Observation
        ↓
-抽取与关联：L1 Fact · L2 Scene · L3 Memory Object
+抽取与关联：L1 Fact · L2 Scene（含活动分类）· L3 Memory Object
        ↓
 主动性判断：提醒 / 待确认 / 风险
        ↓
-今日时间轴 · 提醒 · 日报 · 复盘
+今日时间轴 · 活动可视化 · 提醒 · 日报 · 复盘
 ```
 
 ---
 
-## 本次记忆系统升级
+## 版本演进
 
-本版本重点重构了 Recall 的记忆可靠性和时间轴组织方式：
+- **v0.4.1**（最新）：今日活动可视化（注意力甜甜圈 / 一天节奏路径 / 关键词云）+ 报告需求系统（4 类报告 × 3 字段 + 本次补充要求）+ Episode 活动分类（11 类，打通 L2 抽取层到 L1 scenes 表与 TodayPage 可视化）
+- **v0.3.x**：OCR + 大模型双管线架构升级（v0.3.0）、OCR 证据传输稳定性优化（v0.3.1）、episode_fact_extractor 巨量数据严重问题修复（v0.3.2）、prompt cache 前缀失效 + WPS 黑屏截图修复（v0.3.3）
+- **v0.2.x**：记忆系统重构、版本更新系统、CI 自动发布
 
-- **隐私截图闭环**：只截取严格匹配的活动窗口；模型识别为高敏感的截图会丢弃并清理；“立即删除”策略在模型消费完成后执行。
-- **可恢复采集批次**：截图批次先持久化到 SQLite，再进入压缩和模型处理；失败可有限重试，异常退出后可以继续恢复，Observation 按 `captureId` 幂等写入。
-- **自然工作片段**：普通时间轴等待 10 分钟成熟窗口，并回看最近 30 分钟的可变尾部。每次独立模型调用都会携带尾卡和来源记忆，使同一事项跨 IDE、浏览器和终端时仍可重组为约 8-15 分钟的自然片段。
-- **稳定引用与事务替换**：日报、报告和待收尾事项引用过的片段会被冻结；尾部卡片替换和 checkpoint 更新在同一个事务中完成，失败时整体回滚。
-- **可靠删除与迁移**：“忘掉今天”使用本地自然日边界；清空与忘记操作事务化；数据库迁移失败会保留原库并阻止静默切换到空库。
-- **统一搜索与完整导出**：新增 SQLite FTS5 统一搜索，提供正确的总数和分页；结构化数据导出不再静默截断。
-- **可验证工程链路**：加入 Vitest、真实 SQLite 集成测试、Electron E2E 和 Windows CI，覆盖采集恢复、迁移、时间轴、IPC 与首次启动流程。
-
-时间轴支持“重新整理当天”，可用新聚合规则重新组织已有碎片；已被下游内容引用的卡片会保留，避免日报追溯失效。
+完整发布说明见 [`cloudflare/worker/release-notes.md`](./cloudflare/worker/release-notes.md)。
 
 ---
 
 ## 快速开始（用户视角）
 
-1. 前往 [recall-releases](https://github.com/xscanzm/recall-releases) 下载 `Recall-0.1.0-setup.exe`。
-2. 双击安装，桌面会出现 **Recall** 图标。
+1. 前往 <https://recall.ppclaw.online/> 了解产品，或直接下载最新版：<https://recall-update.ppclaw.online/download/latest>。
+2. 双击安装 `Recall-0.4.1-setup.exe`，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
 5. 点击「**开始观察**」。
@@ -89,13 +82,22 @@ npm run build           # 编译 main + renderer
 npm run package         # electron-builder NSIS，输出到 release/
 ```
 
-> 构建产物 `release/Recall-0.1.0-setup.exe` 与 `release/win-unpacked/Recall.exe` 即对应发布仓库的分发物。
+> 构建产物 `release/Recall-0.4.1-setup.exe` 即对应发布通道的分发物。
 
 类型检查：
 
 ```bash
 npm run typecheck:main
 npm run typecheck:renderer
+```
+
+官网构建与部署（Cloudflare Pages，输出到 `website/`）：
+
+```bash
+cd website
+npm install
+npm run build           # vite build
+npm run deploy          # wrangler pages deploy
 ```
 
 ---
@@ -158,8 +160,9 @@ Recall 不收集任何遥测数据，不上传截图，不内置任何远程服�
 
 欢迎提交 Issue 与 Pull Request。
 
-- 主仓库：https://github.com/xscanzm/recall
-- 发布仓库：https://github.com/xscanzm/recall-releases
-- Issues：https://github.com/xscanzm/recall/issues
+- 主仓库：<https://github.com/xscanzm/recall>
+- 官网：<https://recall.ppclaw.online/>
+- Issues：<https://github.com/xscanzm/recall/issues>
+- Releases：<https://github.com/xscanzm/recall/releases>
 
 > 由于采用 BUSL 1.1 许可证，**生产环境相关的 PR 不会被合并到主仓**。如希望商业集成或重分发，请联系 Licensor 协商替代许可安排。

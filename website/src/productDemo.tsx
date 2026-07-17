@@ -272,6 +272,12 @@ const demoSettings = {
   dailyReport: { autoGenerate: false, time: "18:00" },
   onboardingCompleted: true,
   debug: { enabled: false, verboseModelIO: false },
+  reportRequirements: {
+    personal: { focus: "", presentation: "", reminders: "" },
+    work: { focus: "", presentation: "", reminders: "" },
+    weekly: { focus: "", presentation: "", reminders: "" },
+    monthly: { focus: "", presentation: "", reminders: "" },
+  },
 };
 
 const recallAPI = {

@@ -184,6 +184,15 @@ export const demoTodayPageData: TodayPageData = {
   appStatus: demoAppStatus,
   dayMainThread: demoReview.overview,
   timelineBlocks: demoTimeline,
+  activityOverview: {
+    stats: {
+      totalObservedMinutes: 240,
+      categorizedMinutes: { focus_work: 90, coding: 60, communication: 30, research: 45, break: 15 },
+      pendingMinutes: 0,
+      sampleCount: 12,
+    },
+    episodes: [],
+  },
   unfinishedThreads: demoThreads,
   highlights: demoTimeline.flatMap((block, blockIndex) =>
     block.highlights.map((content, index) => ({ id: `highlight-${blockIndex}-${index}`, content })),
