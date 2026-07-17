@@ -19,6 +19,8 @@ interface SceneRow {
   end_at: string;
   project_id: string | null;
   confidence: number;
+  activity_category: Scene["activityCategory"];
+  activity_confidence: number;
   fact_ids_json: string;
   observation_ids_json: string;
   entity_names_json: string;
@@ -49,10 +51,11 @@ export class SceneRepository {
       .prepare(
         `INSERT INTO scenes (
           id, title, summary, start_at, end_at, project_id,
-          confidence, fact_ids_json, observation_ids_json, entity_names_json,
+          confidence, activity_category, activity_confidence,
+          fact_ids_json, observation_ids_json, entity_names_json,
           task_ids_json, decision_ids_json,
           created_at, updated_at, derivation_key, derivation_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -62,6 +65,8 @@ export class SceneRepository {
         input.endAt,
         input.projectId,
         input.confidence,
+        input.activityCategory ?? "unknown",
+        input.activityConfidence ?? 0,
         JSON.stringify(input.factIds),
         JSON.stringify(input.observationIds),
         JSON.stringify(input.entityNames),
@@ -304,6 +309,14 @@ export class SceneRepository {
       sets.push("confidence = ?");
       params.push(patch.confidence);
     }
+    if (patch.activityCategory !== undefined) {
+      sets.push("activity_category = ?");
+      params.push(patch.activityCategory);
+    }
+    if (patch.activityConfidence !== undefined) {
+      sets.push("activity_confidence = ?");
+      params.push(patch.activityConfidence);
+    }
     if (patch.factIds !== undefined) {
       sets.push("fact_ids_json = ?");
       params.push(JSON.stringify(patch.factIds));
@@ -429,6 +442,8 @@ function mapRow(row: SceneRow): Scene {
     endAt: row.end_at,
     projectId: row.project_id,
     confidence: row.confidence,
+    activityCategory: row.activity_category ?? "unknown",
+    activityConfidence: row.activity_confidence ?? 0,
     factIds: safeParseArray(row.fact_ids_json),
     observationIds: safeParseArray(row.observation_ids_json),
     entityNames: safeParseArray(row.entity_names_json),

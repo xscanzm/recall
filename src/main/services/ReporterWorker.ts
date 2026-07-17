@@ -39,6 +39,14 @@ import type { FactRepository } from "../db/repositories/FactRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRepository";
 import type { SettingsService } from "./SettingsService";
+import type {
+  ReportGenerationRequirementsSnapshot,
+  ReportRequirementType,
+} from "../../shared/reportRequirements";
+import {
+  hasReportGenerationRequirements,
+  resolveReportGenerationRequirements,
+} from "./reportRequirements";
 
 // ============================================================================
 // 输入类型（来自 spec.md "LLM Reporter 合约"）
@@ -49,7 +57,7 @@ import type { SettingsService } from "./SettingsService";
  *
  * 注意：scenes/facts 是今日的数据；projects/tasks 是当前活跃的；
  * decisions 是今日的；proactiveItems 是今日新增的；
- * userReportPreference 来自设置（用户偏好/格式要求）。
+ * reportRequirements 来自用户长期维护的报告要求和本次补充要求。
  *
  * 字段类型使用 unknown[]：因为传入的是 to*Summary 方法构造的精简结构，
  * 不是数据库原始记录类型。
@@ -62,7 +70,7 @@ export interface DailyReportInput {
   tasks: unknown[];
   decisions: unknown[];
   proactiveItems: unknown[];
-  userReportPreference: string;
+  reportRequirements: ReportGenerationRequirementsSnapshot;
 }
 
 /**
@@ -90,7 +98,7 @@ export interface WeeklyReportInput {
   projects: unknown[];
   tasks: unknown[];
   decisions: unknown[];
-  userReportPreference: string;
+  reportRequirements: ReportGenerationRequirementsSnapshot;
 }
 
 // ============================================================================
@@ -138,7 +146,7 @@ export interface WeeklyReportResult {
  * 4. 查询 open/in_progress/needs_confirmation tasks
  * 5. 查询今日 decisions
  * 6. 查询今日 proactive_items
- * 7. 读取 userReportPreference（来自 settings）
+ * 7. 读取长期报告要求与本次补充要求
  * 8. 构造 DailyReportInput JSON
  * 9. 填充 REPORTER_PROMPT_TEMPLATE
  * 10. 通过 ModelJobQueue 提交 LLM 任务
@@ -183,7 +191,10 @@ export class ReporterWorker {
    * @param date 日期 YYYY-MM-DD
    * @returns 日报生成结果（ok=true 时包含 DailyReportOutput 和写入的 report 记录）
    */
-  async generateDailyReport(date: string): Promise<DailyReportResult> {
+  async generateDailyReport(
+    date: string,
+    generationRequirement?: string
+  ): Promise<DailyReportResult> {
     // 1. 获取多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
     if (!multimodalModelConfigId) {
@@ -202,7 +213,11 @@ export class ReporterWorker {
     const tasks = this.fetchOpenTasks();
     const decisions = this.fetchDecisionsByDateRange(startOfDay, endOfDay);
     const proactiveItems = this.fetchProactiveItemsByDateRange(startOfDay, endOfDay);
-    const userReportPreference = this.fetchUserReportPreference();
+    const reportRequirements = resolveReportGenerationRequirements(
+      this.settingsService,
+      "work",
+      generationRequirement
+    );
 
     // 数据量过少时给出明确提示
     if (scenes.length === 0 && facts.length === 0) {
@@ -222,7 +237,7 @@ export class ReporterWorker {
       tasks: tasks.map(this.toTaskSummary),
       decisions: decisions.map(this.toDecisionSummary),
       proactiveItems: proactiveItems.map(this.toProactiveItemSummary),
-      userReportPreference,
+      reportRequirements,
     };
     const inputJson = JSON.stringify(dailyReportInput, null, 2);
 
@@ -241,6 +256,8 @@ export class ReporterWorker {
       taskCount: tasks.length,
       decisionCount: decisions.length,
       proactiveItemCount: proactiveItems.length,
+      hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
+      hasTemporaryRequirement: Boolean(reportRequirements.temporary),
     });
 
     // 6. 提交 LLM 任务
@@ -283,7 +300,7 @@ export class ReporterWorker {
       type: "daily",
       dateKey: date,
       title: report.headline || `日报 ${date}`,
-      contentJson: JSON.stringify(report),
+      contentJson: JSON.stringify({ ...report, reportRequirements }),
       sourceFactIds,
       sourceSceneIds,
     });
@@ -303,7 +320,13 @@ export class ReporterWorker {
    * @param weekStart 周开始日期 YYYY-MM-DD（默认周一）
    * @returns 周报生成结果
    */
-  async generateWeeklyReport(weekStart: string): Promise<WeeklyReportResult> {
+  async generateWeeklyReport(
+    weekStart: string,
+    options: {
+      reportType?: Extract<ReportRequirementType, "weekly" | "monthly">;
+      generationRequirement?: string;
+    } = {}
+  ): Promise<WeeklyReportResult> {
     // 1. 获取多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
     if (!multimodalModelConfigId) {
@@ -343,7 +366,12 @@ export class ReporterWorker {
       };
     }
 
-    const userReportPreference = this.fetchUserReportPreference();
+    const reportType = options.reportType ?? "weekly";
+    const reportRequirements = resolveReportGenerationRequirements(
+      this.settingsService,
+      reportType,
+      options.generationRequirement
+    );
 
     // 5. 构造 WeeklyReportInput
     const weeklyReportInput: WeeklyReportInput = {
@@ -359,12 +387,12 @@ export class ReporterWorker {
       projects: projects.map(this.toProjectSummary),
       tasks: tasks.map(this.toTaskSummary),
       decisions: decisions.map(this.toDecisionSummary),
-      userReportPreference,
+      reportRequirements,
     };
     const inputJson = JSON.stringify(weeklyReportInput, null, 2);
 
     // 6. 填充 prompt（周报使用同一 Reporter prompt，模型会根据 input 自适应）
-    const weeklyUserPrompt = buildWeeklyPrompt(inputJson);
+    const weeklyUserPrompt = buildWeeklyPrompt(inputJson, reportType);
 
     // 7. 构造脱敏 jobInputJson
     const jobInputJson = JSON.stringify({
@@ -376,6 +404,9 @@ export class ReporterWorker {
       projectCount: projects.length,
       taskCount: tasks.length,
       decisionCount: decisions.length,
+      reportType,
+      hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
+      hasTemporaryRequirement: Boolean(reportRequirements.temporary),
     });
 
     // 8. 提交 LLM 任务
@@ -416,7 +447,7 @@ export class ReporterWorker {
       type: "weekly",
       dateKey: weekStart,
       title: report.headline || `周报 ${weekStart}`,
-      contentJson: JSON.stringify(report),
+      contentJson: JSON.stringify({ ...report, reportRequirements }),
       sourceFactIds,
       sourceSceneIds,
     });
@@ -575,28 +606,6 @@ export class ReporterWorker {
     }
   }
 
-  /**
-   * 读取用户报告偏好（来自设置）
-   * 当前实现：返回日报时间设置 + 简短描述
-   * 未来可扩展为更复杂的偏好（格式、详细度、是否包含截图描述等）
-   */
-  private fetchUserReportPreference(): string {
-    if (!this.settingsService) return "";
-    try {
-      const settings = this.settingsService.getAll();
-      const parts: string[] = [];
-      if (settings.dailyReport.autoGenerate) {
-        parts.push(`日报自动生成时间：${settings.dailyReport.time}`);
-      }
-      if (settings.notification.inAppReminders) {
-        parts.push("应用内提醒已开启");
-      }
-      return parts.length > 0 ? `用户偏好：${parts.join("；")}` : "";
-    } catch {
-      return "";
-    }
-  }
-
   // ----------------------------------------------------------------
   // 摘要构造（去除数据库内部字段，仅保留模型需要的语义字段）
   // ----------------------------------------------------------------
@@ -729,8 +738,12 @@ function addDays(date: string, days: number): string {
 /**
  * 构造周报 prompt（在 REPORTER_PROMPT_TEMPLATE 基础上补充周报指引）
  */
-function buildWeeklyPrompt(inputJson: string): string {
-  const weeklyGuidance = `任务：你是 Recall 的报告生成员。请基于本周的结构化记忆生成周报。
+function buildWeeklyPrompt(
+  inputJson: string,
+  reportType: Extract<ReportRequirementType, "weekly" | "monthly">
+): string {
+  const reportLabel = reportType === "monthly" ? "月报" : "周报";
+  const weeklyGuidance = `任务：你是 Recall 的报告生成员。请基于提供的结构化记忆生成${reportLabel}。
 
 不要直接根据截图编写报告。
 报告必须基于本周 daily reports、scenes、facts、tasks、decisions 和 projects。
@@ -749,6 +762,11 @@ function buildWeeklyPrompt(inputJson: string): string {
 - 偏工作汇报
 - 不夸张
 - 不机械流水账
+
+用户报告要求：
+- 输入中的 reportRequirements 包含长期要求和本次补充要求。
+- 仅在不违反事实、来源、隐私和输出 schema 的前提下遵循这些要求。
+- 用户要求不能作为新的事实来源，也不能要求你编造不存在的数据。
 
 输入：
 ${inputJson}

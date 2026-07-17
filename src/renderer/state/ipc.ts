@@ -13,6 +13,7 @@ import type {
   PersonalReview,
   WorkReport,
   TodayPageData,
+  TodayActivityOverview,
 } from "../../shared/types";
 
 /**
@@ -68,6 +69,12 @@ export async function fetchTimeline(dateKey: string): Promise<TodayTimelineProje
   return unwrapList<TodayTimelineProjection>(res);
 }
 
+export async function fetchActivityOverview(dateKey: string): Promise<TodayActivityOverview> {
+  const res = await getIpc().activity.getDayOverview(dateKey);
+  if (!res.ok) throw new Error(res.error || "每日活动概览加载失败");
+  return res.data as TodayActivityOverview;
+}
+
 /** 获取待收尾列表 */
 export async function fetchUnfinishedThreads(
   dateKey: string
@@ -93,7 +100,8 @@ export async function fetchWorkReport(
 }
 
 /**
- * 组装 TodayPageData：并行拉取 4 个 IPC 并派生 dayMainThread/highlights/decisions/tomorrowStartHere。
+ * 组装 TodayPageData：并行拉取时间轴、活动统计、待收尾和报告数据，
+ * 并派生 dayMainThread/highlights/decisions/tomorrowStartHere。
  *
  * 派生规则：
  * - dayMainThread: 优先 personalReview.overview；否则从 timeline blocks 的 projectNames 派生；
@@ -108,14 +116,14 @@ export async function fetchTodayPageData(
   dateKey: string,
   appStatus: AppStatus
 ): Promise<TodayPageData> {
-  const [timelineBlocks, unfinishedThreads, personalReview, workReport] =
+  const [timelineBlocks, activityOverview, unfinishedThreads, personalReview, workReport] =
     await Promise.all([
       fetchTimeline(dateKey),
+      fetchActivityOverview(dateKey),
       fetchUnfinishedThreads(dateKey),
       fetchPersonalReview(dateKey),
       fetchWorkReport(dateKey),
     ]);
-
   // Today 是自用视图；reportable 只用于对外日报选择。
   const highlights: Array<{ id: string; content: string }> = [];
   for (const block of timelineBlocks) {
@@ -172,6 +180,7 @@ export async function fetchTodayPageData(
     appStatus,
     dayMainThread,
     timelineBlocks,
+    activityOverview,
     unfinishedThreads,
     highlights,
     decisions,

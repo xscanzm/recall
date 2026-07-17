@@ -1,3 +1,49 @@
+## v0.4.1 — 今日活动可视化 + 报告需求系统
+
+本次版本为功能性大更新，新增两个核心能力：基于 Episode 活动分类的「今日活动可视化」看板，以及可长期维护的「报告需求系统」。将"活动分类"这一新维度从 L2 抽取层一路打通到 L1 scenes 表与 TodayPage 可视化；同时把"报告需求"作为新的横向配置层，统一注入 3 个 LLM 报告 Writer 的 prompt。
+
+### 新增功能
+
+#### 1. 今日活动可视化（Today Activity Visualization）
+
+在 TodayPage 时间轴上方新增三卡可视化看板，帮助用户一眼掌握当天的注意力分布与节奏：
+
+- **注意力甜甜圈**：按活动分类（focus_work / coding / writing / research / communication / meeting / design / admin / break / mixed）统计已记录分钟数，中心显示总时长，图例可点击筛选时间轴
+- **一天节奏路径**：SVG 蛇形路径把全天 0–24h 映射到 S 形路径（工作时段占大部分），每个 episode 段是一条可点击/键盘打开的路径段，含当前时间圆点
+- **关键词云**：基于 episode 的 projectName / 标题 / topicText 计算，使用 `Intl.Segmenter("zh-CN")` 做中文分词，按权重分级显示，可点击筛选时间轴
+
+新增 `TodayActivityStats` 服务：基于 observations 构建区间（超过 idleThresholdSeconds 视为离开），按 episode 活动分类映射分钟数，自动隔离 `privateRisk=high` 的内容。
+
+新增 IPC 通道 `activity:getDayOverview`：按 dateKey 计算 UTC 范围，并行拉取 observations / episodes / facts / projects 返回 `{ stats, episodes }`。
+
+#### 2. 报告需求系统（Report Requirements）
+
+用户可长期维护 4 类报告（我的复盘 / 工作日报 / 周报 / 月报）的「重点关注 / 呈现要求 / 注意提醒」，并支持每次生成时附加「本次补充要求」：
+
+- 新增 `ReportRequirementsPanel` 右侧抽屉面板（4 tab × 3 textarea），底部含清空/取消/保存，带 guardrail 文案：「报告要求只影响关注重点和呈现方式，不能覆盖事实依据、来源、隐私和报告结构规则」
+- `ReportsPage` 新增「本次补充要求」textarea，与长期要求分开维护，调用生成时透传 `generationRequirement`
+- 三个 LLM Writer（`ReporterWorker` / `WorkReportWriterWorker` / `PersonalReviewWriterWorker`）统一接入：`reportRequirements` 快照注入 prompt 输入与 contentJson 持久化，jobInputJson 标记 `hasReportRequirements` / `hasTemporaryRequirement`
+- `ReportScheduler` 的手动触发方法（`generateDailyReportNow` / `generateWeeklyReportNow` / `generatePersonalReviewNow`）透传 `generationRequirement`；自动调度路径不注入要求
+- prompt 模板统一新增「用户报告要求」段落，明确「用户要求不能作为新的事实来源，也不能要求编造不存在的数据」
+
+#### 3. Episode 活动分类（L2 抽取层）
+
+- migration 024：`scenes` 表新增 `activity_category`（11 类枚举，默认 `unknown`）和 `activity_confidence`（REAL，默认 0）
+- `EPISODE_FACT_EXTRACTOR_PROMPT_TEMPLATE` 新增【Episode 活动分类】段落，定义 11 类语义边界
+- `EpisodeFactExtractorWorker` 新增 `EpisodeActivityClassification` 类型 + `persistEpisodeActivities()`：把 LLM 输出的 `{ sceneId, category, confidence }` 写回 scenes 表；落库失败计入 debugEvents
+- 每个 episode 必须输出一条 `episodeActivities` 记录（即使没有 fact）
+- 历史 scenes 保留 `unknown`，仅对后续新批次写入分类值
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试：`TodayActivityStats.test.ts`、`reportRequirements.test.ts`、`schemas.report-requirements.test.ts`、`ReportRequirementsPanel.test.ts`、`todayVisualization.test.ts`、`EpisodeFactExtractorWorker.test.ts`（活动分类持久化）
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.3.3 — Prompt 缓存修复 + WPS 黑屏截图修复
 
 本次版本修复两个影响识别稳定性与成本的问题：模型 prompt 缓存失效，以及 WPS 等直接渲染应用的窗口截图黑屏。

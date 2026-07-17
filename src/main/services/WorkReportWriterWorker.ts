@@ -38,6 +38,10 @@ import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { SettingsService } from "./SettingsService";
 import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
+import {
+  hasReportGenerationRequirements,
+  resolveReportGenerationRequirements,
+} from "./reportRequirements";
 
 // ============================================================================
 // 结果类型
@@ -136,7 +140,8 @@ export class WorkReportWriterWorker {
     dateKey: string,
     selectedBlockIds: string[],
     style: "brief" | "standard" | "formal",
-    recipientHint?: "manager" | "team" | "client" | "self"
+    recipientHint?: "manager" | "team" | "client" | "self",
+    generationRequirement?: string
   ): Promise<WorkReportResult> {
     // 1. 获取启用的多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
@@ -214,12 +219,18 @@ export class WorkReportWriterWorker {
     });
 
     // 8. 构造 WorkReportInput
+    const reportRequirements = resolveReportGenerationRequirements(
+      this.settingsService,
+      "work",
+      generationRequirement
+    );
     const workReportInput: WorkReportInput = {
       dateKey,
       selectedTimelineBlocks: safeBlocks,
       selectedFacts: reportableFacts,
       style,
       ...(recipientHint ? { recipientHint } : {}),
+      reportRequirements,
     };
     const inputJson = JSON.stringify(workReportInput, null, 2);
 
@@ -238,6 +249,8 @@ export class WorkReportWriterWorker {
       safeBlockCount: safeBlocks.length,
       omittedBlockCount,
       factCount: reportableFacts.length,
+      hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
+      hasTemporaryRequirement: Boolean(reportRequirements.temporary),
     });
 
     // 11. 提交 LLM 任务
@@ -319,6 +332,7 @@ export class WorkReportWriterWorker {
       type: "work_daily_report",
       style,
       recipientHint: recipientHint ?? null,
+      reportRequirements,
     });
 
     // 14. 持久化到 reports 表（type=work_daily_report）

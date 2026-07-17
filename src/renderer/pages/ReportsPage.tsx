@@ -27,8 +27,17 @@ import {
 } from "../state/store";
 import { getIpc } from "../state/ipc";
 import { formatReportAsText } from "../components/ReportEditor";
+import { ReportRequirementsPanel } from "../components/ReportRequirementsPanel";
 import type { PersonalReview, TimelineBlock, WorkReport } from "../../shared/types";
 import { todayDateKey } from "./today/helpers";
+import {
+  createEmptyReportRequirements,
+  normalizeReportRequirements,
+  TEMPORARY_REPORT_REQUIREMENT_MAX_LENGTH,
+  type ReportRequirement,
+  type ReportRequirements,
+  type ReportRequirementType,
+} from "../../shared/reportRequirements";
 
 // ============================================================================
 // 常量与 Tab 配置
@@ -59,6 +68,21 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
   personal_daily_review: "复盘",
   work_daily_report: "工作日报",
 };
+
+function reportRequirementTypeForTab(
+  tab: ReportsTabKey
+): ReportRequirementType | null {
+  if (tab === "history") return null;
+  return tab;
+}
+
+function hasLongTermRequirement(requirement: ReportRequirement): boolean {
+  return Boolean(
+    requirement.focus.trim() ||
+      requirement.presentation.trim() ||
+      requirement.reminders.trim()
+  );
+}
 
 interface SourceEvidenceData {
   facts: FactItem[];
@@ -129,6 +153,12 @@ export function ReportsPage() {
   );
   const workReportStyle = useAppStore((s) => s.workReportStyle);
   const setWorkReportStyle = useAppStore((s) => s.setWorkReportStyle);
+  const workReportGenerationRequirement = useAppStore(
+    (s) => s.workReportGenerationRequirement
+  );
+  const setWorkReportGenerationRequirement = useAppStore(
+    (s) => s.setWorkReportGenerationRequirement
+  );
 
   // 本地 UI 状态
   const [copyHint, setCopyHint] = useState<string | null>(null);
@@ -139,6 +169,20 @@ export function ReportsPage() {
     blockIds: string[];
   } | null>(null);
   const [historyDetail, setHistoryDetail] = useState<ReportItem | null>(null);
+  const [reportRequirements, setReportRequirements] = useState<ReportRequirements>(
+    () => createEmptyReportRequirements()
+  );
+  const [reportRequirementsLoading, setReportRequirementsLoading] = useState(true);
+  const [requirementsPanelType, setRequirementsPanelType] =
+    useState<ReportRequirementType | null>(null);
+  const [temporaryRequirements, setTemporaryRequirements] = useState<
+    Record<ReportRequirementType, string>
+  >({ personal: "", work: "", weekly: "", monthly: "" });
+  const [temporaryEditorOpen, setTemporaryEditorOpen] = useState<
+    Record<ReportRequirementType, boolean>
+  >({ personal: false, work: false, weekly: false, monthly: false });
+
+  const currentRequirementType = reportRequirementTypeForTab(reportsTab);
 
   // Effect A: Tab 切换 / 日期变化时加载数据
   // - 注意：**不**在这里调用 rollOverReportsDateKeyIfNeeded
@@ -231,6 +275,31 @@ export function ReportsPage() {
     }
   }, [isReady, reportsTab, projects.length, loadToday]);
 
+  useEffect(() => {
+    if (!isReady) return;
+    let active = true;
+    setReportRequirementsLoading(true);
+    void getIpc().settings
+      .get<{ reportRequirements?: unknown }>()
+      .then((settings) => {
+        if (!active) return;
+        setReportRequirements(normalizeReportRequirements(settings.reportRequirements));
+      })
+      .catch((error) => {
+        if (!active) return;
+        useAppStore.setState({
+          reportsError:
+            error instanceof Error ? error.message : "加载报告要求失败",
+        });
+      })
+      .finally(() => {
+        if (active) setReportRequirementsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isReady]);
+
   // ============================================================================
   // 通用处理函数
   // ============================================================================
@@ -285,6 +354,41 @@ export function ReportsPage() {
     await updateReport(id, reportDraft);
   };
 
+  const getTemporaryRequirement = (type: ReportRequirementType): string =>
+    type === "work"
+      ? workReportGenerationRequirement
+      : temporaryRequirements[type];
+
+  const setTemporaryRequirement = (
+    type: ReportRequirementType,
+    value: string
+  ) => {
+    if (type === "work") {
+      setWorkReportGenerationRequirement(value);
+      return;
+    }
+    setTemporaryRequirements((current) => ({ ...current, [type]: value }));
+  };
+
+  const clearTemporaryRequirement = (type: ReportRequirementType) => {
+    setTemporaryRequirement(type, "");
+    setTemporaryEditorOpen((current) => ({ ...current, [type]: false }));
+  };
+
+  const handleSaveReportRequirements = async (
+    nextRequirements: ReportRequirements
+  ) => {
+    const result = await getIpc().settings.update<{
+      reportRequirements?: unknown;
+    }>({ reportRequirements: nextRequirements });
+    const savedRequirements = normalizeReportRequirements(
+      result.settings.reportRequirements
+    );
+    setReportRequirements(savedRequirements);
+    setCopyHint("报告要求已保存");
+    setTimeout(() => setCopyHint(null), 2000);
+  };
+
   // 删除我的复盘某条目（unfinished / worthRemembering）
   // 从对应数组中 splice 后重新组装 PersonalReview contentJson，调用 reports.update
   const handleDeletePersonalReviewEntry = async (
@@ -322,8 +426,14 @@ export function ReportsPage() {
 
   // 生成我的复盘（复用 Phase 3 的 generatePersonalReview，再刷新报告页状态）
   const handleGeneratePersonalReview = async () => {
-    await generatePersonalReview(reportsDateKey);
-    await loadPersonalReview(reportsDateKey);
+    const generated = await generatePersonalReview(
+      reportsDateKey,
+      getTemporaryRequirement("personal") || undefined
+    );
+    if (generated) {
+      clearTemporaryRequirement("personal");
+      await loadPersonalReview(reportsDateKey);
+    }
   };
 
   // 生成周报
@@ -332,10 +442,12 @@ export function ReportsPage() {
       const result = await getIpc().reports.generate({
         type: "weekly",
         dateKey: reportsWeekStart,
+        generationRequirement: getTemporaryRequirement("weekly") || undefined,
       });
       if (!result.ok) {
         useAppStore.setState({ reportsError: result.message ?? "周报生成失败" });
       } else {
+        clearTemporaryRequirement("weekly");
         await loadReportsList({ type: "weekly", limit: 30 });
       }
     } catch (err) {
@@ -351,11 +463,13 @@ export function ReportsPage() {
     try {
       const result = await getIpc().reports.generate({
         type: "monthly",
-        dateKey: reportsMonthKey,
+        dateKey: `${reportsMonthKey}-01`,
+        generationRequirement: getTemporaryRequirement("monthly") || undefined,
       });
       if (!result.ok) {
         useAppStore.setState({ reportsError: result.message ?? "月报生成失败" });
       } else {
+        clearTemporaryRequirement("monthly");
         await loadReportsList({ type: "monthly", limit: 12 });
       }
     } catch (err) {
@@ -438,6 +552,71 @@ export function ReportsPage() {
           </button>
         ))}
       </nav>
+
+      {currentRequirementType && (
+        <section className="reports-requirements-bar" aria-label="报告生成要求">
+          <div className="reports-requirements-bar__summary">
+            <span className="reports-requirements-bar__title">报告要求</span>
+            <span className="reports-requirements-bar__status">
+              {reportRequirementsLoading
+                ? "正在加载..."
+                : hasLongTermRequirement(reportRequirements[currentRequirementType])
+                  ? "已设置长期要求"
+                  : "尚未设置长期要求"}
+            </span>
+          </div>
+          <div className="reports-requirements-bar__actions">
+            <button
+              type="button"
+              className="tb-btn"
+              onClick={() => setRequirementsPanelType(currentRequirementType)}
+              disabled={reportRequirementsLoading}
+            >
+              维护报告要求
+            </button>
+            <button
+              type="button"
+              className="tb-btn"
+              onClick={() =>
+                setTemporaryEditorOpen((current) => ({
+                  ...current,
+                  [currentRequirementType]: !current[currentRequirementType],
+                }))
+              }
+            >
+              {temporaryEditorOpen[currentRequirementType]
+                ? "收起本次要求"
+                : "本次补充要求"}
+            </button>
+          </div>
+
+          {temporaryEditorOpen[currentRequirementType] && (
+            <label className="reports-temporary-requirement">
+              <span className="reports-temporary-requirement__label">
+                本次补充要求（可选）
+              </span>
+              <span className="reports-temporary-requirement__hint">
+                只影响当前这一次生成，不会保存为长期报告要求。
+              </span>
+              <textarea
+                value={getTemporaryRequirement(currentRequirementType)}
+                maxLength={TEMPORARY_REPORT_REQUIREMENT_MAX_LENGTH}
+                placeholder="例如：本次重点统计客户反馈，并把尚未解决的问题单独列出。"
+                onChange={(event) =>
+                  setTemporaryRequirement(
+                    currentRequirementType,
+                    event.target.value
+                  )
+                }
+              />
+              <span className="reports-temporary-requirement__count">
+                {getTemporaryRequirement(currentRequirementType).length}/
+                {TEMPORARY_REPORT_REQUIREMENT_MAX_LENGTH}
+              </span>
+            </label>
+          )}
+        </section>
+      )}
 
       {/* 主区域：最大宽度 920px */}
       <div className="reports-content">
@@ -627,6 +806,15 @@ export function ReportsPage() {
           sceneIds={sourcePanel.sceneIds}
           blockIds={sourcePanel.blockIds}
           onClose={() => setSourcePanel(null)}
+        />
+      )}
+
+      {requirementsPanelType && (
+        <ReportRequirementsPanel
+          initialType={requirementsPanelType}
+          requirements={reportRequirements}
+          onSave={handleSaveReportRequirements}
+          onClose={() => setRequirementsPanelType(null)}
         />
       )}
     </div>

@@ -333,6 +333,11 @@ const api = {
     onStatusChanged: () => () => undefined,
     onNavigate: () => () => undefined,
   },
+  window: {
+    minimize: async () => ({ ok: true }),
+    toggleMaximize: async () => ({ ok: true }),
+    close: async () => ({ ok: true }),
+  },
   settings: {
     get: async () => settings,
     update: async () => ({ ok: true }),
@@ -458,6 +463,31 @@ const api = {
   timeline: {
     build: async () => ({ ok: true, data: timelineBlocks }),
     get: async () => ({ ok: true, data: timelineBlocks }),
+  },
+  activity: {
+    getDayOverview: async () => ({
+      ok: true,
+      data: {
+        stats: {
+          totalObservedMinutes: 120,
+          categorizedMinutes: { coding: 90 },
+          pendingMinutes: 30,
+          sampleCount: 24,
+        },
+        episodes: [{
+          id: "scene_wechat_memory",
+          startAt: "2026-07-09T10:00:00.000Z",
+          endAt: "2026-07-09T10:10:00.000Z",
+          title: copy?.sceneTitle || "微信讨论 Recall 记忆系统分层",
+          summary: copy?.sceneSummary || "围绕分层记忆与关系层职责边界展开讨论。",
+          category: "communication",
+          categoryConfidence: 0.91,
+          sourceObservationIds: observations.map((item) => item.id),
+          projectNames: [copy?.projectName || "Recall 记忆系统重构"],
+          topicTexts: [copy?.decisionFact || "Edges 不作为 L4 页面"],
+        }],
+      },
+    }),
   },
   personalReview: {
     generate: async () => ({ ok: true, data: personalReview }),

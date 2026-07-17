@@ -10,6 +10,8 @@
 import type { TodayPageData } from "../../../shared/types";
 import { useAppStore } from "../../state/store";
 import { Button } from "../../components/Button";
+import { TEMPORARY_REPORT_REQUIREMENT_MAX_LENGTH } from "../../../shared/reportRequirements";
+import "./WorkReportSelectionPanel.css";
 
 interface WorkReportSelectionPanelProps {
   data: TodayPageData;
@@ -22,6 +24,12 @@ export function WorkReportSelectionPanel({ data }: WorkReportSelectionPanelProps
   const workReportGenerating = useAppStore((s) => s.workReportGenerating);
   const workReportStyle = useAppStore((s) => s.workReportStyle);
   const setWorkReportStyle = useAppStore((s) => s.setWorkReportStyle);
+  const workReportGenerationRequirement = useAppStore(
+    (s) => s.workReportGenerationRequirement
+  );
+  const setWorkReportGenerationRequirement = useAppStore(
+    (s) => s.setWorkReportGenerationRequirement
+  );
 
   const selectedCount = selectedBlockIds.length;
 
@@ -70,6 +78,21 @@ export function WorkReportSelectionPanel({ data }: WorkReportSelectionPanelProps
               <option value="standard">标准</option>
               <option value="formal">正式</option>
             </select>
+          </label>
+
+          <label className="work-report-requirement-field">
+            <span>本次补充要求（可选）</span>
+            <textarea
+              value={workReportGenerationRequirement}
+              maxLength={TEMPORARY_REPORT_REQUIREMENT_MAX_LENGTH}
+              placeholder="例如：重点突出客户反馈，并把尚未解决的问题单独列出。"
+              onChange={(event) =>
+                setWorkReportGenerationRequirement(event.target.value)
+              }
+            />
+            <small>
+              只影响这一次生成，不会保存为长期报告要求。
+            </small>
           </label>
         </div>
       </section>

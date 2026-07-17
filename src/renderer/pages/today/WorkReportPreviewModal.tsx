@@ -22,6 +22,9 @@ export function WorkReportPreviewModal({ data }: WorkReportPreviewModalProps) {
   const workReportError = useAppStore((s) => s.workReportError);
   const workReportStyle = useAppStore((s) => s.workReportStyle);
   const todayPageDateKey = useAppStore((s) => s.todayPageDateKey);
+  const workReportGenerationRequirement = useAppStore(
+    (s) => s.workReportGenerationRequirement
+  );
 
   const selectedBlocks = data.timelineBlocks.filter((b) =>
     selectedBlockIds.includes(b.id)
@@ -33,6 +36,7 @@ export function WorkReportPreviewModal({ data }: WorkReportPreviewModalProps) {
       dateKey: todayPageDateKey,
       selectedBlockIds,
       style: workReportStyle,
+      generationRequirement: workReportGenerationRequirement || undefined,
     });
   };
 
@@ -72,6 +76,13 @@ export function WorkReportPreviewModal({ data }: WorkReportPreviewModalProps) {
           <p className="modal-box__count">
             将使用 <strong>{selectedBlocks.length}</strong> 个工作片段：
           </p>
+
+          {workReportGenerationRequirement && (
+            <div className="preview-generation-requirement">
+              <strong>本次补充要求</strong>
+              <p>{workReportGenerationRequirement}</p>
+            </div>
+          )}
 
           {selectedBlocks.length === 0 ? (
             <p className="modal-box__empty">

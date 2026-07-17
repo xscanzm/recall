@@ -227,6 +227,7 @@ function createMainWindow(): BrowserWindow {
     title: `${APP_NAME_ZH} Recall`,
     backgroundColor: "#F7F6F2",
     show: false,
+    frame: false,
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -486,6 +487,7 @@ app.whenReady().then(async () => {
     modelJobQueue,
     factRepo,
     observationRepo: obsRepo,
+    sceneRepo,
     memoryObjectRepo,
     settingsService,
   });

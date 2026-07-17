@@ -9,6 +9,7 @@
 import type { DB } from "../Database";
 import type { Report, CreateReportInput } from "../../models/types";
 import type { PersonalReview } from "../../../shared/types";
+import type { ReportGenerationRequirementsSnapshot } from "../../../shared/reportRequirements";
 
 interface ReportRow {
   id: string;
@@ -193,7 +194,11 @@ export class ReportRepository {
    * @param review PersonalReview 实体
    * @returns 写入后的 Report 记录
    */
-  upsertPersonalReview(dateKey: string, review: PersonalReview): Report {
+  upsertPersonalReview(
+    dateKey: string,
+    review: PersonalReview,
+    reportRequirements?: ReportGenerationRequirementsSnapshot
+  ): Report {
     const existing = this.getByTypeAndDate("personal_daily_review", dateKey);
     const sourceFactIds = collectPersonalReviewFactIds(review);
     const contentJson = JSON.stringify({
@@ -206,6 +211,7 @@ export class ReportRepository {
       unfinished: review.unfinished,
       worthRemembering: review.worthRemembering,
       tomorrowStartHere: review.tomorrowStartHere,
+      ...(reportRequirements ? { reportRequirements } : {}),
     });
 
     if (existing) {

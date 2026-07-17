@@ -54,6 +54,17 @@ export function MemoryDetailPage({ detailRef, onBack, onOpenRelation, backLabel 
     return () => { cancelled = true; };
   }, [detailRef.id, detailRef.type]);
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !correctionOpen) {
+        event.preventDefault();
+        onBack();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [correctionOpen, onBack]);
+
   const loadPreview = async (sourceId: string, index: number) => {
     const key = `${sourceId}:${index}`;
     if (preview[key] || previewLoading === key) return;
@@ -84,10 +95,12 @@ export function MemoryDetailPage({ detailRef, onBack, onOpenRelation, backLabel 
 
   return (
     <div className="memory-detail-page">
-      <header className="memory-detail-page__header">
+      <div className="memory-detail-page__sticky-bar">
         <button type="button" className="memory-detail-page__back" onClick={onBack}>
           {backLabel}
         </button>
+      </div>
+      <header className="memory-detail-page__header">
         {detail && (
           <div className="memory-detail-page__heading">
             <span className="memory-detail-page__type">{detail.type === "timeline" ? "时间轴" : TYPE_LABELS[detail.type]}</span>

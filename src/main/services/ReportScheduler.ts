@@ -210,10 +210,16 @@ export class ReportScheduler {
    * - 不受"今日已生成"限制
    * - 成功后更新 schedule.lastDailyReportDate 并清空当日重试状态
    */
-  async generateDailyReportNow(date?: string): Promise<ScheduleResult> {
+  async generateDailyReportNow(
+    date?: string,
+    generationRequirement?: string
+  ): Promise<ScheduleResult> {
     const targetDate = date ?? localTodayKey();
     try {
-      const result = await this.reporterWorker.generateDailyReport(targetDate);
+      const result = await this.reporterWorker.generateDailyReport(
+        targetDate,
+        generationRequirement
+      );
       if (result.ok && result.reportRecord) {
         this.markDailyReportDone(targetDate);
         // 手动成功 → 清空当日重试状态
@@ -240,10 +246,19 @@ export class ReportScheduler {
    * 手动触发周报生成
    * - 成功后清空本周重试状态
    */
-  async generateWeeklyReportNow(weekStart?: string): Promise<ScheduleResult> {
+  async generateWeeklyReportNow(
+    weekStart?: string,
+    options: {
+      reportType?: "weekly" | "monthly";
+      generationRequirement?: string;
+    } = {}
+  ): Promise<ScheduleResult> {
     const targetWeekStart = weekStart ?? getCurrentWeekStart();
     try {
-      const result = await this.reporterWorker.generateWeeklyReport(targetWeekStart);
+      const result = await this.reporterWorker.generateWeeklyReport(
+        targetWeekStart,
+        options
+      );
       if (result.ok && result.reportRecord) {
         this.markWeeklyReportDone(targetWeekStart);
         if (this.weeklyReportRetry?.dateKey === targetWeekStart) {
@@ -270,7 +285,10 @@ export class ReportScheduler {
    * - 不受"今日已生成"限制
    * - 成功后更新 schedule.lastPersonalReviewDate 并清空当日重试状态
    */
-  async generatePersonalReviewNow(date?: string): Promise<ScheduleResult> {
+  async generatePersonalReviewNow(
+    date?: string,
+    generationRequirement?: string
+  ): Promise<ScheduleResult> {
     if (!this.personalReviewWriterWorker) {
       return {
         ok: false,
@@ -280,7 +298,10 @@ export class ReportScheduler {
     }
     const targetDate = date ?? localTodayKey();
     try {
-      const result = await this.personalReviewWriterWorker.writePersonalReview(targetDate);
+      const result = await this.personalReviewWriterWorker.writePersonalReview(
+        targetDate,
+        generationRequirement
+      );
       if (result.ok && result.reportRecord) {
         this.markPersonalReviewDone(targetDate);
         if (this.personalReviewRetry?.dateKey === targetDate) {

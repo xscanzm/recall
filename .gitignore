@@ -91,5 +91,8 @@ manifest.release.json
 .trae/
 .zcode/
 
+# Wrangler 本地状态（r2 local 模式产生的临时状态，不入仓）
+.wrangler/
+
 # 本地规划文档（会话级计划，不入版本控制）
 docs/plans/

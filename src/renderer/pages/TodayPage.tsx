@@ -1,8 +1,9 @@
 // src/renderer/pages/TodayPage.tsx
 // 今日页（Phase 3，doc 21）
 //
-// 三栏布局（AppShell 已提供 76px Sidebar，本页实现中间时间轴 + 右侧结果面板）：
-//   .today-page  ->  grid: minmax(560px, 1fr) 360px
+// 布局（AppShell 已提供 76px Sidebar）：
+//   .today-page  ->  grid: 1fr（时间轴占满）
+//   右侧结果面板默认隐藏，点击右上角按钮以 drawer 浮层展开
 //
 // 中间主区域：TimelineHeader / TimelineToolbar / TimelineList
 // 右侧面板：TodaySidePanel（7 模块）或 WorkReportSelectionPanel（选择模式）
@@ -11,7 +12,7 @@
 // - 模型错误：全页 ErrorState
 // - 暂停中：全页 EmptyState（恢复观察）
 // - 首次未开始：全页 EmptyState（开始观察 / 配置模型）
-// - 观察中：完整三栏布局
+// - 观察中：完整布局
 //
 // 重要约束（spec 第 14 节）：前台禁止出现 L0/L1/L2/Fact/Scene/Model job 等技术词。
 
@@ -28,7 +29,9 @@ import { TodaySidePanel } from "./today/TodaySidePanel";
 import { WorkReportSelectionPanel } from "./today/WorkReportSelectionPanel";
 import { WorkReportPreviewModal } from "./today/WorkReportPreviewModal";
 import { friendlyDateLabel, isWorkCategory, todayDateKey } from "./today/helpers";
+import { TodayVisualizationBand } from "./today/TodayVisualizationBand";
 import { MemoryDetailPage, type MemoryDetailRef } from "./MemoryDetailPage";
+import type { TimelineBlockCategory } from "../../shared/types";
 
 export function TodayPage() {
   const isReady = useAppStore((s) => s.isReady);
@@ -51,7 +54,41 @@ export function TodayPage() {
   const [viewMode, setViewMode] = useState<TimelineViewMode>("segments");
   const [onlyWork, setOnlyWork] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState<TimelineBlockCategory | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<MemoryDetailRef | null>(null);
+
+  const handleCategoryFilterChange = (category: TimelineBlockCategory) => {
+    setCategoryFilter((current) => (current === category ? null : category));
+    setSearchKeyword("");
+    if (!isWorkCategory(category)) setOnlyWork(false);
+  };
+
+  const handleKeywordSelect = (keyword: string) => {
+    setCategoryFilter(null);
+    setSearchKeyword(keyword);
+  };
+
+  const handleSearchKeywordChange = (keyword: string) => {
+    setCategoryFilter(null);
+    setSearchKeyword(keyword);
+  };
+
+  const handleOpenEpisode = (episodeId: string) => {
+    const episode = todayPageData?.activityOverview.episodes.find((item) => item.id === episodeId);
+    if (!episode || !todayPageData) return;
+    const observationIds = new Set(episode.sourceObservationIds);
+    const relatedBlock = todayPageData.timelineBlocks
+      .map((block) => ({
+        block,
+        score: (block.sourceSceneIds.includes(episodeId) ? 1000 : 0)
+          + block.sourceObservationIds.filter((id) => observationIds.has(id)).length,
+      }))
+      .filter((item) => item.score > 0)
+      .sort((left, right) => right.score - left.score)[0]?.block;
+    setSelectedDetail(relatedBlock
+      ? { id: relatedBlock.id, type: "timeline" }
+      : { id: episodeId, type: "scene" });
+  };
 
   // 首次进入或 dateKey 变化时加载（选择模式中不重载，避免清空选区）
   useEffect(() => {
@@ -181,7 +218,10 @@ export function TodayPage() {
       onlyWork={onlyWork}
       onOnlyWorkChange={setOnlyWork}
       searchKeyword={searchKeyword}
-      onSearchKeywordChange={setSearchKeyword}
+      onSearchKeywordChange={handleSearchKeywordChange}
+      categoryFilter={categoryFilter}
+      onCategoryFilterChange={handleCategoryFilterChange}
+      onKeywordSelect={handleKeywordSelect}
       ignoredBlockIds={ignoredBlockIds}
       workReportSelectionMode={workReportSelectionMode}
       previewModalOpen={previewModalOpen}
@@ -190,6 +230,7 @@ export function TodayPage() {
       onRetry={handleRetry}
       onGoSettings={handleGoSettings}
       onOpenDetail={(id) => setSelectedDetail({ id, type: "timeline" })}
+      onOpenEpisode={handleOpenEpisode}
     />
   );
 }
@@ -209,6 +250,9 @@ interface TodayPageLayoutProps {
   onOnlyWorkChange: (v: boolean) => void;
   searchKeyword: string;
   onSearchKeywordChange: (v: string) => void;
+  categoryFilter: TimelineBlockCategory | null;
+  onCategoryFilterChange: (category: TimelineBlockCategory) => void;
+  onKeywordSelect: (keyword: string) => void;
   ignoredBlockIds: string[];
   workReportSelectionMode: boolean;
   previewModalOpen: boolean;
@@ -217,6 +261,7 @@ interface TodayPageLayoutProps {
   onRetry: () => void;
   onGoSettings: () => void;
   onOpenDetail: (id: string) => void;
+  onOpenEpisode: (episodeId: string) => void;
 }
 
 function TodayPageLayout(props: TodayPageLayoutProps) {
@@ -231,6 +276,9 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     onOnlyWorkChange,
     searchKeyword,
     onSearchKeywordChange,
+    categoryFilter,
+    onCategoryFilterChange,
+    onKeywordSelect,
     ignoredBlockIds,
     workReportSelectionMode,
     previewModalOpen,
@@ -239,6 +287,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     onRetry,
     onGoSettings,
     onOpenDetail,
+    onOpenEpisode,
   } = props;
 
   // 过滤时间轴：忽略列表 + 仅看工作 + 搜索，并按开始时间倒序（最近发生的事先看到）
@@ -246,18 +295,38 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     if (!todayPageData) return [];
     const ignored = new Set(ignoredBlockIds);
     const kw = searchKeyword.trim().toLowerCase();
+    const categoryObservationIds = new Set(
+      categoryFilter
+        ? todayPageData.activityOverview.episodes
+            .filter((episode) => episode.category === categoryFilter)
+            .flatMap((episode) => episode.sourceObservationIds)
+        : []
+    );
+    const keywordObservationIds = new Set(
+      kw
+        ? todayPageData.activityOverview.episodes
+            .filter((episode) => `${episode.title} ${episode.summary} ${episode.projectNames.join(" ")} ${episode.topicTexts.join(" ")}`
+              .toLowerCase()
+              .includes(kw))
+            .flatMap((episode) => episode.sourceObservationIds)
+        : []
+    );
     return todayPageData.timelineBlocks
       .filter((b) => {
         if (ignored.has(b.id)) return false;
+        if (categoryFilter && !b.sourceObservationIds.some((id) => categoryObservationIds.has(id))) {
+          return false;
+        }
         if (onlyWork && !isWorkCategory(b.category)) return false;
         if (kw) {
           const hay = `${b.title} ${b.summary} ${b.projectNames.join(" ")} ${b.highlights.join(" ")}`.toLowerCase();
-          if (!hay.includes(kw)) return false;
+          const relatedEpisodeMatches = b.sourceObservationIds.some((id) => keywordObservationIds.has(id));
+          if (!hay.includes(kw) && !relatedEpisodeMatches) return false;
         }
         return true;
       })
       .sort((a, b) => b.startAt.localeCompare(a.startAt));
-  }, [todayPageData, ignoredBlockIds, onlyWork, searchKeyword]);
+  }, [todayPageData, ignoredBlockIds, categoryFilter, onlyWork, searchKeyword]);
 
   const dayMainThread = todayPageData?.dayMainThread ?? "还没有整理出这一天的主线。";
   const dateLabel = friendlyDateLabel(todayPageDateKey);
@@ -274,6 +343,17 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     >
       <main className="timeline-main" aria-label="今日时间轴">
         <TimelineHeader dayMainThread={dayMainThread} dateLabel={dateLabel} historical={isHistorical} />
+
+        {todayPageData && (
+          <TodayVisualizationBand
+            overview={todayPageData.activityOverview}
+            historical={isHistorical}
+            activeCategory={categoryFilter}
+            onCategorySelect={onCategoryFilterChange}
+            onKeywordSelect={onKeywordSelect}
+            onOpenEpisode={onOpenEpisode}
+          />
+        )}
 
         <TimelineToolbar
           dateKey={todayPageDateKey}
@@ -322,18 +402,19 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
           )}
       </main>
 
-      {/* 右侧面板：窄屏 drawer 切换按钮 */}
+      {/* 右侧面板：drawer 切换按钮 */}
       <button
         type="button"
         className="side-drawer-toggle"
         onClick={onToggleDrawer}
         aria-label={sidePanelDrawerOpen ? "收起结果面板" : "展开结果面板"}
-        title="结果面板"
+        title={sidePanelDrawerOpen ? "收起结果面板" : "展开结果面板"}
       >
         <PanelRight size={16} />
+        <span>{sidePanelDrawerOpen ? "收起" : "展开"}</span>
       </button>
 
-      {/* 右侧面板遮罩（窄屏 drawer 模式） */}
+      {/* 右侧面板遮罩（drawer 模式） */}
       {sidePanelDrawerOpen && (
         <div
           className="side-drawer-mask"

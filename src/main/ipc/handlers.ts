@@ -35,6 +35,7 @@ import {
   ModelDeleteConfigInputSchema,
   ModelSaveConfigInputSchema,
   ModelTestConnectionInputSchema,
+  PersonalReviewGenerateInputSchema,
   PrivacyRuleIdSchema,
   PrivacyRuleInputSchema,
   ProjectDetailInputSchema,
@@ -91,6 +92,7 @@ import { registerAppHandlers } from "./handlers/appHandlers";
 import { registerDataLifecycleHandlers } from "./handlers/dataLifecycleHandlers";
 import { registerMemorySearchHandlers } from "./handlers/memorySearchHandlers";
 import { registerTimelineHandlers, registerWorkReportHandlers } from "./handlers/timelineHandlers";
+import { registerActivityHandlers } from "./handlers/activityHandlers";
 import type { UpdateService } from "../services/UpdateService";
 import { registerUpdateHandlers } from "./handlers/updateHandlers";
 
@@ -1232,7 +1234,7 @@ ${context}
     if (!parsed.success) {
       fail("schema_invalid", `reports:generate 参数校验失败: ${parsed.error.message}`);
     }
-    const { type, dateKey, projectId } = parsed.data;
+    const { type, dateKey, projectId, generationRequirement } = parsed.data;
     // 仅支持 daily / weekly / monthly；retrospective 暂未实现
     if (type === "retrospective") {
       return {
@@ -1251,18 +1253,27 @@ ${context}
     try {
       let result;
       if (type === "daily") {
-        result = await deps.reportScheduler.generateDailyReportNow(dateKey);
+        result = await deps.reportScheduler.generateDailyReportNow(
+          dateKey,
+          generationRequirement
+        );
       } else if (type === "monthly") {
         // 月报：复用 weekly 生成逻辑（按月范围汇总），再将 type 更新为 monthly
         // 月报 6 大板块（doc 23 §6.4）：本月概览/主要项目/关键成果/重要决策/持续风险/下月重点
         // 当前 ReporterWorker 未单独实现 monthly，复用 weekly 生成后更新 type
-        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey);
+        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey, {
+          reportType: "monthly",
+          generationRequirement,
+        });
         if (result.ok && result.reportId && deps.reportRepo) {
           deps.reportRepo.update(result.reportId, { type: "monthly", projectId: projectId ?? null });
         }
       } else {
         // weekly：dateKey 视为 weekStart
-        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey);
+        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey, {
+          reportType: "weekly",
+          generationRequirement,
+        });
       }
       // 若传入 projectId，更新报告的 project_id
       if (projectId && result.ok && result.reportId && deps.reportRepo && type !== "monthly") {
@@ -1541,12 +1552,22 @@ ${context}
    *
    * 返回 IpcResult<PersonalReviewResult>。
    */
-  ipcMain.handle("personalReview:generate", async (_event, dateKey: string) => {
+  ipcMain.handle("personalReview:generate", async (_event, input: unknown) => {
+    const parsed = PersonalReviewGenerateInputSchema.safeParse(input);
+    if (!parsed.success) {
+      fail(
+        "schema_invalid",
+        `personalReview:generate 参数校验失败: ${parsed.error.message}`
+      );
+    }
     if (!deps.personalReviewWriterWorker) {
       fail("not_ready", "PersonalReviewWriterWorker 未初始化");
     }
     try {
-      const result = await deps.personalReviewWriterWorker.writePersonalReview(dateKey);
+      const result = await deps.personalReviewWriterWorker.writePersonalReview(
+        parsed.data.dateKey,
+        parsed.data.generationRequirement
+      );
       if (result.ok) {
         return { ok: true as const, data: result };
       }
@@ -1634,6 +1655,7 @@ ${context}
         selectedBlockIds: string[];
         style: "brief" | "standard" | "formal";
         recipientHint?: "manager" | "team" | "client" | "self";
+        generationRequirement?: string;
       }
     ) => {
       if (!deps.workReportWriterWorker) {
@@ -1644,7 +1666,10 @@ ${context}
         !params ||
         typeof params.dateKey !== "string" ||
         !Array.isArray(params.selectedBlockIds) ||
-        !["brief", "standard", "formal"].includes(params.style)
+        !["brief", "standard", "formal"].includes(params.style) ||
+        (params.generationRequirement !== undefined &&
+          (typeof params.generationRequirement !== "string" ||
+            params.generationRequirement.length > 2000))
       ) {
         fail("schema_invalid", "workReport:generate 参数校验失败");
       }
@@ -1653,7 +1678,8 @@ ${context}
           params.dateKey,
           params.selectedBlockIds,
           params.style,
-          params.recipientHint
+          params.recipientHint,
+          params.generationRequirement
         );
         if (result.ok) {
           return { ok: true as const, data: result };
@@ -1929,6 +1955,7 @@ ${context}
   registerMemorySearchHandlers(deps);
   registerDataLifecycleHandlers(deps);
   registerTimelineHandlers(deps);
+  registerActivityHandlers(deps);
   registerWorkReportHandlers(deps);
   registerUpdateHandlers(deps);
 }
@@ -1958,6 +1985,9 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "app:pauseObserving",
   "app:getLaunchAtLogin",
   "app:setLaunchAtLogin",
+  "window:minimize",
+  "window:toggleMaximize",
+  "window:close",
   "settings:get",
   "settings:update",
   "model:testConnection",
@@ -2002,6 +2032,7 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "timeline:build",
   "timeline:reorganizeDay",
   "timeline:get",
+  "activity:getDayOverview",
   "personalReview:generate",
   "personalReview:get",
   "workReport:generate",

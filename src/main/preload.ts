@@ -44,6 +44,13 @@ const recallApi = {
     },
   },
 
+  // -------------------- window --------------------
+  window: {
+    minimize: () => invokeValidated(ipcRenderer, "window:minimize"),
+    toggleMaximize: () => invokeValidated(ipcRenderer, "window:toggleMaximize"),
+    close: () => invokeValidated(ipcRenderer, "window:close"),
+  },
+
   // -------------------- settings --------------------
   settings: {
     get: <T>(): Promise<T> => ipcRenderer.invoke("settings:get"),
@@ -217,6 +224,7 @@ const recallApi = {
       type: "daily" | "weekly" | "monthly" | "retrospective";
       dateKey: string;
       projectId?: string;
+      generationRequirement?: string;
     }): Promise<{ ok: boolean; reportId?: string; code?: string; message?: string }> =>
       ipcRenderer.invoke("reports:generate", input),
     update: (input: { id: string; contentJson: string }): Promise<{ ok: true; report?: unknown }> =>
@@ -257,14 +265,22 @@ const recallApi = {
     get: (dateKey: IpcRequest<"timeline:get">) => invokeValidated(ipcRenderer, "timeline:get", dateKey),
   },
 
+  activity: {
+    getDayOverview: (dateKey: IpcRequest<"activity:getDayOverview">) =>
+      invokeValidated(ipcRenderer, "activity:getDayOverview", dateKey),
+  },
+
   /**
    * personalReview：个人复盘
    * - generate：生成给用户自己看的今日复盘（type=personal_daily_review）
    * - get：获取已生成的个人复盘（按 dateKey 查询）
    */
   personalReview: {
-    generate: (dateKey: string): Promise<IpcResult<unknown>> =>
-      ipcRenderer.invoke("personalReview:generate", dateKey),
+    generate: (input: {
+      dateKey: string;
+      generationRequirement?: string;
+    }): Promise<IpcResult<unknown>> =>
+      ipcRenderer.invoke("personalReview:generate", input),
     get: (dateKey: string): Promise<IpcResult<unknown>> =>
       ipcRenderer.invoke("personalReview:get", dateKey),
   },

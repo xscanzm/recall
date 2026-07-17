@@ -58,4 +58,8 @@ test("first-run choice persists, observation intent restores, and core renderer 
   await expect(page.locator("body")).toContainText("报告");
   await page.getByRole("button", { name: "今日" }).click();
   await expect(page.getByRole("main", { name: "今日时间轴" })).toBeVisible();
+  await expect(page.getByText("回声 Recall", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最小化" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最大化或还原" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "关闭" })).toBeVisible();
 });

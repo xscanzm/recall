@@ -29,6 +29,10 @@ import { PERSONAL_REVIEW_PROMPT_TEMPLATE } from "../models/prompts";
 import type { PersonalReview, TimelineBlock, UnfinishedThread } from "../../shared/types";
 import type { SettingsService } from "./SettingsService";
 import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
+import {
+  hasReportGenerationRequirements,
+  resolveReportGenerationRequirements,
+} from "./reportRequirements";
 
 // ============================================================================
 // 输入 / 输出类型
@@ -109,7 +113,10 @@ export class PersonalReviewWriterWorker {
    * @param dateKey 日期 YYYY-MM-DD
    * @returns 生成结果（ok=true 时包含 PersonalReview 和写入的 report 记录）
    */
-  async writePersonalReview(dateKey: string): Promise<PersonalReviewResult> {
+  async writePersonalReview(
+    dateKey: string,
+    generationRequirement?: string
+  ): Promise<PersonalReviewResult> {
     // 1. 获取多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
     if (!multimodalModelConfigId) {
@@ -151,12 +158,18 @@ export class PersonalReviewWriterWorker {
     }
 
     // 3. 构造 PersonalReviewInput
+    const reportRequirements = resolveReportGenerationRequirements(
+      this.settingsService,
+      "personal",
+      generationRequirement
+    );
     const personalReviewInput: PersonalReviewInput = {
       dateKey,
       timelineBlocks,
       unfinishedThreads,
       decisions,
       memoriesWorthKeeping,
+      reportRequirements,
     };
     const inputJson = JSON.stringify(personalReviewInput, null, 2);
 
@@ -173,6 +186,8 @@ export class PersonalReviewWriterWorker {
       unfinishedThreadCount: unfinishedThreads.length,
       decisionCount: decisions.length,
       memoriesWorthKeepingCount: memoriesWorthKeeping.length,
+      hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
+      hasTemporaryRequirement: Boolean(reportRequirements.temporary),
     });
 
     // 6. 提交 LLM 任务
@@ -222,7 +237,11 @@ export class PersonalReviewWriterWorker {
       updatedAt: now,
     };
 
-    const reportRecord = this.reportRepo.upsertPersonalReview(dateKey, review);
+    const reportRecord = this.reportRepo.upsertPersonalReview(
+      dateKey,
+      review,
+      reportRequirements
+    );
 
     // 用 DB 实际的 id / createdAt / updatedAt 回填 review，保持与持久化记录一致
     const persistedReview: PersonalReview = {

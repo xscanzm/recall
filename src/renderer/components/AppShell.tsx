@@ -16,6 +16,9 @@ import {
   Users,
   Settings,
   Bug,
+  Minus,
+  Square,
+  X,
 } from "lucide-react";
 import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
@@ -86,6 +89,14 @@ export const AppShell = ({ children }: AppShellProps) => {
     }
   };
 
+  const handleWindowAction = async (action: "minimize" | "toggleMaximize" | "close") => {
+    try {
+      await getIpc().window[action]();
+    } catch (err) {
+      console.error("窗口操作失败:", err);
+    }
+  };
+
   const renderNavButton = ({ key, label, Icon }: NavItem) => (
     <button
       key={key}
@@ -106,6 +117,7 @@ export const AppShell = ({ children }: AppShellProps) => {
       <aside className="app-shell__sidebar">
         <div className="app-shell__brand">
           <BrandMark />
+          <span className="app-shell__brand-name">回声 Recall</span>
         </div>
 
         {/* 精致化分组导航 */}
@@ -130,6 +142,35 @@ export const AppShell = ({ children }: AppShellProps) => {
           />
           <div className="app-shell__topbar-actions">
             <UpdateBadge />
+            <div className="window-controls" aria-label="窗口控制">
+              <button
+                type="button"
+                className="window-control"
+                onClick={() => void handleWindowAction("minimize")}
+                aria-label="最小化"
+                title="最小化"
+              >
+                <Minus size={16} />
+              </button>
+              <button
+                type="button"
+                className="window-control"
+                onClick={() => void handleWindowAction("toggleMaximize")}
+                aria-label="最大化或还原"
+                title="最大化或还原"
+              >
+                <Square size={13} />
+              </button>
+              <button
+                type="button"
+                className="window-control window-control--close"
+                onClick={() => void handleWindowAction("close")}
+                aria-label="关闭"
+                title="关闭到托盘"
+              >
+                <X size={17} />
+              </button>
+            </div>
           </div>
         </header>
         <div className="app-shell__content">{children}</div>

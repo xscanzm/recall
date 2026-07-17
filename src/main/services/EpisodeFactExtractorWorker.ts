@@ -2,15 +2,17 @@ import type { ModelGateway } from "./ModelGateway";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";
 import type {
   DebugEvent,
-  ExtractorOutputV2,
+  EpisodeActivityClassification,
+  EpisodeFactExtractorOutput,
   Fact,
   Observation,
   Scene,
 } from "../models/types";
-import { ExtractorOutputV2Schema } from "../models/schemas";
+import { EpisodeFactExtractorOutputSchema } from "../models/schemas";
 import { EPISODE_FACT_EXTRACTOR_PROMPT_TEMPLATE } from "../models/prompts";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ObservationRepository } from "../db/repositories/ObservationRepository";
+import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { SettingsService } from "./SettingsService";
 
@@ -51,7 +53,8 @@ export const EPISODE_FACT_PROMPT_CHAR_BUDGET = 120_000;
 
 export interface EpisodeFactExtractorResult {
   facts: Fact[];
-  discardedNoise: ExtractorOutputV2["discardedNoise"];
+  episodeActivities: EpisodeActivityClassification[];
+  discardedNoise: EpisodeFactExtractorOutput["discardedNoise"];
   modelJobId: string;
   attempts: number;
 }
@@ -61,6 +64,7 @@ export class EpisodeFactExtractorWorker {
   private readonly modelJobQueue: ModelJobQueue;
   private readonly factRepo: FactRepository;
   private readonly observationRepo: ObservationRepository;
+  private readonly sceneRepo: SceneRepository;
   private readonly memoryObjectRepo: MemoryObjectRepository;
   private readonly settingsService: SettingsService | null;
 
@@ -69,6 +73,7 @@ export class EpisodeFactExtractorWorker {
     modelJobQueue: ModelJobQueue;
     factRepo: FactRepository;
     observationRepo: ObservationRepository;
+    sceneRepo: SceneRepository;
     memoryObjectRepo: MemoryObjectRepository;
     settingsService?: SettingsService;
   }) {
@@ -76,6 +81,7 @@ export class EpisodeFactExtractorWorker {
     this.modelJobQueue = deps.modelJobQueue;
     this.factRepo = deps.factRepo;
     this.observationRepo = deps.observationRepo;
+    this.sceneRepo = deps.sceneRepo;
     this.memoryObjectRepo = deps.memoryObjectRepo;
     this.settingsService = deps.settingsService ?? null;
   }
@@ -97,6 +103,7 @@ export class EpisodeFactExtractorWorker {
         ok: true,
         data: {
           facts: [],
+          episodeActivities: [],
           discardedNoise: [],
           modelJobId: "",
           attempts: 0,
@@ -153,11 +160,11 @@ export class EpisodeFactExtractorWorker {
       compactedFullTextCount: promptBuild.compactedFullTextCount,
     });
 
-    const result = await this.modelJobQueue.enqueueMultimodalJob<ExtractorOutputV2>({
+    const result = await this.modelJobQueue.enqueueMultimodalJob<EpisodeFactExtractorOutput>({
       type: "episode_fact_extractor",
       priority: 2,
       executor: async () => {
-        return this.modelGateway.callMultimodal<ExtractorOutputV2>(
+        return this.modelGateway.callMultimodal<EpisodeFactExtractorOutput>(
           {
             kind: "multimodal",
             configId: multimodalModelConfigId,
@@ -166,7 +173,7 @@ export class EpisodeFactExtractorWorker {
             jobType: "episode_fact_extractor",
             jobInputJson,
           },
-          ExtractorOutputV2Schema
+          EpisodeFactExtractorOutputSchema
         );
       },
     });
@@ -181,6 +188,11 @@ export class EpisodeFactExtractorWorker {
       };
     }
 
+    const episodeActivities = this.persistEpisodeActivities(
+      scenes,
+      result.data.episodeActivities,
+      debugEvents
+    );
     const facts: Fact[] = [];
     for (const [index, factInput] of result.data.facts.entries()) {
       try {
@@ -223,6 +235,7 @@ export class EpisodeFactExtractorWorker {
       ok: true,
       data: {
         facts,
+        episodeActivities,
         discardedNoise: result.data.discardedNoise,
         modelJobId: result.modelJobId ?? "",
         attempts: result.attempts ?? 0,
@@ -230,6 +243,51 @@ export class EpisodeFactExtractorWorker {
       modelJobId: result.modelJobId ?? "",
       attempts: result.attempts ?? 0,
     };
+  }
+
+  private persistEpisodeActivities(
+    scenes: Scene[],
+    classifications: EpisodeActivityClassification[],
+    debugEvents?: DebugEvent[]
+  ): EpisodeActivityClassification[] {
+    const scenesById = new Map(scenes.map((scene) => [scene.id, scene]));
+    const persisted = new Map<string, EpisodeActivityClassification>();
+    for (const classification of classifications) {
+      if (!scenesById.has(classification.sceneId)) {
+        debugEvents?.push({
+          layer: "L1",
+          action: "discard",
+          reason: "episode_activity_unknown_scene",
+          itemId: classification.sceneId,
+        });
+        continue;
+      }
+      try {
+        this.sceneRepo.update(classification.sceneId, {
+          activityCategory: classification.category,
+          activityConfidence: classification.confidence,
+        });
+        persisted.set(classification.sceneId, classification);
+      } catch {
+        debugEvents?.push({
+          layer: "L1",
+          action: "discard",
+          reason: "episode_activity_persist_failed",
+          itemId: classification.sceneId,
+        });
+      }
+    }
+
+    for (const scene of scenes) {
+      if (persisted.has(scene.id)) continue;
+      debugEvents?.push({
+        layer: "L1",
+        action: "fallback",
+        reason: "episode_activity_missing",
+        itemId: scene.id,
+      });
+    }
+    return [...persisted.values()];
   }
 
   private loadEpisodes(scenes: Scene[]): EpisodePayload[] {

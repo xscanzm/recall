@@ -1,0 +1,49 @@
+.work-report-requirement-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--recall-text);
+  font-size: 13px;
+}
+
+.work-report-requirement-field textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--recall-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--recall-bg);
+  color: var(--recall-text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.work-report-requirement-field textarea:focus {
+  outline: 2px solid var(--recall-accent-soft);
+  border-color: var(--recall-accent);
+}
+
+.work-report-requirement-field small {
+  color: var(--recall-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.preview-generation-requirement {
+  margin: 14px 0;
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  background: var(--recall-accent-soft);
+  color: var(--recall-text);
+  font-size: 12px;
+}
+
+.preview-generation-requirement p {
+  margin: 6px 0 0;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}

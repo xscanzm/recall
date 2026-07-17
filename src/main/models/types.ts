@@ -14,6 +14,9 @@ import type {
 } from "../../shared/types";
 import type { UpdateSettings } from "../../shared/updateTypes";
 import { DEFAULT_UPDATE_SETTINGS } from "../../shared/updateTypes";
+import type { ReportRequirements } from "../../shared/reportRequirements";
+import { createEmptyReportRequirements } from "../../shared/reportRequirements";
+import type { ReportGenerationRequirementsSnapshot } from "../../shared/reportRequirements";
 
 /**
  * Re-export 共享类型，便于 main 内部统一从 @/models/types 引用
@@ -91,6 +94,8 @@ export interface AppSettings {
     autoGenerate: boolean;
     time: string; // HH:mm
   };
+  /** 四类报告分别维护的长期要求。 */
+  reportRequirements: ReportRequirements;
   /**
    * 调度器持久化状态（不直接暴露给用户 UI）
    * - 应用重启后用来判断哪些周期的报告/复盘/周报还没生成（补跑）
@@ -161,6 +166,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoGenerate: false,
     time: "23:00",
   },
+  reportRequirements: createEmptyReportRequirements(),
   schedule: {
     lastDailyReportDate: null,
     lastWeeklyReportWeekStart: null,
@@ -517,6 +523,8 @@ export interface Scene {
   endAt: string;
   projectId: string | null;
   confidence: number;
+  activityCategory: TimelineBlockCategory;
+  activityConfidence: number;
   factIds: string[];
   observationIds: string[];
   entityNames: string[];
@@ -731,10 +739,12 @@ export type CreateFactInput = Omit<Fact, "id" | "createdAt" | "updatedAt" | "del
 
 export type UpdateFactInput = Partial<Omit<Fact, "id" | "createdAt" | "updatedAt" | "deletedAt">>;
 
-export type CreateSceneInput = Omit<Scene, "id" | "createdAt" | "updatedAt" | "deletedAt" | "derivationKey" | "derivationVersion"> & {
+export type CreateSceneInput = Omit<Scene, "id" | "createdAt" | "updatedAt" | "deletedAt" | "derivationKey" | "derivationVersion" | "activityCategory" | "activityConfidence"> & {
   id?: string;
   derivationKey?: string | null;
   derivationVersion?: number;
+  activityCategory?: TimelineBlockCategory;
+  activityConfidence?: number;
 };
 
 export type CreateReportInput = Omit<Report, "id" | "createdAt" | "updatedAt"> & {
@@ -938,6 +948,16 @@ export interface ExtractorOutputV2 {
   discardedNoise: Array<{ reason: string; text: string }>;
 }
 
+export interface EpisodeActivityClassification {
+  sceneId: string;
+  category: TimelineBlockCategory;
+  confidence: number;
+}
+
+export interface EpisodeFactExtractorOutput extends ExtractorOutputV2 {
+  episodeActivities: EpisodeActivityClassification[];
+}
+
 /**
  * TimelineBuilder 输入（doc 20 第 5 节 / spec.md 行 651-685）
  */
@@ -1001,7 +1021,7 @@ export interface PersonalReviewInput {
   unfinishedThreads: UnfinishedThread[];
   decisions: Fact[];
   memoriesWorthKeeping: Fact[];
-  userPreferenceSummary?: string;
+  reportRequirements: ReportGenerationRequirementsSnapshot;
 }
 
 /**
@@ -1043,6 +1063,7 @@ export interface WorkReportInput {
   selectedFacts: Fact[];
   style: "brief" | "standard" | "formal";
   recipientHint?: "manager" | "team" | "client" | "self";
+  reportRequirements: ReportGenerationRequirementsSnapshot;
 }
 
 /**

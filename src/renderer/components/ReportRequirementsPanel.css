@@ -1,0 +1,283 @@
+.reports-requirements-bar {
+  max-width: 920px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  background: var(--recall-surface);
+}
+
+.reports-requirements-bar__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+}
+
+.reports-requirements-bar__title {
+  color: var(--recall-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reports-requirements-bar__status {
+  color: var(--recall-text-muted);
+  font-size: 12px;
+}
+
+.reports-requirements-bar__actions {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+}
+
+.reports-temporary-requirement {
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--recall-border);
+}
+
+.reports-temporary-requirement__label {
+  color: var(--recall-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.reports-temporary-requirement__hint,
+.reports-temporary-requirement__count {
+  color: var(--recall-text-muted);
+  font-size: 12px;
+}
+
+.reports-temporary-requirement__hint {
+  grid-column: 1 / -1;
+}
+
+.reports-temporary-requirement textarea {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 82px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--recall-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--recall-bg);
+  color: var(--recall-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.reports-temporary-requirement textarea:focus {
+  outline: 2px solid var(--recall-accent-soft);
+  border-color: var(--recall-accent);
+}
+
+.reports-temporary-requirement__count {
+  grid-column: 2;
+}
+
+.report-requirements-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 220;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(24, 31, 30, 0.3);
+  backdrop-filter: blur(2px);
+}
+
+.report-requirements-panel {
+  width: min(560px, 92vw);
+  height: 100%;
+  background: var(--recall-surface);
+  border-left: 1px solid var(--recall-border);
+  box-shadow: -16px 0 40px rgba(30, 36, 35, 0.14);
+  display: flex;
+  flex-direction: column;
+}
+
+.report-requirements-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 28px 18px;
+  border-bottom: 1px solid var(--recall-border);
+}
+
+.report-requirements-panel__header h2 {
+  margin: 0;
+  font-size: 20px;
+  color: var(--recall-text);
+}
+
+.report-requirements-panel__header p {
+  margin: 7px 0 0;
+  color: var(--recall-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.report-requirements-panel__close {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--recall-text-muted);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.report-requirements-panel__close:hover {
+  background: var(--recall-bg-hover);
+  color: var(--recall-text);
+}
+
+.report-requirements-panel__tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 0 20px;
+  border-bottom: 1px solid var(--recall-border);
+}
+
+.report-requirements-panel__tabs button {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  padding: 13px 8px 11px;
+  color: var(--recall-text-muted);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.report-requirements-panel__tabs button.is-active {
+  border-bottom-color: var(--recall-accent);
+  color: var(--recall-accent);
+  font-weight: 600;
+}
+
+.report-requirements-panel__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.report-requirements-panel__type-heading {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--recall-text);
+}
+
+.report-requirements-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.report-requirements-field__label {
+  color: var(--recall-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.report-requirements-field__description,
+.report-requirements-field__count {
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.report-requirements-field textarea {
+  width: 100%;
+  min-height: 108px;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid var(--recall-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--recall-bg);
+  color: var(--recall-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.report-requirements-field textarea:focus {
+  outline: 2px solid var(--recall-accent-soft);
+  border-color: var(--recall-accent);
+}
+
+.report-requirements-field__count {
+  align-self: flex-end;
+}
+
+.report-requirements-panel__guardrail {
+  margin: 0;
+  padding: 11px 13px;
+  border-radius: var(--radius-md);
+  background: var(--recall-accent-soft);
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.report-requirements-panel__error {
+  padding: 10px 12px;
+  border: 1px solid var(--recall-danger);
+  border-radius: var(--radius-md);
+  background: var(--recall-danger-soft);
+  color: var(--recall-danger);
+  font-size: 12px;
+}
+
+.report-requirements-panel__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 28px 20px;
+  border-top: 1px solid var(--recall-border);
+  background: var(--recall-surface);
+}
+
+.report-requirements-panel__footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .report-requirements-panel__header,
+  .report-requirements-panel__body,
+  .report-requirements-panel__footer {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .report-requirements-panel__tabs {
+    padding: 0 8px;
+  }
+
+  .report-requirements-panel__tabs button {
+    font-size: 12px;
+  }
+
+  .report-requirements-panel__footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .report-requirements-panel__footer-actions {
+    justify-content: flex-end;
+  }
+}

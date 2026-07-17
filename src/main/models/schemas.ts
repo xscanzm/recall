@@ -114,6 +114,19 @@ export const PrivacyRuleIdSchema = z.object({
 /** 设置更新 IPC 参数 schema。每个分区按 SettingsService 的浅合并语义整体替换。 */
 const TimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "时间必须为 HH:mm");
 
+export const ReportRequirementSchema = z.object({
+  focus: z.string().max(2000),
+  presentation: z.string().max(2000),
+  reminders: z.string().max(2000),
+}).strict();
+
+export const ReportRequirementsSchema = z.object({
+  personal: ReportRequirementSchema,
+  work: ReportRequirementSchema,
+  weekly: ReportRequirementSchema,
+  monthly: ReportRequirementSchema,
+}).strict();
+
 export const SettingsUpdateSchema = z.object({
   observation: z.object({
     enabled: z.boolean(),
@@ -141,6 +154,7 @@ export const SettingsUpdateSchema = z.object({
   }).optional(),
   dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
   personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
+  reportRequirements: ReportRequirementsSchema.optional(),
   schedule: z.object({
     lastDailyReportDate: z.string().nullable(),
     lastWeeklyReportWeekStart: z.string().nullable(),
@@ -230,7 +244,13 @@ export const ReportGenerateInputSchema = z.object({
   type: z.enum(["daily", "weekly", "monthly", "retrospective"]),
   dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   projectId: z.string().optional(),
+  generationRequirement: z.string().trim().max(2000).optional(),
 });
+
+export const PersonalReviewGenerateInputSchema = z.object({
+  dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  generationRequirement: z.string().trim().max(2000).optional(),
+}).strict();
 
 /**
  * 报告更新 IPC 参数 schema
@@ -2424,6 +2444,67 @@ const ExtractorOutputV2CoreSchema = z.object({
 export const ExtractorOutputV2Schema = z.preprocess(
   normalizeExtractorOutputV2,
   ExtractorOutputV2CoreSchema
+);
+
+const EpisodeActivityCategorySchema = z.enum([
+  "focus_work",
+  "communication",
+  "research",
+  "writing",
+  "coding",
+  "design",
+  "meeting",
+  "admin",
+  "break",
+  "mixed",
+  "unknown",
+]);
+
+function normalizeEpisodeActivities(raw: unknown): unknown[] {
+  if (!Array.isArray(raw)) return [];
+  const result: unknown[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+    const sceneIdRaw = obj.sceneId ?? obj.episodeId ?? obj.id;
+    if (typeof sceneIdRaw !== "string" || !sceneIdRaw.trim()) continue;
+    const rawCategory = typeof obj.category === "string"
+      ? obj.category.trim().toLowerCase()
+      : "unknown";
+    result.push({
+      sceneId: sceneIdRaw.trim(),
+      category: TIMELINE_BLOCK_CATEGORY_NORMALIZE[rawCategory] ?? "unknown",
+      confidence: Math.max(0, Math.min(1, normalizeNumber(obj.confidence, 0.5))),
+    });
+  }
+  return result;
+}
+
+function normalizeEpisodeFactExtractorOutput(data: unknown): unknown {
+  const normalized = normalizeExtractorOutputV2(data);
+  if (!normalized || typeof normalized !== "object") return normalized;
+  const source = data && typeof data === "object" && !Array.isArray(data)
+    ? normalizeKeysToCamel(data) as Record<string, unknown>
+    : {};
+  return {
+    ...(normalized as Record<string, unknown>),
+    episodeActivities: normalizeEpisodeActivities(
+      source.episodeActivities ?? source.activities ?? source.episodeClassifications
+    ),
+  };
+}
+
+const EpisodeFactExtractorOutputCoreSchema = ExtractorOutputV2CoreSchema.extend({
+  episodeActivities: z.array(z.object({
+    sceneId: z.string().min(1),
+    category: EpisodeActivityCategorySchema,
+    confidence: ConfidenceSchema,
+  })),
+});
+
+export const EpisodeFactExtractorOutputSchema = z.preprocess(
+  normalizeEpisodeFactExtractorOutput,
+  EpisodeFactExtractorOutputCoreSchema
 );
 
 /**

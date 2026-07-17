@@ -129,6 +129,8 @@ export class EpisodeBuilder {
       endAt: last.capturedAt,
       projectId: null,
       confidence: Number.isFinite(confidence) ? confidence : 0.6,
+      activityCategory: "unknown",
+      activityConfidence: 0,
       factIds: [],
       observationIds: group.items.map((i) => i.observation.id),
       entityNames,

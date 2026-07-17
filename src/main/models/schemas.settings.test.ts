@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SettingsUpdateSchema } from "./schemas";
+import { createEmptyReportRequirements } from "../../shared/reportRequirements";
 
 describe("SettingsUpdateSchema", () => {
   it("accepts a complete observation section", () => {
@@ -33,5 +34,28 @@ describe("SettingsUpdateSchema", () => {
   it("rejects incomplete sections and unknown settings", () => {
     expect(() => SettingsUpdateSchema.parse({ observation: { enabled: true } })).toThrow();
     expect(() => SettingsUpdateSchema.parse({ launchAtLogin: true })).toThrow();
+  });
+
+  it("accepts complete per-type report requirements", () => {
+    const reportRequirements = createEmptyReportRequirements();
+    reportRequirements.weekly = {
+      focus: "重点统计客户沟通和交付结果",
+      presentation: "先写结论，控制在 500 字以内",
+      reminders: "不要把探索中的事项写成已完成",
+    };
+
+    expect(SettingsUpdateSchema.parse({ reportRequirements })).toEqual({
+      reportRequirements,
+    });
+  });
+
+  it("rejects incomplete or oversized report requirements", () => {
+    expect(() => SettingsUpdateSchema.parse({
+      reportRequirements: { personal: { focus: "只关注决策" } },
+    })).toThrow();
+
+    const reportRequirements = createEmptyReportRequirements();
+    reportRequirements.monthly.focus = "x".repeat(2001);
+    expect(() => SettingsUpdateSchema.parse({ reportRequirements })).toThrow();
   });
 });

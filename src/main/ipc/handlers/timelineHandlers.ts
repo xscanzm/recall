@@ -29,7 +29,13 @@ export function registerWorkReportHandlers(deps: IpcDeps): void {
   handleValidated(ipcMain, "workReport:generate", async (_event, input) => {
     if (!deps.workReportWriterWorker) ipcFail("not_ready", "WorkReportWriterWorker 未初始化");
     try {
-      const result = await deps.workReportWriterWorker.writeWorkReport(input.dateKey, input.selectedBlockIds, input.style, input.recipientHint);
+      const result = await deps.workReportWriterWorker.writeWorkReport(
+        input.dateKey,
+        input.selectedBlockIds,
+        input.style,
+        input.recipientHint,
+        input.generationRequirement
+      );
       return result.ok ? { ok: true, data: result } : { ok: false, error: result.errorMessage ?? "work report 生成失败", code: result.errorCode };
     } catch (error) { return failure(error); }
   });

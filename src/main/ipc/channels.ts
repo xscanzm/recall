@@ -23,6 +23,9 @@ export type IpcChannel =
   | "app:pauseObserving"
   | "app:getLaunchAtLogin"
   | "app:setLaunchAtLogin"
+  | "window:minimize"
+  | "window:toggleMaximize"
+  | "window:close"
   | "settings:get"
   | "settings:update"
   | "endOfDayReview:get"
@@ -78,6 +81,7 @@ export type IpcChannel =
   | "timeline:build"
   | "timeline:reorganizeDay"
   | "timeline:get"
+  | "activity:getDayOverview"
   | "personalReview:generate"
   | "personalReview:get"
   | "workReport:generate"
@@ -114,6 +118,9 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "app:pauseObserving",
   "app:getLaunchAtLogin",
   "app:setLaunchAtLogin",
+  "window:minimize",
+  "window:toggleMaximize",
+  "window:close",
   "settings:get",
   "settings:update",
   "endOfDayReview:get",
@@ -167,6 +174,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "timeline:build",
   "timeline:reorganizeDay",
   "timeline:get",
+  "activity:getDayOverview",
   "personalReview:generate",
   "personalReview:get",
   "workReport:generate",

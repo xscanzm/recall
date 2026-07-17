@@ -33,6 +33,7 @@ import {
   DATA_DIR,
   SETTINGS_FILENAME,
 } from "../../shared/constants";
+import { normalizeReportRequirements } from "../../shared/reportRequirements";
 
 export class SettingsService {
   private cache: AppSettings = DEFAULT_SETTINGS;
@@ -65,7 +66,7 @@ export class SettingsService {
 
   /**
    * 更新应用偏好（写入 settings.json）
-   * patch 采用浅合并：observation/screenshot/notification/dailyReport/personalReview/schedule/onboardingCompleted 各自整体替换
+   * patch 采用浅合并：observation/screenshot/notification/dailyReport/personalReview/reportRequirements/schedule/onboardingCompleted 各自整体替换
    * - schedule 字段：仅 ReportScheduler 内部写，外部 API 不应直接 patch；
    *   这里提供独立方法 setSchedule() 以便区分。
    */
@@ -79,6 +80,8 @@ export class SettingsService {
       endOfDayReview: patch.endOfDayReview ?? this.cache.endOfDayReview,
       dailyReport: patch.dailyReport ?? this.cache.dailyReport,
       personalReview: patch.personalReview ?? this.cache.personalReview,
+      reportRequirements:
+        patch.reportRequirements ?? this.cache.reportRequirements,
       schedule: patch.schedule ?? this.cache.schedule,
       onboardingCompleted:
         patch.onboardingCompleted ?? this.cache.onboardingCompleted,
@@ -288,6 +291,7 @@ export class SettingsService {
           ...DEFAULT_SETTINGS.personalReview,
           ...parsed.personalReview,
         },
+        reportRequirements: normalizeReportRequirements(parsed.reportRequirements),
         schedule: { ...DEFAULT_SETTINGS.schedule, ...parsed.schedule },
         onboardingCompleted:
           parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,

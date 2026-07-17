@@ -134,6 +134,9 @@ export const ipcContracts = {
   "app:pauseObserving": { request: z.undefined(), response: AppStatusSchema },
   "app:getLaunchAtLogin": { request: z.undefined(), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
   "app:setLaunchAtLogin": { request: z.object({ enabled: z.boolean() }), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
+  "window:minimize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
+  "window:toggleMaximize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
+  "window:close": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "memory:search": {
     request: z.object({
       query: z.string().min(1).max(500),
@@ -203,8 +206,40 @@ export const ipcContracts = {
   "timeline:build": { request: dateKey, response: ipcResult(z.unknown()) },
   "timeline:reorganizeDay": { request: dateKey, response: ipcResult(z.unknown()) },
   "timeline:get": { request: dateKey, response: ipcResult(z.array(TodayTimelineProjectionSchema)) },
+  "activity:getDayOverview": {
+    request: dateKey,
+    response: ipcResult(z.object({
+      stats: z.object({
+        totalObservedMinutes: z.number().nonnegative(),
+        categorizedMinutes: z.record(
+          z.enum(["focus_work", "communication", "research", "writing", "coding", "design", "meeting", "admin", "break", "mixed", "unknown"]),
+          z.number().nonnegative()
+        ),
+        pendingMinutes: z.number().nonnegative(),
+        sampleCount: z.number().int().nonnegative(),
+      }),
+      episodes: z.array(z.object({
+        id: z.string(),
+        startAt: z.string(),
+        endAt: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        category: z.enum(["focus_work", "communication", "research", "writing", "coding", "design", "meeting", "admin", "break", "mixed", "unknown"]),
+        categoryConfidence: z.number().min(0).max(1),
+        sourceObservationIds: stringArray,
+        projectNames: stringArray,
+        topicTexts: stringArray,
+      })),
+    })),
+  },
   "workReport:generate": {
-    request: z.object({ dateKey, selectedBlockIds: stringArray, style: z.enum(["brief", "standard", "formal"]), recipientHint: z.enum(["manager", "team", "client", "self"]).optional() }),
+    request: z.object({
+      dateKey,
+      selectedBlockIds: stringArray,
+      style: z.enum(["brief", "standard", "formal"]),
+      recipientHint: z.enum(["manager", "team", "client", "self"]).optional(),
+      generationRequirement: z.string().trim().max(2000).optional(),
+    }),
     response: ipcResult(z.unknown()),
   },
   "workReport:get": { request: dateKey, response: ipcResult(WorkReportSchema.nullable()) },

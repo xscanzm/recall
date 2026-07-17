@@ -249,10 +249,36 @@ export interface TodayPageData {
   dayMainThread: string;
   /** 派生展示投影，不是新的记忆层级或来源记录。 */
   timelineBlocks: TodayTimelineProjection[];
+  activityOverview: TodayActivityOverview;
   unfinishedThreads: UnfinishedThread[];
   highlights: Array<{ id: string; content: string }>;
   decisions: Array<{ id: string; content: string }>;
   personalReview?: PersonalReview;
   workReport?: WorkReport;
   tomorrowStartHere: string[];
+}
+
+export interface TodayActivityStats {
+  totalObservedMinutes: number;
+  categorizedMinutes: Partial<Record<TimelineBlockCategory, number>>;
+  pendingMinutes: number;
+  sampleCount: number;
+}
+
+export interface TodayActivityEpisode {
+  id: string;
+  startAt: string;
+  endAt: string;
+  title: string;
+  summary: string;
+  category: TimelineBlockCategory;
+  categoryConfidence: number;
+  sourceObservationIds: string[];
+  projectNames: string[];
+  topicTexts: string[];
+}
+
+export interface TodayActivityOverview {
+  stats: TodayActivityStats;
+  episodes: TodayActivityEpisode[];
 }

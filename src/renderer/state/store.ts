@@ -15,6 +15,7 @@ import type {
   UnfinishedThread,
 } from "../../shared/types";
 import type { UpdateStatus, DownloadProgress } from "../../shared/updateTypes";
+import type { ReportRequirements } from "../../shared/reportRequirements";
 import { getIpc, fetchTodayPageData } from "./ipc";
 import { isCurrentTodayPageRequest, shouldRollOverTodayDate } from "./todayNavigation";
 import { clearAllDataAction, clearScreenshotsOnlyAction, exportDataAction, forgetRecentAction, getCacheSizeAction, searchMemoryAction } from "./searchDataActions";
@@ -408,6 +409,7 @@ export interface AppSettingsState {
     autoGenerate: boolean;
     time: string;
   };
+  reportRequirements: ReportRequirements;
   onboardingCompleted: boolean;
   debug: {
     enabled: boolean;
@@ -614,6 +616,7 @@ interface AppState {
   workReportGenerating: boolean;
   workReportError: string | null;
   workReportStyle: "brief" | "standard" | "formal";
+  workReportGenerationRequirement: string;
   previewModalOpen: boolean;
   personalReviewGenerating: boolean;
   personalReviewError: string | null;
@@ -837,13 +840,17 @@ interface AppState {
   rollOverTodayDateKeyIfNeeded: () => boolean;
   buildTimeline: (dateKey: string) => Promise<void>;
   reorganizeTimelineDay: (dateKey: string) => Promise<void>;
-  generatePersonalReview: (dateKey: string) => Promise<void>;
+  generatePersonalReview: (
+    dateKey: string,
+    generationRequirement?: string
+  ) => Promise<boolean>;
   generateWorkReport: (params: {
     dateKey: string;
     selectedBlockIds: string[];
     style: "brief" | "standard" | "formal";
     recipientHint?: "manager" | "team" | "client" | "self";
-  }) => Promise<void>;
+    generationRequirement?: string;
+  }) => Promise<boolean>;
   saveReportSelection: (params: {
     dateKey: string;
     selectedBlockIds: string[];
@@ -855,6 +862,7 @@ interface AppState {
   selectAllWorkBlocks: () => void;
   clearSelection: () => void;
   setWorkReportStyle: (style: "brief" | "standard" | "formal") => void;
+  setWorkReportGenerationRequirement: (requirement: string) => void;
   setPreviewModalOpen: (open: boolean) => void;
   setSidePanelDrawerOpen: (open: boolean) => void;
   ignoreTimelineBlock: (id: string) => void;
@@ -1097,6 +1105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workReportGenerating: false,
   workReportError: null,
   workReportStyle: "standard",
+  workReportGenerationRequirement: "",
   previewModalOpen: false,
   personalReviewGenerating: false,
   personalReviewError: null,
@@ -1715,6 +1724,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           notification: patch.notification ?? previous.notification,
           endOfDayReview: patch.endOfDayReview ?? previous.endOfDayReview,
           dailyReport: patch.dailyReport ?? previous.dailyReport,
+          reportRequirements:
+            patch.reportRequirements ?? previous.reportRequirements,
           onboardingCompleted: patch.onboardingCompleted ?? previous.onboardingCompleted,
           debug: patch.debug ?? previous.debug,
         },
@@ -1985,16 +1996,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   /**
    * 生成个人复盘（调用 LLM），完成后重新加载
    */
-  generatePersonalReview: async (dateKey: string) => {
+  generatePersonalReview: async (
+    dateKey: string,
+    generationRequirement?: string
+  ) => {
     set({ personalReviewGenerating: true, personalReviewError: null });
     try {
-      const res = await getIpc().personalReview.generate(dateKey);
+      const res = await getIpc().personalReview.generate({
+        dateKey,
+        ...(generationRequirement ? { generationRequirement } : {}),
+      });
       if (!res.ok) throw new Error(res.error ?? "复盘生成失败");
       await get().loadTodayPageData(dateKey);
       set({ personalReviewGenerating: false });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ personalReviewGenerating: false, personalReviewError: message });
+      return false;
     }
   },
 
@@ -2011,10 +2030,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         workReportGenerating: false,
         workReportSelectionMode: false,
         previewModalOpen: false,
+        workReportGenerationRequirement: "",
       });
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ workReportGenerating: false, workReportError: message });
+      return false;
     }
   },
 
@@ -2053,6 +2075,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         selectedBlockIds: [],
         previewModalOpen: false,
         workReportError: null,
+        workReportGenerationRequirement: "",
       });
     }
   },
@@ -2102,6 +2125,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearSelection: () => set({ selectedBlockIds: [] }),
 
   setWorkReportStyle: (style) => set({ workReportStyle: style }),
+
+  setWorkReportGenerationRequirement: (requirement) =>
+    set({ workReportGenerationRequirement: requirement }),
 
   setPreviewModalOpen: (open) => set({ previewModalOpen: open }),
 

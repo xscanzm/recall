@@ -22,4 +22,18 @@ export function registerAppHandlers(deps: IpcDeps): void {
     if (enabled !== input.enabled) ipcFail("launch_at_login_failed", "Windows 未能保存 Recall 登录自启动设置");
     return { ok: true, enabled };
   });
+  handleValidated(ipcMain, "window:minimize", () => {
+    deps.getMainWindow()?.minimize();
+    return { ok: true };
+  });
+  handleValidated(ipcMain, "window:toggleMaximize", () => {
+    const window = deps.getMainWindow();
+    if (window?.isMaximized()) window.unmaximize();
+    else window?.maximize();
+    return { ok: true };
+  });
+  handleValidated(ipcMain, "window:close", () => {
+    deps.getMainWindow()?.close();
+    return { ok: true };
+  });
 }
