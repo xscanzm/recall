@@ -19,6 +19,7 @@ import {
   Minus,
   Square,
   X,
+  Bell,
 } from "lucide-react";
 import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
@@ -59,6 +60,8 @@ interface AppShellProps {
 export const AppShell = ({ children }: AppShellProps) => {
   const currentPage = useAppStore((s) => s.currentPage);
   const setPage = useAppStore((s) => s.setPage);
+  const unreadReportCount = useAppStore((s) => s.unreadReports.length);
+  const markUnreadReportsRead = useAppStore((s) => s.markUnreadReportsRead);
   const appStatus = useAppStore((s) => s.appStatus);
   const isDebugEnabled = useAppStore((s) => s.settings?.debug?.enabled ?? false);
 
@@ -95,6 +98,11 @@ export const AppShell = ({ children }: AppShellProps) => {
     } catch (err) {
       console.error("窗口操作失败:", err);
     }
+  };
+
+  const handleOpenUnreadReports = () => {
+    setPage("reports");
+    markUnreadReportsRead();
   };
 
   const renderNavButton = ({ key, label, Icon }: NavItem) => (
@@ -141,6 +149,21 @@ export const AppShell = ({ children }: AppShellProps) => {
             actionLabel={isObserving ? "暂停观察" : "开始观察"}
           />
           <div className="app-shell__topbar-actions">
+            {unreadReportCount > 0 && (
+              <button
+                type="button"
+                className="app-shell__report-notice"
+                onClick={handleOpenUnreadReports}
+                aria-live="polite"
+                title="打开报告页"
+              >
+                <Bell size={15} aria-hidden="true" />
+                <span>
+                  有新的未读报告
+                  {unreadReportCount > 1 ? `（${unreadReportCount}）` : ""}
+                </span>
+              </button>
+            )}
             <UpdateBadge />
             <div className="window-controls" aria-label="窗口控制">
               <button

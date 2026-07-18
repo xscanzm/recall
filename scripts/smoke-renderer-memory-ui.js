@@ -441,6 +441,8 @@ const api = {
   reports: {
     list: async () => reports,
     get: async ({ id }) => reports.find((item) => item.id === id) || null,
+    getImage: async () => ({ ok: true, data: null }),
+    onImageReady: () => () => {},
     getEvidenceByIds: async ({ factIds = [], sceneIds = [], blockIds = [] }) => ({
       ok: true,
       data: {
@@ -486,6 +488,21 @@ const api = {
           projectNames: [copy?.projectName || "Recall 记忆系统重构"],
           topicTexts: [copy?.decisionFact || "Edges 不作为 L4 页面"],
         }],
+        windows: [{
+          id: "activity-window:scene_wechat_memory",
+          startAt: "2026-07-09T10:00:00.000Z",
+          endAt: "2026-07-09T10:10:00.000Z",
+          title: copy?.sceneTitle || "微信讨论 Recall 记忆系统分层",
+          summary: copy?.sceneSummary || "围绕分层记忆与关系层职责边界展开讨论。",
+          category: "communication",
+          categoryConfidence: 0.91,
+          sourceEpisodeIds: ["scene_wechat_memory"],
+          sourceObservationIds: observations.map((item) => item.id),
+          projectNames: [copy?.projectName || "Recall 记忆系统重构"],
+          topicTexts: [copy?.decisionFact || "Edges 不作为 L4 页面"],
+        }],
+        observedStartAt: "2026-07-09T10:00:00.000Z",
+        observedEndAt: "2026-07-09T10:10:00.000Z",
       },
     }),
   },

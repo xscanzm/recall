@@ -73,7 +73,7 @@ export interface AppSettings {
     inAppReminders: boolean;
     desktopNotifications: boolean;
     dailyReportTime: string; // HH:mm
-    weeklyReportTime: string; // HH:mm，每周日触发
+    weeklyReportTime: string; // HH:mm，每周五触发
   };
   endOfDayReview: {
     enabled: boolean;
@@ -81,12 +81,13 @@ export interface AppSettings {
     secondTime: string; // HH:mm
   };
   dailyReport: {
+    /** 兼容旧版设置，调度器不再读取此开关。 */
     autoGenerate: boolean;
     time: string; // HH:mm
   };
   /**
-   * 个人复盘定时设置（与 dailyReport 镜像，UI 后续可加）
-   * - autoGenerate: 用户是否开启每天自动生成复盘
+   * 个人复盘定时设置（与 dailyReport 镜像）
+   * - autoGenerate: 兼容旧版设置，调度器不再读取此开关
    * - time: 每天此时间（HH:mm）触发
    * - 默认 22:00（一天工作结束后回顾）
    */

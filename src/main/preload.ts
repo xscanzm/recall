@@ -11,7 +11,7 @@
 // - API Key 不通过此桥暴露
 
 import { contextBridge, ipcRenderer, IpcRendererEvent } from "electron";
-import type { AppStatus, IpcResult } from "../shared/types";
+import type { AppStatus, IpcResult, ReportGeneratedEvent } from "../shared/types";
 import { invokeValidated } from "./ipc/invokeValidated";
 import type { IpcRequest } from "../shared/ipcContracts";
 
@@ -211,6 +211,11 @@ const recallApi = {
   reports: {
     list: <T>(input?: unknown): Promise<T[]> => ipcRenderer.invoke("reports:list", input),
     get: <T>(input: { id: string }): Promise<T | null> => ipcRenderer.invoke("reports:get", input),
+    getImage: (input: IpcRequest<"reports:getImage">) =>
+      invokeValidated(ipcRenderer, "reports:getImage", input),
+    getNotification: () => invokeValidated(ipcRenderer, "reports:notification:get"),
+    dismissNotification: () => invokeValidated(ipcRenderer, "reports:notification:dismiss"),
+    openNotification: () => invokeValidated(ipcRenderer, "reports:notification:open"),
     getEvidenceByIds: (input: {
       factIds?: string[];
       sceneIds?: string[];
@@ -231,6 +236,16 @@ const recallApi = {
       ipcRenderer.invoke("reports:update", input),
     delete: (input: { id: string }): Promise<boolean> =>
       ipcRenderer.invoke("reports:delete", input),
+    onImageReady: (callback: (payload: { reportId: string }) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, payload: { reportId: string }): void => callback(payload);
+      ipcRenderer.on("reports:imageReady", handler);
+      return () => ipcRenderer.removeListener("reports:imageReady", handler);
+    },
+    onGenerated: (callback: (payload: ReportGeneratedEvent) => void): (() => void) => {
+      const handler = (_event: IpcRendererEvent, payload: ReportGeneratedEvent): void => callback(payload);
+      ipcRenderer.on("reports:generated", handler);
+      return () => ipcRenderer.removeListener("reports:generated", handler);
+    },
   },
 
   // -------------------- capture --------------------

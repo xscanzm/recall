@@ -270,6 +270,7 @@ const demoSettings = {
     secondTime: "18:00",
   },
   dailyReport: { autoGenerate: false, time: "18:00" },
+  personalReview: { autoGenerate: false, time: "22:00" },
   onboardingCompleted: true,
   debug: { enabled: false, verboseModelIO: false },
   reportRequirements: {

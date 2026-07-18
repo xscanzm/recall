@@ -13,6 +13,7 @@ import type {
   PersonalReview,
   WorkReport,
   UnfinishedThread,
+  ReportGeneratedEvent,
 } from "../../shared/types";
 import type { UpdateStatus, DownloadProgress } from "../../shared/updateTypes";
 import type { ReportRequirements } from "../../shared/reportRequirements";
@@ -409,6 +410,10 @@ export interface AppSettingsState {
     autoGenerate: boolean;
     time: string;
   };
+  personalReview: {
+    autoGenerate: boolean;
+    time: string;
+  };
   reportRequirements: ReportRequirements;
   onboardingCompleted: boolean;
   debug: {
@@ -523,6 +528,37 @@ export interface ReportItem {
   staleAt?: string | null;
   /** 010 字段：关联项目 ID（用于历史报告按项目过滤） */
   projectId?: string | null;
+}
+
+const UNREAD_REPORTS_STORAGE_KEY = "recall.unread-reports.v1";
+
+function readStoredUnreadReports(): ReportGeneratedEvent[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(UNREAD_REPORTS_STORAGE_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is ReportGeneratedEvent => {
+      if (!item || typeof item !== "object") return false;
+      const value = item as Record<string, unknown>;
+      return (
+        typeof value.reportId === "string" &&
+        typeof value.type === "string" &&
+        typeof value.title === "string" &&
+        typeof value.dateKey === "string"
+      );
+    }).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
+function persistUnreadReports(reports: ReportGeneratedEvent[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(UNREAD_REPORTS_STORAGE_KEY, JSON.stringify(reports));
+  } catch {
+    // localStorage 不可用时不影响报告生成和页面展示。
+  }
 }
 
 /**
@@ -663,6 +699,8 @@ interface AppState {
   personalReview: PersonalReview | null;
   /** 当前查看的工作日报（与 todayPageData.workReport 区分，专供报告页使用） */
   workReport: WorkReport | null;
+  /** 正式报告生成后尚未进入报告页查看的报告。 */
+  unreadReports: ReportGeneratedEvent[];
   /** 历史 Tab 的报告列表 */
   reportsList: ReportItem[];
   /** 报告页加载状态 */
@@ -907,6 +945,10 @@ interface AppState {
   setReportsWeekStart: (dateKey: string) => void;
   /** 设置报告页月份 key */
   setReportsMonthKey: (monthKey: string) => void;
+  /** 收到新的正式报告事件，更新右上角未读提醒。 */
+  addUnreadReport: (report: ReportGeneratedEvent) => void;
+  /** 用户进入报告页或点击提醒后清除未读报告。 */
+  markUnreadReportsRead: () => void;
   /** 加载指定日期的个人复盘（专供报告页使用，写入 state.personalReview） */
   loadPersonalReview: (dateKey: string) => Promise<void>;
   /** 加载指定日期的工作日报（专供报告页使用，写入 state.workReport） */
@@ -1133,6 +1175,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   reportsMonthKey: currentMonthKey(),
   personalReview: null,
   workReport: null,
+  unreadReports: readStoredUnreadReports(),
   reportsList: [],
   reportsLoading: false,
   reportsError: null,
@@ -1724,6 +1767,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           notification: patch.notification ?? previous.notification,
           endOfDayReview: patch.endOfDayReview ?? previous.endOfDayReview,
           dailyReport: patch.dailyReport ?? previous.dailyReport,
+          personalReview: patch.personalReview ?? previous.personalReview,
           reportRequirements:
             patch.reportRequirements ?? previous.reportRequirements,
           onboardingCompleted: patch.onboardingCompleted ?? previous.onboardingCompleted,
@@ -2304,6 +2348,20 @@ export const useAppStore = create<AppState>((set, get) => ({
   setReportsWeekStart: (dateKey) => set({ reportsWeekStart: dateKey }),
 
   setReportsMonthKey: (monthKey) => set({ reportsMonthKey: monthKey }),
+
+  addUnreadReport: (report) => {
+    const next = [
+      report,
+      ...get().unreadReports.filter((item) => item.reportId !== report.reportId),
+    ].slice(0, 50);
+    persistUnreadReports(next);
+    set({ unreadReports: next });
+  },
+
+  markUnreadReportsRead: () => {
+    persistUnreadReports([]);
+    set({ unreadReports: [] });
+  },
 
   /**
    * 加载指定日期的个人复盘（调用 personalReview:get IPC，写入 state.personalReview）

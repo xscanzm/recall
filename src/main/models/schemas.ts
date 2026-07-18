@@ -1716,6 +1716,73 @@ export const WeeklyReportOutputSchema = z.preprocess(
   WeeklyReportOutputCoreSchema
 );
 
+/**
+ * 月报输出归一化函数。
+ *
+ * 月报沿用周报的项目/成果/决策/风险结构，但周期字段和下一阶段建议必须
+ * 使用月报语义。对模型偶尔返回的 weekStart/weekEnd/nextWeekSuggestions 做
+ * 兼容映射，最终只允许月报字段进入 schema。
+ */
+function normalizeMonthlyReportOutput(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const obj = normalizeKeysToCamel(data);
+  const monthStart =
+    typeof obj.monthStart === "string"
+      ? obj.monthStart
+      : typeof obj.weekStart === "string"
+      ? obj.weekStart
+      : "";
+  const monthEnd =
+    typeof obj.monthEnd === "string"
+      ? obj.monthEnd
+      : typeof obj.weekEnd === "string"
+      ? obj.weekEnd
+      : "";
+  const nextMonthSuggestions = normalizeStringArray(
+    obj.nextMonthSuggestions ?? obj.nextWeekSuggestions ?? obj.suggestions
+  );
+
+  const normalized = normalizeWeeklyReportOutput({
+    ...obj,
+    weekStart: monthStart,
+    weekEnd: monthEnd,
+    nextWeekSuggestions: nextMonthSuggestions,
+  });
+  if (!normalized || typeof normalized !== "object") return normalized;
+
+  const result = { ...(normalized as Record<string, unknown>) };
+  delete result.weekStart;
+  delete result.weekEnd;
+  delete result.nextWeekSuggestions;
+  result.monthStart = monthStart;
+  result.monthEnd = monthEnd;
+  result.nextMonthSuggestions = nextMonthSuggestions;
+  return result;
+}
+
+/**
+ * 月报输出 schema。
+ *
+ * 内容板块与周报保持一致，周期和下一阶段字段明确使用月报语义，避免模型
+ * 继续沿用“本周 / 下周”的输出契约。
+ */
+const MonthlyReportOutputCoreSchema = WeeklyReportOutputCoreSchema
+  .omit({
+    weekStart: true,
+    weekEnd: true,
+    nextWeekSuggestions: true,
+  })
+  .extend({
+    monthStart: z.string(),
+    monthEnd: z.string(),
+    nextMonthSuggestions: z.array(z.string().max(TEXT_LIMITS.factContent)),
+  });
+
+export const MonthlyReportOutputSchema = z.preprocess(
+  normalizeMonthlyReportOutput,
+  MonthlyReportOutputCoreSchema
+);
+
 // ============================================================================
 // Phase 2 新增 Schema（doc 19 / doc 20 / spec.md Phase 2）
 // ============================================================================
@@ -3192,6 +3259,7 @@ export const MODEL_OUTPUT_SCHEMAS = {
   judge: JudgeOutputSchema,
   daily_report: DailyReportOutputSchema,
   weekly_report: WeeklyReportOutputSchema,
+  monthly_report: MonthlyReportOutputSchema,
   // Phase 2 新增
   observer_v2: ObserverOutputV2Schema,
   extractor_v2: ExtractorOutputV2Schema,
@@ -3223,6 +3291,7 @@ export type SceneBuilderOutput = z.infer<typeof SceneBuilderOutputSchema>;
 export type JudgeOutput = z.infer<typeof JudgeOutputSchema>;
 export type DailyReportOutput = z.infer<typeof DailyReportOutputSchema>;
 export type WeeklyReportOutput = z.infer<typeof WeeklyReportOutputSchema>;
+export type MonthlyReportOutput = z.infer<typeof MonthlyReportOutputSchema>;
 
 /**
  * Phase 2 类型说明

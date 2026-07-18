@@ -67,6 +67,10 @@ export type IpcChannel =
   | "reminders:updateStatus"
   | "reports:list"
   | "reports:get"
+  | "reports:getImage"
+  | "reports:notification:get"
+  | "reports:notification:dismiss"
+  | "reports:notification:open"
   | "reports:getEvidenceByIds"
   | "reports:generate"
   | "reports:update"
@@ -107,7 +111,9 @@ export type IpcPushChannel =
   | "app:statusChanged" // AppStatus 变化时推送
   | "pipeline:progress" // pipeline 进度（M4 使用）
   | "update:progress" // 下载进度推送
-  | "update:statusChanged"; // 更新状态变化推送
+  | "update:statusChanged" // 更新状态变化推送
+  | "reports:imageReady" // 信息图保存完成
+  | "reports:generated"; // 正式报告正文成功落库
 
 /**
  * 全部 invoke channel 列表（用于白名单校验）
@@ -161,6 +167,10 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "reminders:updateStatus",
   "reports:list",
   "reports:get",
+  "reports:getImage",
+  "reports:notification:get",
+  "reports:notification:dismiss",
+  "reports:notification:open",
   "reports:getEvidenceByIds",
   "reports:generate",
   "reports:update",
@@ -209,6 +219,8 @@ export const ALL_PUSH_CHANNELS: readonly IpcPushChannel[] = [
   "pipeline:progress",
   "update:progress",
   "update:statusChanged",
+  "reports:imageReady",
+  "reports:generated",
 ] as const;
 
 export function isPushChannel(value: string): value is IpcPushChannel {

@@ -230,6 +230,21 @@ export const ipcContracts = {
         projectNames: stringArray,
         topicTexts: stringArray,
       })),
+      windows: z.array(z.object({
+        id: z.string(),
+        startAt: z.string(),
+        endAt: z.string(),
+        title: z.string(),
+        summary: z.string(),
+        category: z.enum(["focus_work", "communication", "research", "writing", "coding", "design", "meeting", "admin", "break", "mixed", "unknown"]),
+        categoryConfidence: z.number().min(0).max(1),
+        sourceEpisodeIds: stringArray,
+        sourceObservationIds: stringArray,
+        projectNames: stringArray,
+        topicTexts: stringArray,
+      })),
+      observedStartAt: z.string().nullable(),
+      observedEndAt: z.string().nullable(),
     })),
   },
   "workReport:generate": {
@@ -244,6 +259,27 @@ export const ipcContracts = {
   },
   "workReport:get": { request: dateKey, response: ipcResult(WorkReportSchema.nullable()) },
   "workReport:saveSelection": { request: z.object({ dateKey, selectedBlockIds: stringArray, excludedBlockIds: stringArray }), response: ipcResult(z.null()) },
+  "reports:getImage": {
+    request: z.object({ id: z.string().min(1).max(200) }),
+    response: ipcResult(z.object({ dataUrl: z.string(), mimeType: z.string() }).nullable()),
+  },
+  "reports:notification:get": {
+    request: z.undefined(),
+    response: z.object({
+      reportId: z.string(),
+      type: z.string(),
+      title: z.string(),
+      dateKey: z.string(),
+    }).nullable(),
+  },
+  "reports:notification:dismiss": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "reports:notification:open": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
   // 版本更新
   "app:getVersion": { request: z.undefined(), response: z.object({ version: z.string() }) },
   "update:check": {

@@ -16,7 +16,7 @@
 import { app, BrowserWindow, powerMonitor } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/handlers";
-import type { AppStatus } from "../shared/types";
+import type { AppStatus, ReportGeneratedEvent } from "../shared/types";
 import { APP_NAME_ZH } from "../shared/constants";
 import { getDatabase, closeDatabase } from "./db/Database";
 import { MemorySearchRepository } from "./db/repositories/MemorySearchRepository";
@@ -53,6 +53,7 @@ import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
 import { TimelineBuildCheckpointRepository } from "./db/repositories/TimelineBuildCheckpointRepository";
 import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
 import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
+import { InfographicService } from "./services/InfographicService";
 import { EndOfDayReviewService } from "./services/EndOfDayReviewService";
 import { SceneScheduler } from "./services/SceneScheduler";
 import { CaptureBatcher } from "./services/CaptureBatcher";
@@ -69,6 +70,7 @@ import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./s
 import { UpdateService } from "./services/UpdateService";
 import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
 import { formatLocalDateKey } from "./utils/dateKey";
+import type { Report } from "./models/types";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
 
@@ -121,6 +123,10 @@ function subscribeStatus(listener: (status: AppStatus) => void): () => void {
 // ============================================================================
 
 let mainWindow: BrowserWindow | null = null;
+/** Renderer 尚未完成加载时暂存的报告生成事件，避免启动补跑丢失未读提醒。 */
+let pendingReportGeneratedEvents: ReportGeneratedEvent[] = [];
+/** 收工回顾服务创建前暂存的报告桌面卡片，避免启动补跑丢失弹窗。 */
+let pendingReportNotifications: ReportGeneratedEvent[] = [];
 // tray 由 TrayService 单例管理，不再需要模块级变量
 
 // ============================================================================
@@ -258,6 +264,13 @@ function createMainWindow(): BrowserWindow {
     mainWindow = null;
   });
 
+  win.webContents.on("did-finish-load", () => {
+    // 给 renderer 一次事件循环完成 IPC 订阅，再补发启动期间的报告事件。
+    setTimeout(() => {
+      if (mainWindow === win) flushPendingReportGeneratedEvents(win);
+    }, 0);
+  });
+
   win.webContents.on("render-process-gone", (_event, details) => {
     logger.error({
       status: "failed",
@@ -289,6 +302,91 @@ function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+function queuePendingReportGeneratedEvent(payload: ReportGeneratedEvent): void {
+  pendingReportGeneratedEvents = [
+    payload,
+    ...pendingReportGeneratedEvents.filter((event) => event.reportId !== payload.reportId),
+  ].slice(0, 50);
+}
+
+function flushPendingReportGeneratedEvents(win: BrowserWindow): void {
+  if (win.isDestroyed() || pendingReportGeneratedEvents.length === 0) {
+    return;
+  }
+  const pending = pendingReportGeneratedEvents;
+  pendingReportGeneratedEvents = [];
+  for (const payload of pending) {
+    try {
+      win.webContents.send("reports:generated", payload);
+    } catch {
+      queuePendingReportGeneratedEvent(payload);
+    }
+  }
+}
+
+function sendReportGeneratedEvent(payload: ReportGeneratedEvent): void {
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || win.webContents.isLoading()) {
+    queuePendingReportGeneratedEvent(payload);
+    return;
+  }
+  try {
+    win.webContents.send("reports:generated", payload);
+  } catch {
+    queuePendingReportGeneratedEvent(payload);
+  }
+}
+
+function queueReportNotification(payload: ReportGeneratedEvent): void {
+  pendingReportNotifications = [
+    payload,
+    ...pendingReportNotifications.filter((event) => event.reportId !== payload.reportId),
+  ].slice(0, 50);
+}
+
+function openReportsFromNotification(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createMainWindow();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+  if (!mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.send("app:navigate", "reports");
+  } else {
+    mainWindow.webContents.once("did-finish-load", () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("app:navigate", "reports");
+      }
+    });
+  }
+}
+
+function notifyReportGenerated(report: Report): void {
+  const payload: ReportGeneratedEvent = {
+    reportId: report.id,
+    type: report.type,
+    title: report.title,
+    dateKey: report.dateKey,
+  };
+
+  // 正文落库事件独立于信息图，信息图失败也不能影响未读提醒。
+  // 窗口尚未加载时先暂存，待 renderer 完成加载后补发。
+  sendReportGeneratedEvent(payload);
+
+  // 报告生成是用户明确触发或已配置的自动任务，成功后只提示一次。
+  // 复用收工回顾的独立桌面卡片，而不是使用 Windows 原生通知样式。
+  try {
+    if (endOfDayReviewService) {
+      endOfDayReviewService.showReportNotification(payload);
+    } else {
+      queueReportNotification(payload);
+    }
+  } catch {
+    // 桌面卡片不可用时保留未读事件，不影响正文已成功落库。
+    queueReportNotification(payload);
+  }
 }
 
 // ============================================================================
@@ -515,6 +613,14 @@ app.whenReady().then(async () => {
   // -------- M6 Reporter + Scheduler 初始化 --------
   // ReportRepository：报告数据访问
   const reportRepo = new ReportRepository(db);
+  // 信息图是正文落库后的异步能力；共享密钥只存在 Cloudflare Worker Secret。
+  const infographicService = new InfographicService({
+    onImageReady: (reportId) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("reports:imageReady", { reportId });
+      }
+    },
+  });
 
   // ReporterWorker：日报/周报生成
   const reporterWorker = new ReporterWorker({
@@ -526,6 +632,8 @@ app.whenReady().then(async () => {
     memoryObjectRepo,
     proactiveItemRepo,
     settingsService,
+    infographicService,
+    onReportGenerated: notifyReportGenerated,
   });
 
   // -------- Phase 2 新增 Workers --------
@@ -569,6 +677,8 @@ app.whenReady().then(async () => {
     reportRepo,
     settingsService,
     timelineBuilderWorker,
+    infographicService,
+    onReportGenerated: notifyReportGenerated,
   });
 
   // WorkReportWriterWorker：工作日报撰写员
@@ -583,6 +693,8 @@ app.whenReady().then(async () => {
     reportRepo,
     settingsService,
     timelineBuilderWorker,
+    infographicService,
+    onReportGenerated: notifyReportGenerated,
   });
 
   // Phase 2 B2：TimelineBuilder 自动调度（每 10 分钟增量落盘当天时间轴）
@@ -688,7 +800,11 @@ app.whenReady().then(async () => {
     resumeSources: startObserving,
     cascade: (facts, scenes) => cascadeMarkAfterFactSceneDelete({
       db, factRepo, sceneRepo, memoryObjectRepo, reportRepo, memoryEdgeRepo,
+      onReportsStale: (reportIds) => {
+        for (const reportId of reportIds) void infographicService.deleteImage(reportId);
+      },
     }, facts, scenes),
+    infographicService,
   });
 
   // 6. 订阅 CaptureService 的 capture-bundle 事件
@@ -727,6 +843,7 @@ app.whenReady().then(async () => {
     timelineBlockRepo,
     unfinishedThreadRepo,
     getMainWindow: () => mainWindow,
+    openReports: openReportsFromNotification,
     openToday: () => {
       if (!mainWindow || mainWindow.isDestroyed()) mainWindow = createMainWindow();
       mainWindow.show();
@@ -737,6 +854,14 @@ app.whenReady().then(async () => {
     devServerUrl: process.env.VITE_DEV_SERVER_URL,
   });
   endOfDayReviewService.start();
+  for (const report of pendingReportNotifications) {
+    try {
+      endOfDayReviewService.showReportNotification(report);
+    } catch {
+      // 窗口创建失败时保留右上角未读提醒即可。
+    }
+  }
+  pendingReportNotifications = [];
 
   // 版本更新服务
   updateService = new UpdateService({ settingsService });
@@ -783,6 +908,7 @@ app.whenReady().then(async () => {
     memoryObjectRepo,
     proactiveItemRepo,
     reportRepo,
+    infographicService,
     reporterWorker,
     reportScheduler,
     activityService,

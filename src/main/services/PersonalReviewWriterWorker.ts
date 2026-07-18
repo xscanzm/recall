@@ -22,7 +22,7 @@ import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 import type { FactRepository } from "../db/repositories/FactRepository";
-import type { Fact } from "../models/types";
+import type { Fact, Report } from "../models/types";
 import type { PersonalReviewInput, PersonalReviewOutput } from "../models/types";
 import { PersonalReviewOutputSchema } from "../models/schemas";
 import { PERSONAL_REVIEW_PROMPT_TEMPLATE } from "../models/prompts";
@@ -33,6 +33,7 @@ import {
   hasReportGenerationRequirements,
   resolveReportGenerationRequirements,
 } from "./reportRequirements";
+import type { InfographicService } from "./InfographicService";
 
 // ============================================================================
 // 输入 / 输出类型
@@ -46,7 +47,7 @@ export interface PersonalReviewResult {
   /** 已落库的 PersonalReview 实体（ok=true 时包含） */
   review?: PersonalReview;
   /** 写入数据库的 report 记录（含 id / createdAt / updatedAt） */
-  reportRecord?: import("../models/types").Report;
+  reportRecord?: Report;
   modelJobId?: string;
   errorCode?: string;
   errorMessage?: string;
@@ -86,6 +87,8 @@ export class PersonalReviewWriterWorker {
   private readonly reportRepo: ReportRepository;
   private readonly settingsService: SettingsService | null;
   private readonly timelineBuilderWorker: TimelineBuilderWorker | null;
+  private readonly infographicService: InfographicService | null;
+  private readonly onReportGenerated?: (report: Report) => void;
 
   constructor(deps: {
     modelGateway: ModelGateway;
@@ -96,6 +99,8 @@ export class PersonalReviewWriterWorker {
     reportRepo: ReportRepository;
     settingsService?: SettingsService;
     timelineBuilderWorker?: TimelineBuilderWorker;
+    infographicService?: InfographicService;
+    onReportGenerated?: (report: Report) => void;
   }) {
     this.modelGateway = deps.modelGateway;
     this.modelJobQueue = deps.modelJobQueue;
@@ -105,6 +110,8 @@ export class PersonalReviewWriterWorker {
     this.reportRepo = deps.reportRepo;
     this.settingsService = deps.settingsService ?? null;
     this.timelineBuilderWorker = deps.timelineBuilderWorker ?? null;
+    this.infographicService = deps.infographicService ?? null;
+    this.onReportGenerated = deps.onReportGenerated;
   }
 
   /**
@@ -242,6 +249,8 @@ export class PersonalReviewWriterWorker {
       review,
       reportRequirements
     );
+    this.onReportGenerated?.(reportRecord);
+    void this.infographicService?.generateForReport(reportRecord, reportRequirements);
 
     // 用 DB 实际的 id / createdAt / updatedAt 回填 review，保持与持久化记录一致
     const persistedReview: PersonalReview = {

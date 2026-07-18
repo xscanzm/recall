@@ -230,6 +230,14 @@ export interface WorkReport {
   updatedAt?: string;
 }
 
+/** 报告正文成功落库后推送给 renderer 的轻量事件。 */
+export interface ReportGeneratedEvent {
+  reportId: string;
+  type: string;
+  title: string;
+  dateKey: string;
+}
+
 /**
  * TodayPageData：今日页一次性加载所需的数据（doc 21 Phase 3）
  *
@@ -278,7 +286,24 @@ export interface TodayActivityEpisode {
   topicTexts: string[];
 }
 
+export interface TodayActivityWindow {
+  id: string;
+  startAt: string;
+  endAt: string;
+  title: string;
+  summary: string;
+  category: TimelineBlockCategory;
+  categoryConfidence: number;
+  sourceEpisodeIds: string[];
+  sourceObservationIds: string[];
+  projectNames: string[];
+  topicTexts: string[];
+}
+
 export interface TodayActivityOverview {
   stats: TodayActivityStats;
   episodes: TodayActivityEpisode[];
+  windows: TodayActivityWindow[];
+  observedStartAt: string | null;
+  observedEndAt: string | null;
 }

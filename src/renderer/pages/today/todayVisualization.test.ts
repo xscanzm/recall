@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { TodayActivityEpisode } from "../../../shared/types";
+import type { TodayActivityEpisode, TodayActivityWindow } from "../../../shared/types";
 import {
   buildAttentionSegmentsFromStats,
   buildRhythmRoutePath,
   buildRhythmSegments,
+  buildRhythmTimeMarkers,
   buildTodayWords,
-  clockMinutesToRoutePercent,
   formatVisualizationDuration,
 } from "./todayVisualization";
 
@@ -18,6 +18,23 @@ function episode(overrides: Partial<TodayActivityEpisode> = {}): TodayActivityEp
     summary: "",
     category: "coding",
     categoryConfidence: 0.9,
+    sourceObservationIds: ["obs-1"],
+    projectNames: ["回声 Recall"],
+    topicTexts: ["完成词云交互设计"],
+    ...overrides,
+  };
+}
+
+function activityWindow(overrides: Partial<TodayActivityWindow> = {}): TodayActivityWindow {
+  return {
+    id: "activity-window:episode-1",
+    startAt: "2026-07-17T09:00:00+08:00",
+    endAt: "2026-07-17T10:00:00+08:00",
+    title: "修复 Recall 时间轴渲染问题",
+    summary: "",
+    category: "coding",
+    categoryConfidence: 0.9,
+    sourceEpisodeIds: ["episode-1"],
     sourceObservationIds: ["obs-1"],
     projectNames: ["回声 Recall"],
     topicTexts: ["完成词云交互设计"],
@@ -56,32 +73,84 @@ describe("today visualization data", () => {
     expect(segments.find((segment) => segment.category === "coding")?.percentage).toBe(25);
   });
 
-  it("uses clock positions and excludes future content for today", () => {
+  it("maps windows linearly to the observed domain and excludes future content", () => {
     const now = new Date("2026-07-17T10:00:00+08:00");
     const segments = buildRhythmSegments([
-      episode({ endAt: "2026-07-17T11:00:00+08:00" }),
-      episode({
-        id: "episode-2",
+      activityWindow({ endAt: "2026-07-17T11:00:00+08:00" }),
+      activityWindow({
+        id: "activity-window:episode-2",
         startAt: "2026-07-17T10:30:00+08:00",
         endAt: "2026-07-17T11:00:00+08:00",
         category: "communication",
       }),
-    ], now);
+    ], {
+      startAt: "2026-07-17T09:00:00+08:00",
+      endAt: "2026-07-17T11:00:00+08:00",
+    }, now);
 
     expect(segments).toHaveLength(1);
-    expect(segments[0].startPercent).toBeCloseTo(15);
-    expect(segments[0].widthPercent).toBeCloseTo(7);
+    expect(segments[0].startPercent).toBeCloseTo(0);
+    expect(segments[0].widthPercent).toBeCloseTo(100);
     expect(segments[0].endLabel).toBe("10:00");
   });
 
-  it("expands 08:00 to 20:00 across most of the route", () => {
-    expect(clockMinutesToRoutePercent(0)).toBe(0);
-    expect(clockMinutesToRoutePercent(8 * 60)).toBe(8);
-    expect(clockMinutesToRoutePercent(10 * 60)).toBe(22);
-    expect(clockMinutesToRoutePercent(14 * 60)).toBe(50);
-    expect(clockMinutesToRoutePercent(18 * 60)).toBe(78);
-    expect(clockMinutesToRoutePercent(20 * 60)).toBe(92);
-    expect(clockMinutesToRoutePercent(24 * 60)).toBe(100);
+  it("keeps the real relative distance between activity windows", () => {
+    const segments = buildRhythmSegments([
+      activityWindow({ endAt: "2026-07-17T09:05:00+08:00" }),
+      activityWindow({
+        id: "activity-window:episode-2",
+        startAt: "2026-07-17T10:00:00+08:00",
+        endAt: "2026-07-17T10:05:00+08:00",
+      }),
+    ], {
+      startAt: "2026-07-17T09:00:00+08:00",
+      endAt: "2026-07-17T11:00:00+08:00",
+    }, new Date("2026-07-18T12:00:00+08:00"));
+
+    expect(segments[0].startPercent).toBeCloseTo(0);
+    expect(segments[0].widthPercent).toBeCloseTo(4.1667);
+    expect(segments[1].startPercent).toBeCloseTo(50);
+  });
+
+  it("keeps content windows across horizontal and curved route sections", () => {
+    const segments = buildRhythmSegments([
+      activityWindow({
+        id: "activity-window:long-horizontal",
+        startAt: "2026-07-17T09:05:00+08:00",
+        endAt: "2026-07-17T09:15:00+08:00",
+      }),
+      activityWindow({
+        id: "activity-window:short-horizontal",
+        startAt: "2026-07-17T09:20:00+08:00",
+        endAt: "2026-07-17T09:22:00+08:00",
+      }),
+      activityWindow({
+        id: "activity-window:curved",
+        startAt: "2026-07-17T09:35:00+08:00",
+        endAt: "2026-07-17T09:45:00+08:00",
+      }),
+    ], {
+      startAt: "2026-07-17T09:00:00+08:00",
+      endAt: "2026-07-17T11:00:00+08:00",
+    }, new Date("2026-07-18T12:00:00+08:00"));
+
+    expect(segments.map((segment) => segment.id)).toEqual([
+      "activity-window:long-horizontal",
+      "activity-window:short-horizontal",
+      "activity-window:curved",
+    ]);
+    expect(segments.every((segment) => segment.widthPercent > 0)).toBe(true);
+  });
+
+  it("creates dynamic time markers from the observed domain", () => {
+    const markers = buildRhythmTimeMarkers({
+      startAt: "2026-07-17T09:12:00+08:00",
+      endAt: "2026-07-17T11:40:00+08:00",
+    });
+
+    expect(markers[0].label).toBe("09:12");
+    expect(markers.at(-1)?.label).toBe("11:40");
+    expect(markers.some((marker) => marker.label === "10:00")).toBe(true);
   });
 
   it("builds one local path for each timeline item", () => {
@@ -90,39 +159,45 @@ describe("today visualization data", () => {
     expect(path).not.toContain("NaN");
   });
 
-  it("keeps short items visible without extending past now", () => {
+  it("keeps short items as colored segments without extending past now", () => {
     const now = new Date("2026-07-17T10:00:00+08:00");
     const [segment] = buildRhythmSegments([
-      episode({
+      activityWindow({
         startAt: "2026-07-17T09:59:50+08:00",
         endAt: "2026-07-17T10:00:00+08:00",
       }),
-    ], now);
+    ], {
+      startAt: "2026-07-17T09:00:00+08:00",
+      endAt: "2026-07-17T10:00:00+08:00",
+    }, now);
 
-    expect(segment.widthPercent).toBeGreaterThan(0.28);
-    expect(segment.startPercent + segment.widthPercent).toBeLessThanOrEqual(22);
+    expect(segment.widthPercent).toBeCloseTo(0.2778);
+    expect(segment.startPercent).toBeCloseTo(99.7222);
+    expect(segment.endLabel).toBe("10:00");
   });
 
-  it("packs nearby short items without hiding either one", () => {
+  it("does not pack windows away from their actual positions", () => {
     const now = new Date("2026-07-17T11:00:00+08:00");
     const segments = buildRhythmSegments([
-      episode({
-        id: "short-1",
+      activityWindow({
+        id: "activity-window:short-1",
         startAt: "2026-07-17T09:59:50+08:00",
         endAt: "2026-07-17T10:00:00+08:00",
       }),
-      episode({
-        id: "short-2",
+      activityWindow({
+        id: "activity-window:short-2",
         startAt: "2026-07-17T10:00:05+08:00",
         endAt: "2026-07-17T10:00:15+08:00",
         category: "design",
       }),
-    ], now);
+    ], {
+      startAt: "2026-07-17T09:00:00+08:00",
+      endAt: "2026-07-17T11:00:00+08:00",
+    }, now);
 
     expect(segments).toHaveLength(2);
-    expect(segments[0].startPercent + segments[0].widthPercent).toBeLessThan(
-      segments[1].startPercent
-    );
+    expect(segments[0].startPercent).toBeCloseTo(49.8611);
+    expect(segments[1].startPercent).toBeCloseTo(50.0694);
   });
 
   it("prioritizes project names and produces varied cloud styling", () => {

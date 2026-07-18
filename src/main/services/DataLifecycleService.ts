@@ -3,6 +3,7 @@ import type { ObservationRepository } from "../db/repositories/ObservationReposi
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { ScreenshotCache } from "./ScreenshotCache";
+import type { InfographicService } from "./InfographicService";
 import type { CaptureService } from "./CaptureService";
 import type { CaptureBatcher } from "./CaptureBatcher";
 import type { BatchProcessor } from "./BatchProcessor";
@@ -30,6 +31,7 @@ interface Dependencies {
   pauseSources: () => void;
   resumeSources: () => void;
   cascade: (facts: Fact[], scenes: Scene[]) => void;
+  infographicService?: InfographicService;
 }
 
 const CLEAR_TABLES = [
@@ -89,6 +91,7 @@ export class DataLifecycleService {
         for (const table of CLEAR_TABLES) this.deps.db.prepare(`DELETE FROM ${table}`).run();
       })();
       const fileCleanup = await this.cleanupFiles(paths, true);
+      await this.deps.infographicService?.clearAllImages();
       return { ok: true as const, deletedObservations: observations.length, deletedScreenshots: fileCleanup.deleted, fileCleanup };
     });
   }

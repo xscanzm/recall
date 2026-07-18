@@ -42,7 +42,9 @@ export default function App() {
   useEffect(() => {
     const ipc = getIpc();
     const unsub = ipc.app.onNavigate((page) => {
-      if (page === "today") useAppStore.getState().setPage("today");
+      if (page === "today" || page === "reports") {
+        useAppStore.getState().setPage(page);
+      }
     });
     return unsub;
   }, []);
@@ -51,7 +53,16 @@ export default function App() {
     let unsub: (() => void) | undefined;
     let unsubProgress: (() => void) | undefined;
     let unsubUpdateStatus: (() => void) | undefined;
+    let unsubReportsGenerated: (() => void) | undefined;
     let cancelled = false;
+
+    try {
+      unsubReportsGenerated = getIpc().reports.onGenerated((report) => {
+        useAppStore.getState().addUnreadReport(report);
+      });
+    } catch {
+      // preload 不可用时由启动流程统一展示错误。
+    }
 
     async function boot() {
       try {
@@ -111,6 +122,7 @@ export default function App() {
       if (unsub) unsub();
       if (unsubProgress) unsubProgress();
       if (unsubUpdateStatus) unsubUpdateStatus();
+      if (unsubReportsGenerated) unsubReportsGenerated();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

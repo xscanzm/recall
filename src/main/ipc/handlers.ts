@@ -88,6 +88,7 @@ import type { MemorySearchRepository } from "../db/repositories/MemorySearchRepo
 import type { CorrectionLifecycleRepository } from "../db/repositories/CorrectionLifecycleRepository";
 import type { ProjectionInvalidationProcessor } from "../services/ProjectionInvalidationProcessor";
 import type { EndOfDayReviewService } from "../services/EndOfDayReviewService";
+import type { InfographicService } from "../services/InfographicService";
 import { registerAppHandlers } from "./handlers/appHandlers";
 import { registerDataLifecycleHandlers } from "./handlers/dataLifecycleHandlers";
 import { registerMemorySearchHandlers } from "./handlers/memorySearchHandlers";
@@ -125,6 +126,7 @@ export interface IpcDeps {
   proactiveItemRepo?: ProactiveItemRepository;
   // M6 报告相关
   reportRepo?: ReportRepository;
+  infographicService?: InfographicService;
   reporterWorker?: ReporterWorker;
   reportScheduler?: ReportScheduler;
   startObserving?: () => void;
@@ -216,6 +218,17 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   });
   ipcMain.handle("endOfDayReview:expired", () => {
     deps.endOfDayReviewService?.markExpired();
+    return { ok: true };
+  });
+  ipcMain.handle("reports:notification:get", () =>
+    deps.endOfDayReviewService?.getCurrentReportNotification() ?? null
+  );
+  ipcMain.handle("reports:notification:dismiss", () => {
+    deps.endOfDayReviewService?.dismissReportNotification();
+    return { ok: true };
+  });
+  ipcMain.handle("reports:notification:open", () => {
+    deps.endOfDayReviewService?.openReportNotification();
     return { ok: true };
   });
 
@@ -596,7 +609,16 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     try {
       const facts = deletedFact ? [deletedFact] : [];
       const scenes = deletedScene ? [deletedScene] : [];
-      cascadeMarkAfterFactSceneDelete(deps, facts, scenes);
+       cascadeMarkAfterFactSceneDelete(
+         {
+           ...deps,
+           onReportsStale: (reportIds) => {
+             for (const reportId of reportIds) void deps.infographicService?.deleteImage(reportId);
+           },
+         },
+         facts,
+         scenes
+       );
     } catch {
       // 级联失败不阻断删除结果（已删除不可恢复）
     }
@@ -1177,6 +1199,26 @@ ${context}
     }
   });
 
+  ipcMain.handle("reports:getImage", async (_event, input: unknown) => {
+    const parsed = z.object({ id: z.string().min(1).max(200) }).safeParse(input);
+    if (!parsed.success) {
+      return {
+        ok: false as const,
+        error: `reports:getImage 参数校验失败: ${parsed.error.message}`,
+        code: "schema_invalid",
+      };
+    }
+    if (!deps.infographicService) {
+      return { ok: true as const, data: null };
+    }
+    try {
+      return { ok: true as const, data: await deps.infographicService.getImage(parsed.data.id) };
+    } catch {
+      // 图片读取失败不影响正文报告，按无图处理。
+      return { ok: true as const, data: null };
+    }
+  });
+
   ipcMain.handle("reports:getEvidenceByIds", (_event, input: unknown) => {
     const parsed = z.object({
       factIds: z.array(z.string().min(1)).max(200).optional().default([]),
@@ -1258,20 +1300,18 @@ ${context}
           generationRequirement
         );
       } else if (type === "monthly") {
-        // 月报：复用 weekly 生成逻辑（按月范围汇总），再将 type 更新为 monthly
+        // 月报使用独立的自然月生成逻辑，dateKey 取其 YYYY-MM 部分。
         // 月报 6 大板块（doc 23 §6.4）：本月概览/主要项目/关键成果/重要决策/持续风险/下月重点
-        // 当前 ReporterWorker 未单独实现 monthly，复用 weekly 生成后更新 type
-        result = await deps.reportScheduler.generateWeeklyReportNow(dateKey, {
-          reportType: "monthly",
-          generationRequirement,
-        });
+        result = await deps.reportScheduler.generateMonthlyReportNow(
+          dateKey.slice(0, 7),
+          generationRequirement
+        );
         if (result.ok && result.reportId && deps.reportRepo) {
           deps.reportRepo.update(result.reportId, { type: "monthly", projectId: projectId ?? null });
         }
       } else {
         // weekly：dateKey 视为 weekStart
         result = await deps.reportScheduler.generateWeeklyReportNow(dateKey, {
-          reportType: "weekly",
           generationRequirement,
         });
       }
@@ -1316,6 +1356,8 @@ ${context}
     if (!updated) {
       fail("not_found", `未找到报告 ${id}`);
     }
+    // 用户编辑正文后，旧信息图可能已经不再匹配；等待下一次正式生成。
+    void deps.infographicService?.deleteImage(id);
     return { ok: true, report: updated };
   });
 
@@ -1331,6 +1373,7 @@ ${context}
       fail("schema_invalid", "reports:delete 参数校验失败: 缺少 id");
     }
     const deleted = deps.reportRepo.deleteById(input.id);
+    void deps.infographicService?.deleteImage(input.id);
     return deleted;
   });
 

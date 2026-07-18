@@ -403,6 +403,32 @@ a:hover {
   flex-shrink: 0;
 }
 
+.app-shell__report-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: 240px;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--recall-accent) 34%, var(--recall-border));
+  border-radius: var(--radius-pill);
+  background: var(--recall-accent-soft);
+  color: var(--recall-accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-shell__report-notice:hover {
+  border-color: var(--recall-accent);
+  background: color-mix(in srgb, var(--recall-accent-soft) 78%, var(--recall-surface));
+}
+
+.app-shell__report-notice span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .app-shell__topbar button,
 .app-shell__topbar a,
 .app-shell__topbar input,
@@ -4759,7 +4785,7 @@ a:hover {
 
 /* ============ Phase 4：报告页样式（doc 23） ============ */
 /* 5 Tab 结构：我的复盘 / 工作日报 / 周报 / 月报 / 历史
-   主区域宽度最大 920px，左侧时间轴 + 顶部 Tab + 主区内容。 */
+   主区域随窗口伸缩，左侧时间轴 + 顶部 Tab + 主区内容。 */
 
 .reports-page {
   /* 复用通用页面布局（display:flex; flex-direction:column; gap:16px），
@@ -4809,7 +4835,7 @@ a:hover {
 }
 
 .reports-content {
-  max-width: 920px;
+  max-width: none;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -4968,6 +4994,56 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.report-infographic {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--recall-border);
+}
+
+.report-infographic__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.report-infographic__caption {
+  color: var(--recall-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.report-infographic__download {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--recall-border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--recall-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.report-infographic__download:hover {
+  border-color: var(--recall-accent);
+  color: var(--recall-accent);
+}
+
+.report-infographic__image {
+  display: block;
+  width: 100%;
+  max-height: 560px;
+  object-fit: contain;
+  border-radius: var(--radius-sm);
+  background: var(--recall-bg);
 }
 
 .report-article__header {
@@ -5999,15 +6075,23 @@ textarea:disabled {
 .settings-page,
 .trust-page,
 .debug-page {
-  width: min(1180px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
   padding: 28px 36px 40px;
 }
 
-.memory-detail-page,
+.memory-detail-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 36px 40px;
+}
+
 .reports-page {
-  width: min(980px, 100%);
-  margin: 0 auto;
+  width: 100%;
+  max-width: none;
+  margin: 0;
   padding: 28px 36px 40px;
 }
 
@@ -6944,10 +7028,9 @@ textarea:focus,
   opacity: 0.55;
 }
 
-.memory-search-page__hero,
-.reports-content,
-.memory-detail-page {
-  max-width: 760px;
+.memory-search-page__hero {
+  width: 100%;
+  max-width: none;
 }
 
 .memory-search-bar {
@@ -7029,10 +7112,6 @@ textarea:focus,
 .settings-section,
 .trust-section {
   padding: 20px;
-}
-
-.debug-page {
-  max-width: 1280px;
 }
 
 .debug-stats {

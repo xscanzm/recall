@@ -192,6 +192,9 @@ export const demoTodayPageData: TodayPageData = {
       sampleCount: 12,
     },
     episodes: [],
+    windows: [],
+    observedStartAt: null,
+    observedEndAt: null,
   },
   unfinishedThreads: demoThreads,
   highlights: demoTimeline.flatMap((block, blockIndex) =>

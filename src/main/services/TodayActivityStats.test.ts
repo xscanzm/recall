@@ -104,6 +104,40 @@ describe("Today activity overview", () => {
       projectNames: ["回声 Recall"],
       topicTexts: ["完成 Episode 活动分类"],
     });
+    expect(overview.observedStartAt).toBe("2026-07-17T01:00:00.000Z");
+    expect(overview.observedEndAt).toBe("2026-07-17T01:02:00.000Z");
+    expect(overview.windows).toHaveLength(1);
+  });
+
+  it("merges adjacent same-context Episodes while preserving long gaps", () => {
+    const overview = buildTodayActivityOverview(
+      [
+        { id: "obs-1", capturedAt: "2026-07-17T09:00:00+08:00" },
+        { id: "obs-2", capturedAt: "2026-07-17T09:02:00+08:00" },
+        { id: "obs-3", capturedAt: "2026-07-17T09:06:00+08:00" },
+        { id: "obs-4", capturedAt: "2026-07-17T09:30:00+08:00" },
+      ],
+      [
+        episode(),
+        episode({ id: "episode-2", observationIds: ["obs-3"], factIds: [] }),
+        episode({ id: "episode-3", observationIds: ["obs-4"], factIds: [] }),
+      ],
+      [],
+      [{ id: "project-1", name: "回声 Recall" }],
+      { ...options, coverageEnd: new Date("2026-07-17T09:31:00+08:00") }
+    );
+
+    expect(overview.windows).toHaveLength(2);
+    expect(overview.windows[0]).toMatchObject({
+      sourceEpisodeIds: ["episode-1", "episode-2"],
+      startAt: "2026-07-17T01:00:00.000Z",
+      endAt: "2026-07-17T01:09:00.000Z",
+    });
+    expect(overview.windows[1]).toMatchObject({
+      sourceEpisodeIds: ["episode-3"],
+      startAt: "2026-07-17T01:30:00.000Z",
+      endAt: "2026-07-17T01:31:00.000Z",
+    });
   });
 
   it("returns an empty result without observations", () => {
@@ -113,5 +147,9 @@ describe("Today activity overview", () => {
       pendingMinutes: 0,
       sampleCount: 0,
     });
+    const overview = buildTodayActivityOverview([], [], [], [], options);
+    expect(overview.observedStartAt).toBeNull();
+    expect(overview.observedEndAt).toBeNull();
+    expect(overview.windows).toEqual([]);
   });
 });

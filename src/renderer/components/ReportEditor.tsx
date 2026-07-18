@@ -20,6 +20,7 @@
 // - needsReview[]：text/reason/sourceFactIds
 //
 // 周报 WeeklyReportOutput 字段类似，但用 weekStart/weekEnd + nextWeekSuggestions，无 openTasks/tomorrowSuggestions/needsReview。
+// 月报 MonthlyReportOutput 使用 monthStart/monthEnd + nextMonthSuggestions。
 
 import { useEffect, useState } from "react";
 import { useAppStore } from "../state/store";
@@ -79,10 +80,31 @@ export interface WeeklyReportContent {
   nextWeekSuggestions: string[];
 }
 
-export type ReportContent = DailyReportContent | WeeklyReportContent;
+export interface MonthlyReportContent {
+  monthStart: string;
+  monthEnd: string;
+  headline: string;
+  overview: string;
+  projectUpdates: ReportProjectUpdate[];
+  completed: ReportFactEntry[];
+  decisions: ReportFactEntry[];
+  risks: ReportFactEntry[];
+  nextMonthSuggestions: string[];
+}
+
+export type ReportContent =
+  | DailyReportContent
+  | WeeklyReportContent
+  | MonthlyReportContent;
+
+function isMonthlyContent(c: ReportContent): c is MonthlyReportContent {
+  return (c as MonthlyReportContent).monthStart !== undefined;
+}
 
 function isWeeklyContent(c: ReportContent): c is WeeklyReportContent {
-  return (c as WeeklyReportContent).weekStart !== undefined && (c as DailyReportContent).date === undefined;
+  return !isMonthlyContent(c) &&
+    (c as WeeklyReportContent).weekStart !== undefined &&
+    (c as DailyReportContent).date === undefined;
 }
 
 // ============================================================================
@@ -888,15 +910,29 @@ function taskStatusLabel(status: string): string {
 /**
  * 将报告格式化为可复制的纯文本（适合粘贴到工作汇报）
  */
-export function formatReportAsText(content: ReportContent, title: string, dateKey: string): string {
+export function formatReportAsText(
+  content: ReportContent,
+  title: string,
+  dateKey: string,
+  reportType?: "daily" | "weekly" | "monthly"
+): string {
   const lines: string[] = [];
-  const isWeekly = isWeeklyContent(content);
+  const isMonthly = reportType === "monthly" || isMonthlyContent(content);
+  const isWeekly = !isMonthly && (reportType === "weekly" || isWeeklyContent(content));
 
   lines.push(`# ${content.headline || title}`);
-  lines.push(`日期：${dateKey}`);
-  if (isWeekly) {
-    const w = content as WeeklyReportContent;
-    lines.push(`周期：${w.weekStart} ~ ${w.weekEnd}`);
+  if (isMonthly) {
+    const m = content as MonthlyReportContent;
+    const legacy = content as unknown as WeeklyReportContent;
+    const monthStart = m.monthStart || legacy.weekStart || dateKey;
+    const monthEnd = m.monthEnd || legacy.weekEnd || dateKey;
+    lines.push(`月份：${monthStart} ~ ${monthEnd}`);
+  } else {
+    lines.push(`日期：${dateKey}`);
+    if (isWeekly) {
+      const w = content as WeeklyReportContent;
+      lines.push(`周期：${w.weekStart} ~ ${w.weekEnd}`);
+    }
   }
   lines.push("");
   lines.push("## 概览");
@@ -921,7 +957,7 @@ export function formatReportAsText(content: ReportContent, title: string, dateKe
     lines.push("");
   }
 
-  if (!isWeekly) {
+  if (!isWeekly && !isMonthly) {
     const d = content as DailyReportContent;
     if (d.openTasks.length > 0) {
       lines.push("## 进行中任务");
@@ -948,7 +984,16 @@ export function formatReportAsText(content: ReportContent, title: string, dateKe
     lines.push("");
   }
 
-  if (isWeekly) {
+  if (isMonthly) {
+    const m = content as MonthlyReportContent;
+    const legacy = content as unknown as WeeklyReportContent;
+    const suggestions = m.nextMonthSuggestions ?? legacy.nextWeekSuggestions ?? [];
+    if (suggestions.length > 0) {
+      lines.push("## 下月重点");
+      suggestions.forEach((s) => lines.push(`- ${s}`));
+      lines.push("");
+    }
+  } else if (isWeekly) {
     const w = content as WeeklyReportContent;
     if (w.nextWeekSuggestions.length > 0) {
       lines.push("## 下周建议");

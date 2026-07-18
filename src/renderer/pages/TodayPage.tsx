@@ -73,21 +73,22 @@ export function TodayPage() {
     setSearchKeyword(keyword);
   };
 
-  const handleOpenEpisode = (episodeId: string) => {
-    const episode = todayPageData?.activityOverview.episodes.find((item) => item.id === episodeId);
-    if (!episode || !todayPageData) return;
-    const observationIds = new Set(episode.sourceObservationIds);
+  const handleOpenWindow = (windowId: string) => {
+    const activityWindow = todayPageData?.activityOverview.windows.find((item) => item.id === windowId);
+    if (!activityWindow || !todayPageData) return;
+    const episodeIds = new Set(activityWindow.sourceEpisodeIds);
+    const observationIds = new Set(activityWindow.sourceObservationIds);
     const relatedBlock = todayPageData.timelineBlocks
       .map((block) => ({
         block,
-        score: (block.sourceSceneIds.includes(episodeId) ? 1000 : 0)
+        score: (block.sourceSceneIds.some((id) => episodeIds.has(id)) ? 1000 : 0)
           + block.sourceObservationIds.filter((id) => observationIds.has(id)).length,
       }))
       .filter((item) => item.score > 0)
       .sort((left, right) => right.score - left.score)[0]?.block;
     setSelectedDetail(relatedBlock
       ? { id: relatedBlock.id, type: "timeline" }
-      : { id: episodeId, type: "scene" });
+      : { id: activityWindow.sourceEpisodeIds[0], type: "scene" });
   };
 
   // 首次进入或 dateKey 变化时加载（选择模式中不重载，避免清空选区）
@@ -230,7 +231,7 @@ export function TodayPage() {
       onRetry={handleRetry}
       onGoSettings={handleGoSettings}
       onOpenDetail={(id) => setSelectedDetail({ id, type: "timeline" })}
-      onOpenEpisode={handleOpenEpisode}
+      onOpenWindow={handleOpenWindow}
     />
   );
 }
@@ -261,7 +262,7 @@ interface TodayPageLayoutProps {
   onRetry: () => void;
   onGoSettings: () => void;
   onOpenDetail: (id: string) => void;
-  onOpenEpisode: (episodeId: string) => void;
+  onOpenWindow: (windowId: string) => void;
 }
 
 function TodayPageLayout(props: TodayPageLayoutProps) {
@@ -287,7 +288,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     onRetry,
     onGoSettings,
     onOpenDetail,
-    onOpenEpisode,
+    onOpenWindow,
   } = props;
 
   // 过滤时间轴：忽略列表 + 仅看工作 + 搜索，并按开始时间倒序（最近发生的事先看到）
@@ -297,18 +298,18 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
     const kw = searchKeyword.trim().toLowerCase();
     const categoryObservationIds = new Set(
       categoryFilter
-        ? todayPageData.activityOverview.episodes
-            .filter((episode) => episode.category === categoryFilter)
-            .flatMap((episode) => episode.sourceObservationIds)
+        ? todayPageData.activityOverview.windows
+            .filter((window) => window.category === categoryFilter)
+            .flatMap((window) => window.sourceObservationIds)
         : []
     );
     const keywordObservationIds = new Set(
       kw
-        ? todayPageData.activityOverview.episodes
-            .filter((episode) => `${episode.title} ${episode.summary} ${episode.projectNames.join(" ")} ${episode.topicTexts.join(" ")}`
+        ? todayPageData.activityOverview.windows
+            .filter((window) => `${window.title} ${window.summary} ${window.projectNames.join(" ")} ${window.topicTexts.join(" ")}`
               .toLowerCase()
               .includes(kw))
-            .flatMap((episode) => episode.sourceObservationIds)
+            .flatMap((window) => window.sourceObservationIds)
         : []
     );
     return todayPageData.timelineBlocks
@@ -351,7 +352,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
             activeCategory={categoryFilter}
             onCategorySelect={onCategoryFilterChange}
             onKeywordSelect={onKeywordSelect}
-            onOpenEpisode={onOpenEpisode}
+            onOpenWindow={onOpenWindow}
           />
         )}
 

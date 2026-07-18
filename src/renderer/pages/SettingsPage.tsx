@@ -129,6 +129,7 @@ export function SettingsPage() {
   const [inAppReminders, setInAppReminders] = useState(true);
   const [desktopNotifications, setDesktopNotifications] = useState(false);
   const [dailyReportTime, setDailyReportTime] = useState("18:30");
+  const [personalReviewTime, setPersonalReviewTime] = useState("22:00");
   const [weeklyReportTime, setWeeklyReportTime] = useState("20:00");
   const [endOfDayEnabled, setEndOfDayEnabled] = useState(true);
   const [endOfDayFirstTime, setEndOfDayFirstTime] = useState("17:30");
@@ -175,6 +176,7 @@ export function SettingsPage() {
       setInAppReminders(settings.notification.inAppReminders);
       setDesktopNotifications(settings.notification.desktopNotifications);
       setDailyReportTime(settings.notification.dailyReportTime);
+      setPersonalReviewTime(settings.personalReview?.time ?? "22:00");
       setWeeklyReportTime(settings.notification.weeklyReportTime);
       setEndOfDayEnabled(settings.endOfDayReview?.enabled ?? true);
       setEndOfDayFirstTime(settings.endOfDayReview?.firstTime ?? "17:30");
@@ -365,6 +367,11 @@ export function SettingsPage() {
             enabled: endOfDayEnabled,
             firstTime: endOfDayFirstTime,
             secondTime: endOfDaySecondTime,
+          },
+          personalReview: {
+            // autoGenerate is retained for settings compatibility; scheduler no longer reads it.
+            autoGenerate: settings?.personalReview?.autoGenerate ?? false,
+            time: personalReviewTime,
           },
       });
       if (!result.ok) {
@@ -804,7 +811,7 @@ export function SettingsPage() {
         <header className="settings-section__header">
           <h3 className="settings-section__title">5. 通知</h3>
           <p className="settings-section__hint">
-            桌面通知默认关闭。你可以只在应用内查看提醒。
+            报告成功生成时会单独提示一次；其他桌面提醒仍由下方开关控制。
           </p>
         </header>
         <div className="settings-section__content">
@@ -833,7 +840,7 @@ export function SettingsPage() {
                 <div className="settings-section__toggle-text">
                   <span className="settings-section__toggle-label">桌面通知</span>
                   <p className="settings-section__hint">
-                    默认关闭。开启后只对候选高优先级提醒生效，低优先级提醒只在应用内显示。
+                    默认关闭。开启后，高优先级记忆提醒也会显示在桌面；报告生成通知不受此开关影响。
                   </p>
                 </div>
               </label>
@@ -877,7 +884,19 @@ export function SettingsPage() {
                     value={weeklyReportTime}
                     onChange={(e) => setWeeklyReportTime(e.target.value)}
                   />
-                  <p className="settings-form__hint">每周日此时间触发周报生成（默认 20:00）</p>
+                  <p className="settings-form__hint">每周五此时间触发周报生成（默认 20:00）</p>
+                </div>
+              </div>
+
+              <div className="settings-form__row">
+                <div className="settings-form__field">
+                  <label>个人复盘时间</label>
+                  <input
+                    type="time"
+                    value={personalReviewTime}
+                    onChange={(e) => setPersonalReviewTime(e.target.value)}
+                  />
+                  <p className="settings-form__hint">每天此时间自动生成个人复盘（默认 22:00）</p>
                 </div>
               </div>
 

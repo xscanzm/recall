@@ -82,6 +82,9 @@ describe("IPC contracts", () => {
           sampleCount: 100,
         },
         episodes: [],
+        windows: [],
+        observedStartAt: null,
+        observedEndAt: null,
       },
     })).toMatchObject({ ok: true, data: { stats: { totalObservedMinutes: 120 } } });
     expect(ipcContracts["data:export"].request.parse(undefined)).toEqual({});

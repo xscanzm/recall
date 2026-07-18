@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, KeyboardEvent } from "react";
 import type {
   TimelineBlockCategory,
   TodayActivityOverview,
@@ -8,10 +8,13 @@ import {
   buildAttentionSegmentsFromStats,
   buildRhythmRoutePath,
   buildRhythmSegments,
+  buildRhythmTimeMarkers,
   buildTodayWords,
-  clockMinutesToRoutePercent,
   formatVisualizationDuration,
   getRhythmRoutePoint,
+  getActivityAxisDomain,
+  timeToRoutePercent,
+  type RhythmAxisDomain,
 } from "./todayVisualization";
 
 interface TodayVisualizationBandProps {
@@ -20,7 +23,7 @@ interface TodayVisualizationBandProps {
   activeCategory: TimelineBlockCategory | null;
   onCategorySelect: (category: TimelineBlockCategory) => void;
   onKeywordSelect: (keyword: string) => void;
-  onOpenEpisode: (episodeId: string) => void;
+  onOpenWindow: (windowId: string) => void;
 }
 
 export function TodayVisualizationBand({
@@ -29,13 +32,20 @@ export function TodayVisualizationBand({
   activeCategory,
   onCategorySelect,
   onKeywordSelect,
-  onOpenEpisode,
+  onOpenWindow,
 }: TodayVisualizationBandProps) {
   const attention = useMemo(
     () => buildAttentionSegmentsFromStats(overview.stats),
     [overview.stats]
   );
-  const rhythm = useMemo(() => buildRhythmSegments(overview.episodes), [overview.episodes]);
+  const domain = useMemo(() => getActivityAxisDomain(overview), [
+    overview.observedStartAt,
+    overview.observedEndAt,
+  ]);
+  const rhythm = useMemo(
+    () => domain ? buildRhythmSegments(overview.windows, domain) : [],
+    [overview.windows, domain]
+  );
   const words = useMemo(() => buildTodayWords(overview.episodes), [overview.episodes]);
   const totalMinutes = attention.reduce((sum, item) => sum + item.minutes, 0);
   const hasData = overview.episodes.length > 0 || overview.stats.sampleCount > 0;
@@ -52,8 +62,9 @@ export function TodayVisualizationBand({
       <RhythmChart
         segments={rhythm}
         categories={attention.filter((segment) => segment.filterable)}
+        domain={domain}
         historical={historical}
-        onOpenEpisode={onOpenEpisode}
+        onOpenWindow={onOpenWindow}
       />
       <WordCloud
         words={words}
@@ -121,43 +132,31 @@ function AttentionChart({
 
 type RhythmData = ReturnType<typeof buildRhythmSegments>;
 const RHYTHM_ROUTE_PATH = buildRhythmRoutePath(0, 100);
-const RHYTHM_TIME_MARKERS = [0, 8, 10, 12, 14, 16, 18, 20, 24].map((hour) => {
-  const routePercent = clockMinutesToRoutePercent(hour * 60);
-  const point = getRhythmRoutePoint(routePercent);
-  const before = getRhythmRoutePoint(Math.max(0, routePercent - 0.2));
-  const after = getRhythmRoutePoint(Math.min(100, routePercent + 0.2));
-  const tangentX = after.x - before.x;
-  const tangentY = after.y - before.y;
-  const tangentLength = Math.hypot(tangentX, tangentY) || 1;
-  const normalX = -tangentY / tangentLength;
-  const normalY = tangentX / tangentLength;
-  return {
-    hour,
-    label: hour.toString().padStart(2, "0"),
-    point,
-    guide: {
-      x1: point.x - normalX * 5,
-      y1: point.y - normalY * 7,
-      x2: point.x + normalX * 5,
-      y2: point.y + normalY * 7,
-    },
-  };
-});
 
 function RhythmChart({
   segments,
   categories,
+  domain,
   historical,
-  onOpenEpisode,
+  onOpenWindow,
 }: {
   segments: RhythmData;
   categories: AttentionData;
+  domain: RhythmAxisDomain | null;
   historical: boolean;
-  onOpenEpisode: (episodeId: string) => void;
+  onOpenWindow: (windowId: string) => void;
 }) {
   const now = new Date();
-  const currentTimePercent = clockMinutesToRoutePercent(now.getHours() * 60 + now.getMinutes());
-  const currentTimePoint = getRhythmRoutePoint(currentTimePercent);
+  const markers = useMemo(
+    () => domain ? buildRhythmTimeMarkers(domain) : [],
+    [domain]
+  );
+  const currentTimePercent = domain
+    ? timeToRoutePercent(now.getTime(), Date.parse(domain.startAt), Date.parse(domain.endAt))
+    : null;
+  const currentTimePoint = currentTimePercent === null
+    ? null
+    : getRhythmRoutePoint(currentTimePercent);
 
   return (
     <article className="today-viz-card today-viz-card--rhythm" aria-label={historical ? "当天节奏" : "今日节奏"}>
@@ -180,16 +179,16 @@ function RhythmChart({
               viewBox="0 0 100 100"
               preserveAspectRatio="none"
               role="img"
-              aria-label="全天活动路径，从左上开始，经过两次回转后到达右下"
+              aria-label="实际记录时段中的活动路径"
             >
               <path
                 d={RHYTHM_ROUTE_PATH}
                 pathLength="100"
                 className="rhythm-chart__route-base"
               />
-              {RHYTHM_TIME_MARKERS.filter((marker) => marker.hour > 0 && marker.hour < 24).map((marker) => (
+              {markers.filter((marker) => marker.percent > 0 && marker.percent < 100).map((marker) => (
                 <line
-                  key={`guide-${marker.hour}`}
+                  key={`guide-${marker.percent}`}
                   className="rhythm-chart__route-guide"
                   x1={marker.guide.x1}
                   y1={marker.guide.y1}
@@ -198,27 +197,30 @@ function RhythmChart({
                   aria-hidden="true"
                 />
               ))}
-              {segments.map((segment) => (
-                <path
-                  key={segment.id}
-                  d={buildRhythmRoutePath(segment.startPercent, segment.startPercent + segment.widthPercent)}
-                  className="rhythm-chart__route-segment"
-                  stroke={segment.color}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={`${segment.timeLabel}，${segment.title}`}
-                  onClick={() => onOpenEpisode(segment.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onOpenEpisode(segment.id);
-                    }
-                  }}
-                >
-                  <title>{`${segment.timeLabel} · ${segment.title}`}</title>
-                </path>
-              ))}
-              {!historical && (
+              {segments.map((segment) => {
+                const handleKeyDown = (event: KeyboardEvent<SVGPathElement>) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onOpenWindow(segment.id);
+                  }
+                };
+                return (
+                  <path
+                    key={segment.id}
+                    d={buildRhythmRoutePath(segment.startPercent, segment.startPercent + segment.widthPercent)}
+                    className="rhythm-chart__route-segment"
+                    stroke={segment.color}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`${segment.timeLabel}，${segment.title}`}
+                    onClick={() => onOpenWindow(segment.id)}
+                    onKeyDown={handleKeyDown}
+                  >
+                    <title>{`${segment.timeLabel} · ${segment.title}`}</title>
+                  </path>
+                );
+              })}
+              {!historical && currentTimePoint && (
                 <circle
                   cx={currentTimePoint.x}
                   cy={currentTimePoint.y}
@@ -228,12 +230,14 @@ function RhythmChart({
                 />
               )}
             </svg>
-            {RHYTHM_TIME_MARKERS.map((marker) => {
-              const verticalOffset = marker.hour <= 12 ? -10 : 11;
+            {markers.map((marker) => {
+              const verticalOffset = marker.point.y < 50 ? -10 : 11;
+              const isStart = marker.percent === 0;
+              const isEnd = marker.percent === 100;
               return (
                 <span
-                  className={`rhythm-route-time${marker.hour === 0 ? " is-start" : ""}${marker.hour === 24 ? " is-end" : ""}`}
-                  key={marker.hour}
+                  className={`rhythm-route-time${isStart ? " is-start" : ""}${isEnd ? " is-end" : ""}`}
+                  key={`${marker.percent}-${marker.label}`}
                   style={{
                     left: `${marker.point.x}%`,
                     top: `${marker.point.y + verticalOffset}%`,

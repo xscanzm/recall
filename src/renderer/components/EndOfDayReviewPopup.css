@@ -266,6 +266,20 @@ body,
   line-height: 1.5;
 }
 
+.report-notice__value {
+  margin: 0;
+  color: #43504c;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.5;
+}
+
+.report-notice__value--muted {
+  color: var(--amber);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .end-day-card__footer {
   position: absolute;
   right: 25px;

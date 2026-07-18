@@ -202,7 +202,9 @@ export class ReportRepository {
     const existing = this.getByTypeAndDate("personal_daily_review", dateKey);
     const sourceFactIds = collectPersonalReviewFactIds(review);
     const contentJson = JSON.stringify({
-      id: review.id,
+      // renderer、信息图文件和 reports 行必须共享同一个稳定 id。
+      // 重新生成时 existing.id 不变，不能把本次 LLM 新生成的 review.id 写入正文。
+      id: existing?.id ?? review.id,
       dateKey: review.dateKey,
       title: review.title,
       overview: review.overview,
@@ -353,9 +355,10 @@ export class ReportRepository {
   ): Report {
     const existing = this.getByTypeAndDate("work_daily_report", dateKey);
     if (existing) {
+      const contentJson = normalizeReportContentId(input.contentJson, existing.id);
       const updated = this.update(existing.id, {
         title: input.title,
-        contentJson: input.contentJson,
+        contentJson,
         sourceFactIds: input.sourceFactIds,
         sourceSceneIds: input.sourceTimelineBlockIds,
       });
@@ -366,16 +369,23 @@ export class ReportRepository {
         type: "work_daily_report",
         dateKey,
         title: input.title,
-        contentJson: input.contentJson,
+        contentJson,
         sourceFactIds: input.sourceFactIds,
         sourceSceneIds: input.sourceTimelineBlockIds,
       });
     }
+
+    // WorkReport 自己带有 wr_* id。首次写入时也沿用这个 id，保证
+    // reports 行、contentJson、renderer 和信息图文件使用同一个键。
+    // 没有可用 id 时才生成 report_*，并把生成的 id 回写到正文。
+    const reportId = extractReportContentId(input.contentJson) ?? generateId("report");
+    const contentJson = normalizeReportContentId(input.contentJson, reportId);
     return this.create({
+      id: reportId,
       type: "work_daily_report",
       dateKey,
       title: input.title,
-      contentJson: input.contentJson,
+      contentJson,
       sourceFactIds: input.sourceFactIds,
       sourceSceneIds: input.sourceTimelineBlockIds,
     });
@@ -416,6 +426,32 @@ function safeParseArray<T = unknown>(json: string): T[] {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+function normalizeReportContentId(contentJson: string, reportId: string): string {
+  try {
+    const parsed = JSON.parse(contentJson) as unknown;
+    const object = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+    if (!object) return contentJson;
+    return JSON.stringify({ ...object, id: reportId });
+  } catch {
+    return contentJson;
+  }
+}
+
+function extractReportContentId(contentJson: string): string | null {
+  try {
+    const parsed = JSON.parse(contentJson) as unknown;
+    const object = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+    const id = object?.id;
+    return typeof id === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(id) ? id : null;
+  } catch {
+    return null;
   }
 }
 

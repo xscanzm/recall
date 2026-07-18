@@ -14,9 +14,10 @@
 // - 编辑器支持 textarea 编辑，保存到 reports
 // - 来源面板不默认显示截图
 // - 我的复盘与工作日报语气明显区分
-// - 主区域宽度最大 920px
+// - 主区域随窗口宽度伸缩，保持 Tab、要求栏和正文对齐
 
 import { useEffect, useState } from "react";
+import { Download } from "lucide-react";
 import {
   useAppStore,
   type FactItem,
@@ -84,6 +85,15 @@ function hasLongTermRequirement(requirement: ReportRequirement): boolean {
   );
 }
 
+async function fetchReportImageDataUrl(reportId: string): Promise<string | null> {
+  try {
+    const result = await getIpc().reports.getImage({ id: reportId });
+    return result.ok && result.data ? result.data.dataUrl : null;
+  } catch {
+    return null;
+  }
+}
+
 interface SourceEvidenceData {
   facts: FactItem[];
   scenes: SceneItem[];
@@ -131,6 +141,7 @@ export function ReportsPage() {
   );
   const setReportsWeekStart = useAppStore((s) => s.setReportsWeekStart);
   const setReportsMonthKey = useAppStore((s) => s.setReportsMonthKey);
+  const markUnreadReportsRead = useAppStore((s) => s.markUnreadReportsRead);
   const loadPersonalReview = useAppStore((s) => s.loadPersonalReview);
   const loadWorkReport = useAppStore((s) => s.loadWorkReport);
   const loadReportsList = useAppStore((s) => s.loadReportsList);
@@ -181,8 +192,20 @@ export function ReportsPage() {
   const [temporaryEditorOpen, setTemporaryEditorOpen] = useState<
     Record<ReportRequirementType, boolean>
   >({ personal: false, work: false, weekly: false, monthly: false });
+  const [reportImages, setReportImages] = useState<Record<string, string | null>>({});
 
   const currentRequirementType = reportRequirementTypeForTab(reportsTab);
+  const currentWeeklyReport = reportsList.find(
+    (report) => report.type === "weekly" && report.dateKey === reportsWeekStart
+  );
+  const currentMonthlyReport = reportsList.find(
+    (report) => report.type === "monthly" && report.dateKey.startsWith(reportsMonthKey)
+  );
+
+  // 进入报告页即视为用户已看到右上角的未读提醒。
+  useEffect(() => {
+    if (isReady) markUnreadReportsRead();
+  }, [isReady, markUnreadReportsRead]);
 
   // Effect A: Tab 切换 / 日期变化时加载数据
   // - 注意：**不**在这里调用 rollOverReportsDateKeyIfNeeded
@@ -300,6 +323,64 @@ export function ReportsPage() {
     };
   }, [isReady]);
 
+  // 信息图生成独立于正文；初次加载和异步完成推送都会刷新图片。
+  useEffect(() => {
+    if (!isReady) return;
+    const ids = new Set<string>();
+    if (personalReview?.id) ids.add(personalReview.id);
+    if (workReport?.id) ids.add(workReport.id);
+    if (currentWeeklyReport?.id) ids.add(currentWeeklyReport.id);
+    if (currentMonthlyReport?.id) ids.add(currentMonthlyReport.id);
+    if (historyDetail?.id) ids.add(historyDetail.id);
+    let active = true;
+    void Promise.all(
+      Array.from(ids).map(async (id) => [id, await fetchReportImageDataUrl(id)] as const)
+    ).then((entries) => {
+      if (!active) return;
+      setReportImages((current) => {
+        const next = { ...current };
+        for (const [id, dataUrl] of entries) next[id] = dataUrl;
+        return next;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [
+    isReady,
+    personalReview?.id,
+    workReport?.id,
+    currentWeeklyReport?.id,
+    currentMonthlyReport?.id,
+    historyDetail?.id,
+    reportsList,
+    reportsLoading,
+  ]);
+
+  // 报告重新加载时先隐藏旧图，避免重新生成期间短暂显示过期内容。
+  useEffect(() => {
+    if (!reportsLoading) return;
+    const ids = [personalReview?.id, workReport?.id].filter(
+      (id): id is string => Boolean(id)
+    );
+    if (ids.length === 0) return;
+    setReportImages((current) => {
+      const next = { ...current };
+      for (const id of ids) next[id] = null;
+      return next;
+    });
+  }, [reportsLoading, personalReview?.id, workReport?.id]);
+
+  useEffect(() => {
+    if (!isReady) return;
+    const unsubscribe = getIpc().reports.onImageReady(({ reportId }) => {
+      void fetchReportImageDataUrl(reportId).then((dataUrl) => {
+        setReportImages((current) => ({ ...current, [reportId]: dataUrl }));
+      });
+    });
+    return unsubscribe;
+  }, [isReady]);
+
   // ============================================================================
   // 通用处理函数
   // ============================================================================
@@ -351,6 +432,7 @@ export function ReportsPage() {
   };
 
   const handleSaveReport = async (id: string) => {
+    setReportImages((current) => ({ ...current, [id]: null }));
     await updateReport(id, reportDraft);
   };
 
@@ -405,6 +487,7 @@ export function ReportsPage() {
       newReview.worthRemembering.splice(index, 1);
     }
     try {
+      setReportImages((current) => ({ ...current, [personalReview.id]: null }));
       const contentJson = JSON.stringify({
         id: newReview.id,
         dateKey: newReview.dateKey,
@@ -426,6 +509,9 @@ export function ReportsPage() {
 
   // 生成我的复盘（复用 Phase 3 的 generatePersonalReview，再刷新报告页状态）
   const handleGeneratePersonalReview = async () => {
+    if (personalReview) {
+      setReportImages((current) => ({ ...current, [personalReview.id]: null }));
+    }
     const generated = await generatePersonalReview(
       reportsDateKey,
       getTemporaryRequirement("personal") || undefined
@@ -439,6 +525,9 @@ export function ReportsPage() {
   // 生成周报
   const handleGenerateWeekly = async () => {
     try {
+      if (currentWeeklyReport) {
+        setReportImages((current) => ({ ...current, [currentWeeklyReport.id]: null }));
+      }
       const result = await getIpc().reports.generate({
         type: "weekly",
         dateKey: reportsWeekStart,
@@ -458,9 +547,12 @@ export function ReportsPage() {
 
   // 生成月报
   // 月报 6 大板块（doc 23 §6.4）：本月概览/主要项目/关键成果/重要决策/持续风险/下月重点
-  // main 端 reports:generate 已支持 type:"monthly"，复用 weekly 生成逻辑后更新 type
+  // main 端 reports:generate 使用独立的自然月生成逻辑。
   const handleGenerateMonthly = async () => {
     try {
+      if (currentMonthlyReport) {
+        setReportImages((current) => ({ ...current, [currentMonthlyReport.id]: null }));
+      }
       const result = await getIpc().reports.generate({
         type: "monthly",
         dateKey: `${reportsMonthKey}-01`,
@@ -656,6 +748,7 @@ export function ReportsPage() {
                 blockIds: entry.blockIds,
               })
             }
+            imageDataUrl={personalReview ? reportImages[personalReview.id] ?? null : null}
             onDeleteEntry={handleDeletePersonalReviewEntry}
           />
         )}
@@ -690,6 +783,7 @@ export function ReportsPage() {
                 blockIds: workReport.sourceTimelineBlockIds,
               })
             }
+            imageDataUrl={workReport ? reportImages[workReport.id] ?? null : null}
           />
         )}
 
@@ -719,6 +813,7 @@ export function ReportsPage() {
                 blockIds: [],
               })
             }
+            imageDataUrl={currentWeeklyReport ? reportImages[currentWeeklyReport.id] ?? null : null}
           />
         )}
 
@@ -748,6 +843,7 @@ export function ReportsPage() {
                 blockIds: [],
               })
             }
+            imageDataUrl={currentMonthlyReport ? reportImages[currentMonthlyReport.id] ?? null : null}
           />
         )}
 
@@ -794,6 +890,7 @@ export function ReportsPage() {
                 blockIds: [],
               })
             }
+            imageDataUrl={historyDetail ? reportImages[historyDetail.id] ?? null : null}
           />
         )}
       </div>
@@ -850,6 +947,7 @@ interface PersonalReviewTabProps {
     section: "unfinished" | "worthRemembering",
     index: number
   ) => void;
+  imageDataUrl?: string | null;
 }
 
 function PersonalReviewTab(props: PersonalReviewTabProps) {
@@ -871,6 +969,7 @@ function PersonalReviewTab(props: PersonalReviewTabProps) {
     onDraftChange,
     onViewSource,
     onDeleteEntry,
+    imageDataUrl,
   } = props;
 
   if (loading && !personalReview) {
@@ -1015,6 +1114,11 @@ function PersonalReviewTab(props: PersonalReviewTabProps) {
       </div>
 
       <article className="report-article">
+        <ReportInfographic
+          dataUrl={imageDataUrl}
+          title={personalReview.title}
+          filename={`personal-review-${dateKey}.png`}
+        />
         <header className="report-article__header">
           <h3 className="report-article__title">{personalReview.title}</h3>
           <span className="report-article__date">{dateKey}</span>
@@ -1177,6 +1281,7 @@ interface WorkReportTabProps {
   onDraftChange: (draft: string) => void;
   onExportMarkdown: (text: string) => void;
   onViewSource: () => void;
+  imageDataUrl?: string | null;
 }
 
 function WorkReportTab(props: WorkReportTabProps) {
@@ -1199,6 +1304,7 @@ function WorkReportTab(props: WorkReportTabProps) {
     onDraftChange,
     onExportMarkdown,
     onViewSource,
+    imageDataUrl,
   } = props;
 
   if (loading && !workReport) {
@@ -1375,6 +1481,11 @@ function WorkReportTab(props: WorkReportTabProps) {
       )}
 
       <article className="report-article">
+        <ReportInfographic
+          dataUrl={imageDataUrl}
+          title={workReport.title}
+          filename={`work-report-${dateKey}.png`}
+        />
         <header className="report-article__header">
           <h3 className="report-article__title">{workReport.title}</h3>
           <span className="report-article__date">{dateKey}</span>
@@ -1484,6 +1595,7 @@ interface WeeklyReportTabProps {
   onDraftChange: (draft: string) => void;
   onExportMarkdown: (text: string, id: string) => void;
   onViewSource: (item: ReportItem) => void;
+  imageDataUrl?: string | null;
 }
 
 function WeeklyReportTab(props: WeeklyReportTabProps) {
@@ -1503,6 +1615,7 @@ function WeeklyReportTab(props: WeeklyReportTabProps) {
     onDraftChange,
     onExportMarkdown,
     onViewSource,
+    imageDataUrl,
   } = props;
 
   const weekEnd = addDays(weekStart, 6);
@@ -1633,6 +1746,11 @@ function WeeklyReportTab(props: WeeklyReportTabProps) {
       </div>
 
       <article className="report-article">
+        <ReportInfographic
+          dataUrl={imageDataUrl}
+          title={currentReport.title}
+          filename={`weekly-report-${currentReport.id}.png`}
+        />
         <header className="report-article__header">
           <h3 className="report-article__title">{currentReport.title}</h3>
           <span className="report-article__date">
@@ -1701,6 +1819,7 @@ interface MonthlyReportTabProps {
   onDraftChange: (draft: string) => void;
   onExportMarkdown: (text: string, id: string) => void;
   onViewSource: (item: ReportItem) => void;
+  imageDataUrl?: string | null;
 }
 
 function MonthlyReportTab(props: MonthlyReportTabProps) {
@@ -1720,6 +1839,7 @@ function MonthlyReportTab(props: MonthlyReportTabProps) {
     onDraftChange,
     onExportMarkdown,
     onViewSource,
+    imageDataUrl,
   } = props;
 
   const currentReport =
@@ -1843,6 +1963,11 @@ function MonthlyReportTab(props: MonthlyReportTabProps) {
       </div>
 
       <article className="report-article">
+        <ReportInfographic
+          dataUrl={imageDataUrl}
+          title={currentReport.title}
+          filename={`monthly-report-${currentReport.id}.png`}
+        />
         <header className="report-article__header">
           <h3 className="report-article__title">{currentReport.title}</h3>
           <span className="report-article__date">{monthKey}</span>
@@ -1896,6 +2021,7 @@ interface HistoryTabProps {
   onCopy: (text: string) => void;
   onDelete: (id: string) => void;
   onViewSource: (item: ReportItem) => void;
+  imageDataUrl?: string | null;
 }
 
 function HistoryTab(props: HistoryTabProps) {
@@ -1916,6 +2042,7 @@ function HistoryTab(props: HistoryTabProps) {
     onCopy,
     onDelete,
     onViewSource,
+    imageDataUrl,
   } = props;
 
   if (loading && reports.length === 0) {
@@ -1944,6 +2071,11 @@ function HistoryTab(props: HistoryTabProps) {
           </div>
         </div>
         <article className="report-article">
+          <ReportInfographic
+            dataUrl={imageDataUrl}
+            title={detail.title}
+            filename={`${detail.type}-${detail.dateKey}.png`}
+          />
           <header className="report-article__header">
             <h3 className="report-article__title">{detail.title}</h3>
             <span className="report-article__date">{detail.dateKey}</span>
@@ -2091,6 +2223,46 @@ function HistoryTab(props: HistoryTabProps) {
         </div>
       )}
     </section>
+  );
+}
+
+// ============================================================================
+// 报告信息图
+// ============================================================================
+
+function ReportInfographic(props: {
+  dataUrl?: string | null;
+  title: string;
+  filename: string;
+}) {
+  const { dataUrl, title, filename } = props;
+  if (!dataUrl) return null;
+
+  const handleDownload = () => {
+    const anchor = document.createElement("a");
+    anchor.href = dataUrl;
+    anchor.download = filename.replace(/[^A-Za-z0-9._-]/g, "_");
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  return (
+    <figure className="report-infographic">
+      <div className="report-infographic__toolbar">
+        <figcaption className="report-infographic__caption">信息图</figcaption>
+        <button
+          type="button"
+          className="report-infographic__download"
+          onClick={handleDownload}
+          title="下载信息图"
+        >
+          <Download size={14} aria-hidden="true" />
+          下载图片
+        </button>
+      </div>
+      <img className="report-infographic__image" src={dataUrl} alt={`${title} 信息图`} />
+    </figure>
   );
 }
 
@@ -2594,7 +2766,7 @@ function compilePersonalReviewToText(pr: PersonalReview): string {
 
 /**
  * 将 ReportItem（周报/月报/历史）的 contentJson 编译为纯文本。
- * 优先级：plainText 字段 > formatReportAsText（日报/周报结构）> 原始 contentJson。
+ * 优先级：plainText 字段 > formatReportAsText（日/周/月报结构）> 原始 contentJson。
  */
 function compileReportItemToText(item: ReportItem): string {
   // 1. 尝试解析 contentJson
@@ -2606,7 +2778,7 @@ function compileReportItemToText(item: ReportItem): string {
       return parsed.plainText;
     }
 
-    // 3. 如果是日报/周报结构（有 headline/overview 字段），使用 formatReportAsText
+    // 3. 如果是日报/周报/月报结构（有 headline/overview 字段），使用 formatReportAsText
     if (
       typeof parsed.headline === "string" &&
       typeof parsed.overview === "string"
@@ -2615,7 +2787,8 @@ function compileReportItemToText(item: ReportItem): string {
         return formatReportAsText(
           parsed as unknown as Parameters<typeof formatReportAsText>[0],
           item.title,
-          item.dateKey
+          item.dateKey,
+          item.type === "monthly" ? "monthly" : item.type === "weekly" ? "weekly" : undefined
         );
       } catch {
         // 解析失败，回退
@@ -2645,7 +2818,14 @@ function compileReportItemToText(item: ReportItem): string {
           }
         });
         lines.push("");
-      } else if (typeof value === "string" && key !== "date" && key !== "weekStart" && key !== "weekEnd") {
+      } else if (
+        typeof value === "string" &&
+        key !== "date" &&
+        key !== "weekStart" &&
+        key !== "weekEnd" &&
+        key !== "monthStart" &&
+        key !== "monthEnd"
+      ) {
         lines.push(`## ${key}`);
         lines.push(value);
         lines.push("");
@@ -2733,10 +2913,14 @@ function parseReportSections(
     }
 
     // nextWeekSuggestions (周报) / nextMonthSuggestions (月报)
-    const nextKey = parsed.nextWeekSuggestions
+    const nextKey = isMonthly
+      ? Array.isArray(parsed.nextMonthSuggestions)
+        ? "nextMonthSuggestions"
+        : Array.isArray(parsed.nextWeekSuggestions)
+        ? "nextWeekSuggestions" // 兼容修复前已生成的旧月报
+        : null
+      : Array.isArray(parsed.nextWeekSuggestions)
       ? "nextWeekSuggestions"
-      : parsed.nextMonthSuggestions
-      ? "nextMonthSuggestions"
       : null;
     if (nextKey && Array.isArray(parsed[nextKey])) {
       sections.push({

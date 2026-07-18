@@ -1,3 +1,79 @@
+## v0.4.2 — 报告信息图 + 月报独立 + 生成通知
+
+本次版本聚焦「报告呈现与触达」：把文字报告升级为「文字 + 信息图 + 桌面提醒」的完整闭环，月报从周报复用模式独立为自有契约，调度器不再受 autoGenerate 门控始终按设定时间自动生成，今日活动节奏图从固定 0-24h 时钟映射改为实际观察时段映射。
+
+### 新增功能
+
+#### 1. 报告信息图生成（Infographic Generation）
+
+每份正式报告（个人复盘 / 工作日报 / 周报 / 月报）落库后，异步生成一张 16:9 中文信息图，嵌入在报告正文上方，可下载：
+
+- 新增 `InfographicService`：图片保存到 `userData/report-images/<reportId>.{png|jpg|jpeg|webp}`，20MB 上限，180s 超时，fire-and-forget 失败不影响正文
+- 新增 Cloudflare Worker 端点 `POST /api/infographic/generate`：作为图像服务密钥代理（密钥仅存在于 Worker Secret），上游模型 `sensenova-u1-fast`，尺寸 `2752x1536`，按 CF-Connecting-IP 限流 100 次/天
+- 新增 IPC 通道 `reports:getImage`（受控读取 data URL）+ 推送通道 `reports:imageReady`
+- Prompt 构造：基于 `VisualBrief`（标题/副标题/章节/信号计数）+ 5 套视觉方向（personal/work/daily/weekly/monthly）+ 5 套内容风格 + 6 类主视觉隐喻
+- 隐私安全：`cleanVisualText` 主动剥离 sourceFactIds / sourceSceneIds / URL / Bearer / sk-xxx 等敏感字段，只把"短事实卡片"传给图像模型
+- 生命周期联动：报告被编辑、删除、级联标 stale、清空数据时，对应信息图同步删除；`ReportRepository.normalizeReportContentId` 保证 report.id 稳定，图片文件不会被孤立
+- 渲染层：`ReportInfographic` 组件挂在 5 个 Tab 的 `report-article` 顶部，含下载按钮；首次加载和收到 `reports:imageReady` 推送时刷新
+
+#### 2. 月报独立契约（Monthly Report Contract）
+
+月报从「复用 weekly 生成逻辑后改 type」升级为独立的自然月生成流程，拥有专属 schema、prompt、和措辞约束：
+
+- 新增 schema `MonthlyReportOutputSchema`：在 `WeeklyReportOutputCoreSchema` 基础上 `omit({weekStart, weekEnd, nextWeekSuggestions})` 后 `extend({monthStart, monthEnd, nextMonthSuggestions})`；通过 `normalizeMonthlyReportOutput` 兼容模型偶尔返回的 weekly 字段名
+- 新增生成方法 `ReporterWorker.generateMonthlyReport(monthKey, requirement)`：通过 `getCalendarMonthRange` 计算自然月首末日（兼容闰年 2 月 29 日），最多拉取 31 条 daily reports，并行抓取整月 scenes / facts / projects / tasks / decisions
+- 新增 prompt `buildMonthlyPrompt`：明确要求"必须覆盖完整自然月"、"禁止把周期写成'本周 / 周报 / 下周'"、强制输出 `monthStart/monthEnd/nextMonthSuggestions` 字段
+- 新增调度入口 `ReportScheduler.generateMonthlyReportNow(monthKey, requirement)`：月报没有独立自动调度状态，不污染 `lastWeeklyReportWeekStart` 等周报状态字段
+- IPC handlers 重写：`reports:generate` 的 `type === "monthly"` 分支不再调用 `generateWeeklyReportNow({reportType:"monthly"})`，改为直接调用 `generateMonthlyReportNow(dateKey.slice(0,7))`
+- 渲染层：`ReportEditor` 新增 `MonthlyReportContent` 类型 + `isMonthlyContent()` 判定 + `formatReportAsText` 月报分支：使用「月份：xxx ~ xxx」「## 下月重点」措辞，兼容旧月报回退到 `nextWeekSuggestions` 字段
+
+#### 3. 报告生成通知与未读提醒（Report Notifications）
+
+报告正文落库后，主进程通过独立桌面卡片弹窗 + 应用内顶栏 Bell 角标两个通道同时通知用户，进入报告页即清除未读：
+
+- 新增事件类型 `ReportGeneratedEvent`：`{reportId, type, title, dateKey}`
+- 新增推送通道 `reports:generated`：三个 Writer 在 `reportRepo.create` 成功后调用 `onReportGenerated` 回调，由 `app.ts` 转发到 renderer
+- 新增 IPC 通道：`reports:notification:get / dismiss / open`
+- 启动期事件缓冲：`pendingReportGeneratedEvents` 与 `pendingReportNotifications` 队列，确保主进程在 renderer 加载完成前 / `EndOfDayReviewService` 创建前生成的报告事件不丢失，待 `did-finish-load` 后回放
+- 桌面卡片：复用 `EndOfDayReviewService` 的独立 BrowserWindow 基础设施，新增 `showReportNotification / dismissReportNotification / openReportNotification`，通过 `?window=report-generated` 加载 `ReportGeneratedPopup` 组件
+- 弹窗 UI：`ReportGeneratedPopup` 25 秒自动消失进度条，鼠标悬停暂停计时，复用 EndOfDayReviewPopup 视觉语言；按钮「打开报告」+「稍后查看」
+- 顶栏 Bell 角标：`AppShell` 显示「有新的未读报告（N）」，点击跳转报告页并清除未读
+- 状态层持久化：`store.ts` 的 `unreadReports` 通过 `localStorage["recall.unread-reports.v1"]` 持久化，最多保留 50 条；相同 `reportId` 重复推送时只保留最新一条
+
+### 改进
+
+#### 4. 调度器始终自动执行 + 设置页增强
+
+- **行为变更**：日报与个人复盘不再受 `autoGenerate` 开关门控，始终按设定时间自动生成；`autoGenerate` 字段降级为「兼容旧设置，调度器不再读取」
+- 时间源统一：日报时间优先取 `settings.notification.dailyReportTime`，回退到 `settings.dailyReport.time`，避免双源不一致
+- 类型兼容：`isDailyReportDone` 同时检查 `daily` 和 `work_daily_report` 两种 type，兼容历史数据
+- 互斥保护：`checkSchedule` 与 `checkMissedSchedules` 之间通过 `isChecking / isBackfilling` 互斥，避免补跑和正常调度重叠
+- **周报触发日变更**：从「每周日」改为「每周五」
+- 设置页新增：`个人复盘时间` time picker，默认 22:00，保存到 `settings.personalReview.time`
+- 失败重试：历史失败日补跑的指数退避策略
+
+#### 5. 今日活动窗口化与节奏图重构（Activity Windows & Rhythm Chart Refactor）
+
+节奏图从「固定 0-24h 时钟映射」改为「实际观察时段映射」，相邻同类 Episode 自动合并为 Activity Window：
+
+- 新增数据结构 `TodayActivityWindow`：合并后的窗口含 `id`（前缀 `activity-window:`）、`sourceEpisodeIds`（保留来源追溯）、合并后的 `summary / categoryConfidence / projectNames / topicTexts`
+- 合并规则 `mergeActivityWindows`：相邻 Episode 满足 ① 同 `category` ② 间隔 ≤ 5 分钟 ③ 若双方都有 projectName 则需至少一个相同，才合并
+- 观察时段 `observedStartAt / observedEndAt`：取所有 observation interval 的最早 startMs 和最晚 endMs，作为节奏图横轴域
+- 新增映射函数 `timeToRoutePercent`：把实际时间戳线性映射到 0-100% 路径位置，替代旧的 `clockMinutesToRoutePercent`（旧的按 0-8h / 8-20h / 20-24h 三段映射）
+- 动态时间标签 `buildRhythmTimeMarkers`：根据观察时长自适应步长（≤45min→5min、≤150min→15min、≤360min→30min、≤720min→60min、更长→120min）
+- 当前时间圆点：仅当当前时刻落在观察域内时才显示，否则隐藏
+- 点击交互：`onOpenWindow` 替代 `onOpenEpisode`，`TodayPage.handleOpenWindow` 通过 `sourceEpisodeIds` 反查时间轴 block
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试：`InfographicService.test.ts`、`ReportScheduler.test.ts`（5 个用例含月报与失败重试）、`ReportEditor.monthly.test.ts`（月报措辞与兼容回退）、`ReporterWorker.test.ts` 月报用例、`schemas.report-requirements.test.ts` 月报 schema 用例、`TodayActivityStats.test.ts` 窗口合并用例、`todayVisualization.test.ts` 节奏图重构用例
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.4.1 — 今日活动可视化 + 报告需求系统
 
 本次版本为功能性大更新，新增两个核心能力：基于 Episode 活动分类的「今日活动可视化」看板，以及可长期维护的「报告需求系统」。将"活动分类"这一新维度从 L2 抽取层一路打通到 L1 scenes 表与 TodayPage 可视化；同时把"报告需求"作为新的横向配置层，统一注入 3 个 LLM 报告 Writer 的 prompt。

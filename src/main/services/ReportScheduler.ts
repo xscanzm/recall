@@ -108,7 +108,7 @@ interface RetryState {
  * ReportScheduler：报告调度器
  *
  * 调度 3 类任务：
- * 1. work_daily_report（每天 dailyReport.time）
+ * 1. daily（每天 notification.dailyReportTime）
  * 2. personal_daily_review（每天 personalReview.time）
  * 3. weekly（每周 DEFAULT_WEEKLY_REPORT_DAY 的 weeklyReportTime）
  *
@@ -118,7 +118,7 @@ interface RetryState {
  * - 之后每 MISSED_CHECK_INTERVAL_MS 跑一次（兜底长时运行跨日）
  *
  * 用户可通过 generateDailyReportNow / generateWeeklyReportNow /
- * generatePersonalReviewNow 手动触发。
+ * generateMonthlyReportNow / generatePersonalReviewNow 手动触发。
  */
 export class ReportScheduler {
   private readonly reporterWorker: ReporterWorker;
@@ -248,10 +248,7 @@ export class ReportScheduler {
    */
   async generateWeeklyReportNow(
     weekStart?: string,
-    options: {
-      reportType?: "weekly" | "monthly";
-      generationRequirement?: string;
-    } = {}
+    options: { generationRequirement?: string } = {}
   ): Promise<ScheduleResult> {
     const targetWeekStart = weekStart ?? getCurrentWeekStart();
     try {
@@ -264,6 +261,37 @@ export class ReportScheduler {
         if (this.weeklyReportRetry?.dateKey === targetWeekStart) {
           this.weeklyReportRetry = null;
         }
+        return { ok: true, reportId: result.reportRecord.id };
+      }
+      return {
+        ok: false,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /**
+   * 手动触发月报生成。
+   * 月报没有独立的自动调度状态，因此不会改写周报的 lastRunDate。
+   */
+  async generateMonthlyReportNow(
+    monthKey?: string,
+    generationRequirement?: string
+  ): Promise<ScheduleResult> {
+    const targetMonthKey = monthKey ?? getCurrentMonthKey();
+    try {
+      const result = await this.reporterWorker.generateMonthlyReport(
+        targetMonthKey,
+        generationRequirement
+      );
+      if (result.ok && result.reportRecord) {
         return { ok: true, reportId: result.reportRecord.id };
       }
       return {
@@ -339,7 +367,7 @@ export class ReportScheduler {
    * 已放弃重试（attempts > MAX）的不再触发，等明天，或下次 checkMissedSchedules 兜底。
    */
   private async checkSchedule(): Promise<void> {
-    if (this.isChecking) return;
+    if (this.isChecking || this.isBackfilling) return;
     this.isChecking = true;
     try {
       if (!this.settingsService) return;
@@ -349,8 +377,9 @@ export class ReportScheduler {
       const today = localTodayKey();
 
       // ---- 工作日报 ----
-      const dailyTime = settings.dailyReport.time;
-      if (settings.dailyReport.autoGenerate && dailyTime) {
+      // 日报始终自动执行；notification.dailyReportTime 是设置页维护的唯一时间来源。
+      const dailyTime = settings.notification.dailyReportTime || settings.dailyReport.time;
+      if (dailyTime) {
         if (!this.isDailyReportDone(today) && isPastTriggerTime(dailyTime, now)) {
           // 已放弃重试 → 跳过（等明天或下次 checkMissedSchedules）
           if (!this.isRetryGivenUp(this.dailyReportRetry)) {
@@ -374,7 +403,8 @@ export class ReportScheduler {
 
       // ---- 个人复盘 ----
       const personalTime = settings.personalReview.time;
-      if (settings.personalReview.autoGenerate && personalTime) {
+      // 个人复盘始终自动执行，autoGenerate 仅为旧设置字段，不能再作为门控。
+      if (personalTime) {
         if (!this.isPersonalReviewDone(today) && isPastTriggerTime(personalTime, now)) {
           if (!this.isRetryGivenUp(this.personalReviewRetry)) {
             const shouldTrigger =
@@ -441,7 +471,7 @@ export class ReportScheduler {
    * - today 的失败重试交给 checkSchedule 处理（按指数退避），backfill 只负责历史日期。
    */
   private async checkMissedSchedules(): Promise<void> {
-    if (this.isBackfilling) return;
+    if (this.isBackfilling || this.isChecking) return;
     if (!this.settingsService) return;
     this.isBackfilling = true;
     try {
@@ -451,30 +481,36 @@ export class ReportScheduler {
       const now = new Date();
 
       // ---- 工作日报补跑 ----
-      if (settings.dailyReport.autoGenerate) {
-        const last = schedule.lastDailyReportDate;
-        const datesToBackfill = this.getBackfillDates(last, today, MAX_BACKFILL_DAYS);
-        const dailyTime = settings.dailyReport.time;
-        for (const dateKey of datesToBackfill) {
-          if (this.isDailyReportDone(dateKey)) {
-            // DB 已有，更新 lastDailyReportDate（追上）
-            this.markDailyReportDone(dateKey);
-            continue;
-          }
-          // 补 today 时必须已过当天触发时刻，否则交给 checkSchedule 按时触发
-          if (dateKey === today && dailyTime && !isPastTriggerTime(dailyTime, now)) {
-            continue;
-          }
-          await this.tryRunDailyReport(dateKey, "backfill");
+      const lastDailyReportDate = schedule.lastDailyReportDate;
+      const dailyDatesToBackfill = this.getBackfillDates(
+        lastDailyReportDate,
+        today,
+        MAX_BACKFILL_DAYS
+      );
+      const dailyTime = settings.notification.dailyReportTime || settings.dailyReport.time;
+      for (const dateKey of dailyDatesToBackfill) {
+        if (this.isDailyReportDone(dateKey)) {
+          // DB 已有，更新 lastDailyReportDate（追上）
+          this.markDailyReportDone(dateKey);
+          continue;
         }
+        // 补 today 时必须已过当天触发时刻，否则交给 checkSchedule 按时触发
+        if (dateKey === today && dailyTime && !isPastTriggerTime(dailyTime, now)) {
+          continue;
+        }
+        await this.tryRunDailyReport(dateKey, "backfill");
       }
 
       // ---- 个人复盘补跑 ----
-      if (settings.personalReview.autoGenerate && this.personalReviewWriterWorker) {
-        const last = schedule.lastPersonalReviewDate;
-        const datesToBackfill = this.getBackfillDates(last, today, MAX_BACKFILL_DAYS);
+      if (this.personalReviewWriterWorker) {
+        const lastPersonalReviewDate = schedule.lastPersonalReviewDate;
+        const personalDatesToBackfill = this.getBackfillDates(
+          lastPersonalReviewDate,
+          today,
+          MAX_BACKFILL_DAYS
+        );
         const personalTime = settings.personalReview.time;
-        for (const dateKey of datesToBackfill) {
+        for (const dateKey of personalDatesToBackfill) {
           if (this.isPersonalReviewDone(dateKey)) {
             this.markPersonalReviewDone(dateKey);
             continue;
@@ -715,8 +751,9 @@ export class ReportScheduler {
    */
   private isDailyReportDone(dateKey: string): boolean {
     if (this.reportRepo) {
-      const report = this.reportRepo.getByTypeAndDate("work_daily_report", dateKey);
-      if (report) return true;
+      const dailyReport = this.reportRepo.getByTypeAndDate("daily", dateKey);
+      const workDailyReport = this.reportRepo.getByTypeAndDate("work_daily_report", dateKey);
+      if (dailyReport || workDailyReport) return true;
     }
     const last = this.settingsService?.getAll().schedule.lastDailyReportDate ?? null;
     return last !== null && last >= dateKey;
@@ -789,6 +826,12 @@ function getCurrentWeekStart(): string {
   monday.setDate(now.getDate() - daysFromMonday);
   monday.setHours(0, 0, 0, 0);
   return formatLocalDateKey(monday);
+}
+
+/** 获取当前自然月 key（YYYY-MM，本地时区）。 */
+function getCurrentMonthKey(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
 /**

@@ -46,6 +46,7 @@ export interface CascadeMarkDeps {
   memoryEdgeRepo?: MemoryEdgeRepository;
   correctionLifecycleRepo?: CorrectionLifecycleRepository;
   db?: DB;
+  onReportsStale?: (reportIds: string[]) => void;
 }
 
 /**
@@ -621,7 +622,9 @@ export function cascadeMarkAfterFactSceneDelete(
 
   // 3. 批量标记 reports stale
   if (deps.reportRepo && reportIdsToMarkStale.size > 0) {
-    deps.reportRepo.markStaleMany(Array.from(reportIdsToMarkStale), STALE_REASON);
+    const reportIds = Array.from(reportIdsToMarkStale);
+    deps.reportRepo.markStaleMany(reportIds, STALE_REASON);
+    deps.onReportsStale?.(reportIds);
   }
 
   // 触发 factIds/sceneIds 已使用，避免 lint 警告（保留以备后续扩展）

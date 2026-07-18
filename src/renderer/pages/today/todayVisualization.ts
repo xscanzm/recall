@@ -1,7 +1,9 @@
 import type {
   TimelineBlockCategory,
   TodayActivityEpisode,
+  TodayActivityOverview,
   TodayActivityStats,
+  TodayActivityWindow,
 } from "../../../shared/types";
 import { categoryLabel, dateKeyFromDate, formatTime } from "./helpers";
 
@@ -39,6 +41,23 @@ export interface RhythmSegment {
   endLabel: string;
   timeLabel: string;
   color: string;
+}
+
+export interface RhythmAxisDomain {
+  startAt: string;
+  endAt: string;
+}
+
+export interface RhythmTimeMarker {
+  label: string;
+  percent: number;
+  point: RhythmRoutePoint;
+  guide: {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+  };
 }
 
 export interface TodayWord {
@@ -138,70 +157,59 @@ export function buildAttentionSegmentsFromStats(stats: TodayActivityStats): Atte
   return segments.sort((left, right) => right.minutes - left.minutes);
 }
 
-export function buildRhythmSegments(episodes: TodayActivityEpisode[], now = new Date()): RhythmSegment[] {
-  const todayKey = dateKeyFromDate(now);
-  const latestTodayPercent = clockMinutesToRoutePercent(
-    now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60
-  );
+export function getActivityAxisDomain(overview: TodayActivityOverview): RhythmAxisDomain | null {
+  if (!overview.observedStartAt || !overview.observedEndAt) return null;
+  const startMs = Date.parse(overview.observedStartAt);
+  const endMs = Date.parse(overview.observedEndAt);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  return { startAt: overview.observedStartAt, endAt: overview.observedEndAt };
+}
 
-  const segments = episodes
-    .map((episode) => {
-      const start = new Date(episode.startAt);
-      const rawEnd = new Date(episode.endAt);
-      if (Number.isNaN(start.getTime()) || Number.isNaN(rawEnd.getTime())) return null;
+export function buildRhythmSegments(
+  windows: TodayActivityWindow[],
+  domain: RhythmAxisDomain,
+  now = new Date()
+): RhythmSegment[] {
+  const domainStartMs = Date.parse(domain.startAt);
+  const domainEndMs = Date.parse(domain.endAt);
+  if (!Number.isFinite(domainStartMs) || !Number.isFinite(domainEndMs) || domainEndMs <= domainStartMs) {
+    return [];
+  }
 
-      const isTodayEpisode = dateKeyFromDate(start) === todayKey;
-      if (isTodayEpisode && start.getTime() >= now.getTime()) return null;
+  const isCurrentDay = dateKeyFromDate(new Date(domainStartMs)) === dateKeyFromDate(now);
+  const visibleEndMs = isCurrentDay
+    ? Math.min(domainEndMs, now.getTime())
+    : domainEndMs;
+  if (visibleEndMs <= domainStartMs) return [];
 
-      const end = isTodayEpisode && rawEnd.getTime() > now.getTime() ? now : rawEnd;
-      const startMinute = start.getHours() * 60 + start.getMinutes() + start.getSeconds() / 60;
-      const durationMinutes = Math.max(1 / 60, (end.getTime() - start.getTime()) / 60_000);
-      const endMinute = Math.min(24 * 60, startMinute + durationMinutes);
-      const actualStartPercent = clockMinutesToRoutePercent(startMinute);
-      const actualEndPercent = clockMinutesToRoutePercent(endMinute);
-      const actualWidthPercent = Math.max(0, actualEndPercent - actualStartPercent);
-      const readableWidthPercent = 0.28 + Math.min(durationMinutes, 15) / 15 * 0.55;
-      const desiredWidthPercent = Math.max(actualWidthPercent, readableWidthPercent);
-      const latestVisiblePercent = isTodayEpisode
-        ? latestTodayPercent
-        : 100;
-      let startPercent = actualStartPercent - (desiredWidthPercent - actualWidthPercent) / 2;
-      let endPercent = actualEndPercent + (desiredWidthPercent - actualWidthPercent) / 2;
+  return windows
+    .map((window) => {
+      const rawStartMs = Date.parse(window.startAt);
+      const rawEndMs = Date.parse(window.endAt);
+      if (!Number.isFinite(rawStartMs) || !Number.isFinite(rawEndMs)) return null;
+      const startMs = Math.max(domainStartMs, rawStartMs);
+      const endMs = Math.min(visibleEndMs, rawEndMs);
+      if (endMs <= startMs) return null;
 
-      if (endPercent > latestVisiblePercent) {
-        startPercent -= endPercent - latestVisiblePercent;
-        endPercent = latestVisiblePercent;
-      }
-      if (startPercent < 0) {
-        endPercent = Math.min(latestVisiblePercent, endPercent - startPercent);
-        startPercent = 0;
-      }
-
+      const startPercent = timeToRoutePercent(startMs, domainStartMs, visibleEndMs);
+      const endPercent = timeToRoutePercent(endMs, domainStartMs, visibleEndMs);
       const widthPercent = Math.max(0, endPercent - startPercent);
-      const startLabel = formatTime(episode.startAt);
-      const endLabel = formatTime(end.toISOString());
-
+      const startLabel = formatTime(new Date(startMs).toISOString());
+      const endLabel = formatTime(new Date(endMs).toISOString());
       return {
-        id: episode.id,
-        title: episode.title,
-        category: episode.category,
+        id: window.id,
+        title: window.title,
+        category: window.category,
         startPercent,
         widthPercent,
         startLabel,
         endLabel,
         timeLabel: `${startLabel} - ${endLabel}`,
-        color: CATEGORY_COLORS[episode.category],
+        color: CATEGORY_COLORS[window.category],
       } satisfies RhythmSegment;
     })
     .filter((segment): segment is RhythmSegment => segment !== null)
     .sort((left, right) => left.startPercent - right.startPercent);
-
-  const latestVisiblePercent = episodes.some(
-    (episode) => dateKeyFromDate(new Date(episode.startAt)) === todayKey
-  )
-    ? latestTodayPercent
-    : 100;
-  return packOverlappingRhythmSegments(segments, latestVisiblePercent);
 }
 
 export function buildTodayWords(episodes: TodayActivityEpisode[], limit = 18): TodayWord[] {
@@ -252,11 +260,62 @@ export function formatVisualizationDuration(totalMinutes: number): string {
   return minutes === 0 ? `${hours} 小时` : `${hours}h ${minutes}m`;
 }
 
-export function clockMinutesToRoutePercent(rawMinutes: number): number {
-  const minutes = Math.min(Math.max(rawMinutes, 0), 24 * 60);
-  if (minutes <= 8 * 60) return (minutes / (8 * 60)) * 8;
-  if (minutes <= 20 * 60) return 8 + ((minutes - 8 * 60) / (12 * 60)) * 84;
-  return 92 + ((minutes - 20 * 60) / (4 * 60)) * 8;
+export function timeToRoutePercent(
+  timeMs: number,
+  domainStartMs: number,
+  domainEndMs: number
+): number {
+  if (domainEndMs <= domainStartMs) return 0;
+  return Math.min(
+    100,
+    Math.max(0, ((timeMs - domainStartMs) / (domainEndMs - domainStartMs)) * 100)
+  );
+}
+
+export function buildRhythmTimeMarkers(domain: RhythmAxisDomain): RhythmTimeMarker[] {
+  const startMs = Date.parse(domain.startAt);
+  const endMs = Date.parse(domain.endAt);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return [];
+
+  const durationMinutes = (endMs - startMs) / 60_000;
+  const stepMinutes = durationMinutes <= 45
+    ? 5
+    : durationMinutes <= 150
+      ? 15
+      : durationMinutes <= 360
+        ? 30
+        : durationMinutes <= 720
+          ? 60
+          : 120;
+  const stepMs = stepMinutes * 60_000;
+  const markerTimes = [startMs];
+  for (let timeMs = Math.ceil(startMs / stepMs) * stepMs; timeMs < endMs; timeMs += stepMs) {
+    if (timeMs > startMs) markerTimes.push(timeMs);
+  }
+  markerTimes.push(endMs);
+
+  return [...new Set(markerTimes)].map((timeMs) => {
+    const percent = timeToRoutePercent(timeMs, startMs, endMs);
+    const point = getRhythmRoutePoint(percent);
+    const before = getRhythmRoutePoint(Math.max(0, percent - 0.2));
+    const after = getRhythmRoutePoint(Math.min(100, percent + 0.2));
+    const tangentX = after.x - before.x;
+    const tangentY = after.y - before.y;
+    const tangentLength = Math.hypot(tangentX, tangentY) || 1;
+    const normalX = -tangentY / tangentLength;
+    const normalY = tangentX / tangentLength;
+    return {
+      label: formatTime(new Date(timeMs).toISOString()),
+      percent,
+      point,
+      guide: {
+        x1: point.x - normalX * 5,
+        y1: point.y - normalY * 7,
+        x2: point.x + normalX * 5,
+        y2: point.y + normalY * 7,
+      },
+    };
+  });
 }
 
 export function getRhythmRoutePoint(rawPercent: number): RhythmRoutePoint {
@@ -297,49 +356,6 @@ export function buildRhythmRoutePath(startPercent: number, endPercent: number): 
   return points
     .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(3)} ${point.y.toFixed(3)}`)
     .join(" ");
-}
-
-function packOverlappingRhythmSegments(
-  segments: RhythmSegment[],
-  latestVisiblePercent: number
-): RhythmSegment[] {
-  const packed: RhythmSegment[] = [];
-  const gapPercent = 0.08;
-  let cluster: RhythmSegment[] = [];
-  let clusterEnd = -Infinity;
-
-  const flushCluster = () => {
-    if (cluster.length === 0) return;
-    const desiredEnd = Math.min(
-      latestVisiblePercent,
-      Math.max(...cluster.map((segment) => segment.startPercent + segment.widthPercent))
-    );
-    const totalWidth = cluster.reduce((sum, segment) => sum + segment.widthPercent, 0)
-      + gapPercent * Math.max(0, cluster.length - 1);
-    let cursor = Math.max(0, desiredEnd - totalWidth);
-
-    for (const segment of cluster) {
-      const availableWidth = Math.max(0, latestVisiblePercent - cursor);
-      const widthPercent = Math.min(segment.widthPercent, availableWidth);
-      packed.push({ ...segment, startPercent: cursor, widthPercent });
-      cursor += widthPercent + gapPercent;
-    }
-
-    cluster = [];
-    clusterEnd = -Infinity;
-  };
-
-  for (const segment of segments) {
-    const segmentEnd = segment.startPercent + segment.widthPercent;
-    if (cluster.length > 0 && segment.startPercent > clusterEnd + gapPercent) {
-      flushCluster();
-    }
-    cluster.push(segment);
-    clusterEnd = Math.max(clusterEnd, segmentEnd);
-  }
-  flushCluster();
-
-  return packed;
 }
 
 function segmentWords(text: string): string[] {

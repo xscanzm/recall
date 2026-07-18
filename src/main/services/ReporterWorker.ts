@@ -2,13 +2,13 @@
 // LLM Reporter Worker（来自 03、05 文档）
 //
 // 职责：
-// - 生成日报、周报和项目复盘
+// - 生成日报、周报、月报和项目复盘
 // - 不能直接总结截图，必须基于结构化记忆（facts/scenes/tasks/decisions/projects/proactive_items）
 // - 重要条目必须保留 evidenceFactIds 或 evidenceSceneIds
-// - 不确定内容放入 needsReview（日报）或 risks（周报），不要写成确定事实
+// - 不确定内容放入 needsReview（日报）或 risks（周报/月报），不要写成确定事实
 // - 调用 ModelGateway.callMultimodal
-// - zod 校验 DailyReportOutput / WeeklyReportOutput
-// - 写入 reports 表（type=daily/weekly，content_json = 报告 JSON）
+// - zod 校验 DailyReportOutput / WeeklyReportOutput / MonthlyReportOutput
+// - 写入 reports 表（type=daily/weekly/monthly，content_json = 报告 JSON）
 //
 // 重要约束（来自 spec.md "LLM Reporter 合约"）：
 // - 报告必须基于 facts/scenes，不直接引用截图
@@ -30,8 +30,13 @@ import type {
 import type {
   DailyReportOutput,
   WeeklyReportOutput,
+  MonthlyReportOutput,
 } from "../models/schemas";
-import { DailyReportOutputSchema, WeeklyReportOutputSchema } from "../models/schemas";
+import {
+  DailyReportOutputSchema,
+  WeeklyReportOutputSchema,
+  MonthlyReportOutputSchema,
+} from "../models/schemas";
 import { REPORTER_PROMPT_TEMPLATE } from "../models/prompts";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
@@ -41,12 +46,13 @@ import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRe
 import type { SettingsService } from "./SettingsService";
 import type {
   ReportGenerationRequirementsSnapshot,
-  ReportRequirementType,
 } from "../../shared/reportRequirements";
 import {
   hasReportGenerationRequirements,
   resolveReportGenerationRequirements,
 } from "./reportRequirements";
+import type { InfographicService } from "./InfographicService";
+import { localDateKeyUtcRange } from "../utils/dateKey";
 
 // ============================================================================
 // 输入类型（来自 spec.md "LLM Reporter 合约"）
@@ -101,6 +107,28 @@ export interface WeeklyReportInput {
   reportRequirements: ReportGenerationRequirementsSnapshot;
 }
 
+/**
+ * MonthlyReportInput：自然月范围内的结构化输入。
+ *
+ * 与周报共享内容板块，但周期字段明确使用 monthStart/monthEnd，避免把
+ * 月报降级成“从月初开始的一周”。
+ */
+export interface MonthlyReportInput {
+  monthStart: string;
+  monthEnd: string;
+  dailyReports: Array<{
+    date: string;
+    headline: string;
+    overview: string;
+  }>;
+  scenes: unknown[];
+  facts: unknown[];
+  projects: unknown[];
+  tasks: unknown[];
+  decisions: unknown[];
+  reportRequirements: ReportGenerationRequirementsSnapshot;
+}
+
 // ============================================================================
 // 输出类型
 // ============================================================================
@@ -132,6 +160,19 @@ export interface WeeklyReportResult {
   attempts?: number;
 }
 
+/**
+ * 月报生成结果。
+ */
+export interface MonthlyReportResult {
+  ok: boolean;
+  report?: MonthlyReportOutput;
+  reportRecord?: Report;
+  modelJobId?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  attempts?: number;
+}
+
 // ============================================================================
 // ReporterWorker
 // ============================================================================
@@ -153,7 +194,7 @@ export interface WeeklyReportResult {
  * 11. zod 校验 DailyReportOutput（由 ModelGateway 完成）
  * 12. 写入 reports 表（type=daily, content_json=JSON）
  *
- * 周报工作流类似，但范围扩大到一周，并使用本周 daily reports 作为输入。
+ * 周报工作流使用自然周范围；月报工作流使用自然月范围和独立输出契约。
  */
 export class ReporterWorker {
   private readonly modelGateway: ModelGateway;
@@ -164,6 +205,8 @@ export class ReporterWorker {
   private readonly memoryObjectRepo: MemoryObjectRepository;
   private readonly proactiveItemRepo: ProactiveItemRepository;
   private readonly settingsService: SettingsService | null;
+  private readonly infographicService: InfographicService | null;
+  private readonly onReportGenerated?: (report: Report) => void;
 
   constructor(deps: {
     modelGateway: ModelGateway;
@@ -174,6 +217,8 @@ export class ReporterWorker {
     memoryObjectRepo: MemoryObjectRepository;
     proactiveItemRepo: ProactiveItemRepository;
     settingsService?: SettingsService;
+    infographicService?: InfographicService;
+    onReportGenerated?: (report: Report) => void;
   }) {
     this.modelGateway = deps.modelGateway;
     this.modelJobQueue = deps.modelJobQueue;
@@ -183,6 +228,8 @@ export class ReporterWorker {
     this.memoryObjectRepo = deps.memoryObjectRepo;
     this.proactiveItemRepo = deps.proactiveItemRepo;
     this.settingsService = deps.settingsService ?? null;
+    this.infographicService = deps.infographicService ?? null;
+    this.onReportGenerated = deps.onReportGenerated;
   }
 
   /**
@@ -304,6 +351,8 @@ export class ReporterWorker {
       sourceFactIds,
       sourceSceneIds,
     });
+    this.onReportGenerated?.(reportRecord);
+    void this.infographicService?.generateForReport(reportRecord, reportRequirements);
 
     return {
       ok: true,
@@ -322,10 +371,7 @@ export class ReporterWorker {
    */
   async generateWeeklyReport(
     weekStart: string,
-    options: {
-      reportType?: Extract<ReportRequirementType, "weekly" | "monthly">;
-      generationRequirement?: string;
-    } = {}
+    options: { generationRequirement?: string } = {}
   ): Promise<WeeklyReportResult> {
     // 1. 获取多模态模型配置
     const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
@@ -366,10 +412,9 @@ export class ReporterWorker {
       };
     }
 
-    const reportType = options.reportType ?? "weekly";
     const reportRequirements = resolveReportGenerationRequirements(
       this.settingsService,
-      reportType,
+      "weekly",
       options.generationRequirement
     );
 
@@ -392,7 +437,7 @@ export class ReporterWorker {
     const inputJson = JSON.stringify(weeklyReportInput, null, 2);
 
     // 6. 填充 prompt（周报使用同一 Reporter prompt，模型会根据 input 自适应）
-    const weeklyUserPrompt = buildWeeklyPrompt(inputJson, reportType);
+    const weeklyUserPrompt = buildWeeklyPrompt(inputJson);
 
     // 7. 构造脱敏 jobInputJson
     const jobInputJson = JSON.stringify({
@@ -404,7 +449,7 @@ export class ReporterWorker {
       projectCount: projects.length,
       taskCount: tasks.length,
       decisionCount: decisions.length,
-      reportType,
+      reportType: "weekly",
       hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
       hasTemporaryRequirement: Boolean(reportRequirements.temporary),
     });
@@ -451,6 +496,143 @@ export class ReporterWorker {
       sourceFactIds,
       sourceSceneIds,
     });
+    this.onReportGenerated?.(reportRecord);
+    void this.infographicService?.generateForReport(reportRecord, reportRequirements);
+
+    return {
+      ok: true,
+      report,
+      reportRecord,
+      modelJobId: result.modelJobId,
+      attempts: result.attempts,
+    };
+  }
+
+  /**
+   * 生成月报。
+   *
+   * 月报使用自然月首日到末日的完整数据范围，不复用周报的 weekStart /
+   * weekEnd / nextWeekSuggestions 契约。
+   */
+  async generateMonthlyReport(
+    monthKey: string,
+    generationRequirement?: string
+  ): Promise<MonthlyReportResult> {
+    // 1. 获取多模态模型配置
+    const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
+    if (!multimodalModelConfigId) {
+      return {
+        ok: false,
+        errorCode: "no_language_model",
+        errorMessage: "未配置启用的多模态模型，无法生成月报",
+      };
+    }
+
+    const { monthStart, monthEnd } = getCalendarMonthRange(monthKey);
+    const monthStartIso = localDateKeyUtcRange(monthStart).start;
+    const monthEndExclusiveIso = localDateKeyUtcRange(monthEnd).end;
+    const monthEndIso = new Date(
+      new Date(monthEndExclusiveIso).getTime() - 1
+    ).toISOString();
+
+    // 2. 查询整月 daily reports / scenes / facts
+    const dailyReports = this.fetchDailyReportsByDateRange(monthStart, monthEnd, 31);
+    const scenes = filterReportableSources(this.sceneRepo.listByStartAt({
+      from: monthStartIso,
+      to: monthEndIso,
+      limit: 500,
+    }));
+    const facts = filterReportableSources(this.fetchFactsByDateRange(monthStartIso, monthEndIso));
+    const projects = this.fetchActiveProjects();
+    const tasks = this.fetchOpenTasks();
+    const decisions = this.memoryObjectRepo.listDecisions({ limit: 200 });
+
+    if (dailyReports.length === 0 && scenes.length === 0 && facts.length === 0) {
+      return {
+        ok: false,
+        errorCode: "insufficient_data",
+        errorMessage: "本月还没有足够记忆生成月报。",
+      };
+    }
+
+    const reportRequirements = resolveReportGenerationRequirements(
+      this.settingsService,
+      "monthly",
+      generationRequirement
+    );
+
+    // 3. 构造 MonthlyReportInput
+    const monthlyReportInput: MonthlyReportInput = {
+      monthStart,
+      monthEnd,
+      dailyReports: dailyReports.map((r) => ({
+        date: r.dateKey,
+        headline: extractHeadline(r),
+        overview: extractOverview(r),
+      })),
+      scenes: scenes.map(this.toSceneSummary),
+      facts: facts.map(this.toFactSummary),
+      projects: projects.map(this.toProjectSummary),
+      tasks: tasks.map(this.toTaskSummary),
+      decisions: decisions.map(this.toDecisionSummary),
+      reportRequirements,
+    };
+    const inputJson = JSON.stringify(monthlyReportInput, null, 2);
+
+    // 4. 使用独立月报提示词和输出 schema
+    const monthlyUserPrompt = buildMonthlyPrompt(inputJson);
+    const jobInputJson = JSON.stringify({
+      monthStart,
+      monthEnd,
+      dailyReportCount: dailyReports.length,
+      sceneCount: scenes.length,
+      factCount: facts.length,
+      projectCount: projects.length,
+      taskCount: tasks.length,
+      decisionCount: decisions.length,
+      reportType: "monthly",
+      hasReportRequirements: hasReportGenerationRequirements(reportRequirements),
+      hasTemporaryRequirement: Boolean(reportRequirements.temporary),
+    });
+
+    const result = await this.modelJobQueue.enqueueMultimodalJob<MonthlyReportOutput>({
+      type: "reporter",
+      executor: async () => {
+        return this.modelGateway.callMultimodal<MonthlyReportOutput>(
+          {
+            kind: "multimodal",
+            configId: multimodalModelConfigId,
+            systemPrompt: "",
+            userPrompt: monthlyUserPrompt,
+            jobType: "reporter",
+            jobInputJson,
+          },
+          MonthlyReportOutputSchema
+        );
+      },
+    });
+
+    if (!result.ok || !result.data) {
+      return {
+        ok: false,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+        modelJobId: result.modelJobId,
+        attempts: result.attempts,
+      };
+    }
+
+    const report = result.data;
+    const reportRecord = this.reportRepo.create({
+      type: "monthly",
+      dateKey: monthStart,
+      title: report.headline || `月报 ${monthKey}`,
+      contentJson: JSON.stringify({ ...report, reportRequirements }),
+      sourceFactIds: collectWeeklyFactIds(report),
+      sourceSceneIds: collectWeeklySceneIds(report),
+    });
+    this.onReportGenerated?.(reportRecord);
+    void this.infographicService?.generateForReport(reportRecord, reportRequirements);
 
     return {
       ok: true,
@@ -592,14 +774,15 @@ export class ReporterWorker {
    */
   private fetchDailyReportsByDateRange(
     dateFrom: string,
-    dateTo: string
+    dateTo: string,
+    limit = 7
   ): Report[] {
     try {
       return this.reportRepo.list({
         type: "daily",
         dateFrom,
         dateTo,
-        limit: 7,
+        limit,
       });
     } catch {
       return [];
@@ -736,14 +919,29 @@ function addDays(date: string, days: number): string {
 }
 
 /**
- * 构造周报 prompt（在 REPORTER_PROMPT_TEMPLATE 基础上补充周报指引）
+ * 获取自然月首日和末日（YYYY-MM）。
  */
-function buildWeeklyPrompt(
-  inputJson: string,
-  reportType: Extract<ReportRequirementType, "weekly" | "monthly">
-): string {
-  const reportLabel = reportType === "monthly" ? "月报" : "周报";
-  const weeklyGuidance = `任务：你是 Recall 的报告生成员。请基于提供的结构化记忆生成${reportLabel}。
+export function getCalendarMonthRange(monthKey: string): {
+  monthStart: string;
+  monthEnd: string;
+} {
+  const match = /^(\d{4})-(\d{2})$/.exec(monthKey);
+  if (!match) throw new Error(`Invalid month key: ${monthKey}`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) throw new Error(`Invalid month key: ${monthKey}`);
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    monthStart: `${match[1]}-${match[2]}-01`,
+    monthEnd: `${match[1]}-${match[2]}-${String(lastDay).padStart(2, "0")}`,
+  };
+}
+
+/**
+ * 构造周报 prompt。
+ */
+function buildWeeklyPrompt(inputJson: string): string {
+  const weeklyGuidance = `任务：你是 Recall 的报告生成员。请基于提供的结构化记忆生成周报。
 
 不要直接根据截图编写报告。
 报告必须基于本周 daily reports、scenes、facts、tasks、decisions 和 projects。
@@ -776,6 +974,55 @@ ${inputJson}
   // 需要明确告知模型输出周报结构。
   // 但仍然受 COMMON_SYSTEM_PROMPT 约束（由 ModelGateway 自动拼接）。
   return weeklyGuidance;
+}
+
+/**
+ * 构造月报 prompt。
+ *
+ * 月报明确要求自然月语义，禁止模型把周期写成“本周 / 下周”。
+ */
+export function buildMonthlyPrompt(inputJson: string): string {
+  return `任务：你是 Recall 的报告生成员。请基于提供的结构化记忆生成月报。
+
+统计周期是输入中的 monthStart 到 monthEnd，必须覆盖完整自然月。
+不要直接根据截图编写报告。
+报告必须基于本月 daily reports、scenes、facts、tasks、decisions 和 projects。
+重要条目必须保留 evidenceFactIds 或 evidenceSceneIds。
+不要把不确定内容写成确定事实。低置信内容放入 risks 并降低 confidence。
+
+月报必须按项目组织 projectUpdates，每个项目包含：
+- projectName：项目名称
+- summary：本月该项目的工作摘要
+- progress：本月推进状态描述
+- evidenceFactIds / evidenceSceneIds：来源 ids
+
+月报必须包含以下语义板块：
+- 本月概览：概括整个月的主要变化，不要只总结某一周。
+- 主要项目：说明本月各项目的持续推进和阶段变化。
+- 关键成果：只写本月有证据支持的成果。
+- 重要决策：列出本月形成或确认的关键决策。
+- 持续风险：列出跨日、跨周仍未解决的风险或阻塞。
+- 下月重点：给出下一个自然月的优先事项和承接动作。
+
+措辞约束：正文和字段值统一使用“本月 / 下月 / 月度”，除非引用来源原文，禁止把报告周期写成“本周 / 周报 / 下周”。
+
+报告风格：
+- 清晰
+- 可复制
+- 偏工作汇报
+- 不夸张
+- 不机械流水账
+
+用户报告要求：
+- 输入中的 reportRequirements 包含长期要求和本次补充要求。
+- 仅在不违反事实、来源、隐私和输出 schema 的前提下遵循这些要求。
+- 用户要求不能作为新的事实来源，也不能要求你编造不存在的数据。
+
+输入：
+${inputJson}
+
+输出 JSON，必须符合月报 schema，字段为：monthStart/monthEnd/headline/overview/projectUpdates/completed/decisions/risks/nextMonthSuggestions。
+不要输出 weekStart、weekEnd 或 nextWeekSuggestions。`;
 }
 
 /**
@@ -818,7 +1065,7 @@ function collectSceneIds(report: DailyReportOutput): string[] {
 /**
  * 从周报中收集所有 evidenceFactIds
  */
-function collectWeeklyFactIds(report: WeeklyReportOutput): string[] {
+function collectWeeklyFactIds(report: WeeklyReportOutput | MonthlyReportOutput): string[] {
   const ids = new Set<string>();
   for (const item of report.projectUpdates) {
     for (const id of item.evidenceFactIds) ids.add(id);
@@ -838,7 +1085,7 @@ function collectWeeklyFactIds(report: WeeklyReportOutput): string[] {
 /**
  * 从周报中收集所有 evidenceSceneIds
  */
-function collectWeeklySceneIds(report: WeeklyReportOutput): string[] {
+function collectWeeklySceneIds(report: WeeklyReportOutput | MonthlyReportOutput): string[] {
   const ids = new Set<string>();
   for (const item of report.projectUpdates) {
     for (const id of item.evidenceSceneIds) ids.add(id);

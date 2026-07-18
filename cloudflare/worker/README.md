@@ -1,9 +1,10 @@
-# Recall 更新分发 Worker
+# Recall 更新分发与信息图代理 Worker
 
-Cloudflare Worker + R2 托管的桌面端版本更新分发后端。
+Cloudflare Worker + R2 托管的桌面端版本更新分发后端，并代理统一的信息图生成能力。
 - API 端点返回版本元数据
 - 安装包文件存到 R2，客户端从 R2 下载（国内访问快、免出口流量费）
 - KV 记录客户端版本检查统计
+- 信息图服务密钥仅保存在 Worker Secret，桌面客户端只拿到生成后的图片地址
 
 ## 前置条件
 
@@ -40,6 +41,9 @@ npm run dev
 
 # 7. 部署到 workers.dev
 npm run deploy
+
+# 8. 配置信息图服务密钥（不要写入 wrangler.toml 或客户端源码）
+npx wrangler secret put INFOGRAPHIC_API_KEY
 ```
 
 部署后你会得到形如 `https://recall-update-worker.<your-subdomain>.workers.dev` 的域名。
@@ -67,7 +71,7 @@ npm run publish-release -- 0.1.2 ./Recall-0.1.2-setup.exe ./release-notes.md
 所有 JSON 响应：
 - `Content-Type: application/json; charset=utf-8`
 - `Cache-Control: no-store`
-- CORS：允许所有 Origin、方法 `GET, OPTIONS`、请求头 `Content-Type, X-Client-Version`
+- CORS：允许所有 Origin、方法 `GET, POST, OPTIONS`、请求头 `Content-Type, X-Client-Version`
 
 ### `GET /api/latest`
 
@@ -110,6 +114,20 @@ npm run publish-release -- 0.1.2 ./Recall-0.1.2-setup.exe ./release-notes.md
 - 查询参数 `?version=0.1.0`
 
 响应：`{ ok: true }`（统计通过 `ctx.waitUntil` 异步写入，不阻塞响应）
+
+### `POST /api/infographic/generate`
+
+桌面端在正式报告落库后异步调用。Worker 固定代理 `sensenova-u1-fast`，默认尺寸为 `2752x1536`（16:9 横版），每次只生成一张图片；同一客户端 IP 每日最多 100 次。
+
+请求体：
+```json
+{
+  "reportType": "weekly",
+  "prompt": "将以下报告整理成清晰的信息图……"
+}
+```
+
+成功响应：`{ "url": "https://..." }`。未配置 `INFOGRAPHIC_API_KEY` 时返回 `503 capability-unavailable`，桌面端会保持文字报告可用并隐藏图片区域。
 
 ### `GET /download/:filename`
 

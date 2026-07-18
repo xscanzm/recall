@@ -42,6 +42,7 @@ import {
   hasReportGenerationRequirements,
   resolveReportGenerationRequirements,
 } from "./reportRequirements";
+import type { InfographicService } from "./InfographicService";
 
 // ============================================================================
 // 结果类型
@@ -106,6 +107,8 @@ export class WorkReportWriterWorker {
   private readonly reportRepo: ReportRepository;
   private readonly settingsService: SettingsService | null;
   private readonly timelineBuilderWorker: TimelineBuilderWorker | null;
+  private readonly infographicService: InfographicService | null;
+  private readonly onReportGenerated?: (report: Report) => void;
 
   constructor(deps: {
     modelGateway: ModelGateway;
@@ -116,6 +119,8 @@ export class WorkReportWriterWorker {
     reportRepo: ReportRepository;
     settingsService?: SettingsService;
     timelineBuilderWorker?: TimelineBuilderWorker;
+    infographicService?: InfographicService;
+    onReportGenerated?: (report: Report) => void;
   }) {
     this.modelGateway = deps.modelGateway;
     this.modelJobQueue = deps.modelJobQueue;
@@ -125,6 +130,8 @@ export class WorkReportWriterWorker {
     this.reportRepo = deps.reportRepo;
     this.settingsService = deps.settingsService ?? null;
     this.timelineBuilderWorker = deps.timelineBuilderWorker ?? null;
+    this.infographicService = deps.infographicService ?? null;
+    this.onReportGenerated = deps.onReportGenerated;
   }
 
   /**
@@ -343,6 +350,8 @@ export class WorkReportWriterWorker {
       sourceFactIds: report.sourceFactIds,
       sourceTimelineBlockIds: report.sourceTimelineBlockIds,
     });
+    this.onReportGenerated?.(reportRecord);
+    void this.infographicService?.generateForReport(reportRecord, reportRequirements);
 
     // 15. 写入 report_selections 表记录 selected/excluded ids
     this.reportSelectionRepo.upsert(

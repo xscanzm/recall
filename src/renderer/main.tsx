@@ -9,6 +9,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { EndOfDayReviewPopup } from "./components/EndOfDayReviewPopup";
+import { ReportGeneratedPopup } from "./components/ReportGeneratedPopup";
 import "./styles/global.css";
 
 const container = document.getElementById("root");
@@ -17,9 +18,10 @@ if (!container) {
 }
 
 const isPopup = new URLSearchParams(window.location.search).get("window") === "end-of-day-review";
+const isReportPopup = new URLSearchParams(window.location.search).get("window") === "report-generated";
 
 createRoot(container).render(
   <StrictMode>
-    {isPopup ? <EndOfDayReviewPopup /> : <App />}
+    {isPopup ? <EndOfDayReviewPopup /> : isReportPopup ? <ReportGeneratedPopup /> : <App />}
   </StrictMode>
 );

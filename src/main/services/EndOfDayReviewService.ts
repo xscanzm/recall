@@ -1,6 +1,6 @@
 import { BrowserWindow, screen } from "electron";
 import * as path from "node:path";
-import type { EndOfDayReview } from "../../shared/types";
+import type { EndOfDayReview, ReportGeneratedEvent } from "../../shared/types";
 import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 import type { SettingsService } from "./SettingsService";
@@ -21,6 +21,7 @@ interface EndOfDayReviewServiceDeps {
   unfinishedThreadRepo: UnfinishedThreadRepository;
   getMainWindow: () => BrowserWindow | null;
   openToday: () => void;
+  openReports?: () => void;
   isDev: () => boolean;
   devServerUrl?: string;
 }
@@ -31,6 +32,7 @@ export class EndOfDayReviewService {
   private locked = false;
   private state: DailyState = this.newState(formatLocalDateKey(new Date()));
   private currentReview: EndOfDayReview | null = null;
+  private currentReportNotification: ReportGeneratedEvent | null = null;
 
   constructor(private deps: EndOfDayReviewServiceDeps) {}
 
@@ -53,6 +55,29 @@ export class EndOfDayReviewService {
 
   getCurrentReview(): EndOfDayReview | null {
     return this.currentReview;
+  }
+
+  getCurrentReportNotification(): ReportGeneratedEvent | null {
+    return this.currentReportNotification;
+  }
+
+  showReportNotification(report: ReportGeneratedEvent): void {
+    if (this.locked) return;
+    this.currentReportNotification = report;
+    this.currentReview = null;
+    this.closePopup();
+    this.showPopup("report-generated");
+  }
+
+  dismissReportNotification(): void {
+    this.currentReportNotification = null;
+    this.closePopup();
+  }
+
+  openReportNotification(): void {
+    this.currentReportNotification = null;
+    this.closePopup();
+    this.deps.openReports?.();
   }
 
   dismiss(): void {
@@ -103,7 +128,13 @@ export class EndOfDayReviewService {
     const review = this.buildReview(dateKey);
     if (review.empty) return;
     this.currentReview = review;
+    this.currentReportNotification = null;
     this.state.shown += 1;
+
+    this.showPopup("end-of-day-review");
+  }
+
+  private showPopup(windowName: "end-of-day-review" | "report-generated"): void {
 
     const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     const width = 410;
@@ -137,10 +168,10 @@ export class EndOfDayReviewService {
     win.once("ready-to-show", () => win.showInactive());
 
     if (this.deps.isDev() && this.deps.devServerUrl) {
-      void win.loadURL(`${this.deps.devServerUrl}?window=end-of-day-review`);
+      void win.loadURL(`${this.deps.devServerUrl}?window=${windowName}`);
     } else {
       void win.loadFile(path.join(__dirname, "..", "..", "renderer", "index.html"), {
-        query: { window: "end-of-day-review" },
+        query: { window: windowName },
       });
     }
   }

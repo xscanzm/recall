@@ -1,5 +1,5 @@
 // Recall 桌面端更新分发 Worker 主入口
-// 提供 5 个端点：/api/latest, /api/check, /api/ping, /download/latest, /download/:filename
+// 同时提供信息图代理，避免把共享图像服务密钥编译进桌面客户端。
 
 import { compareVersions } from "./version";
 import { readManifest, type UpdateManifest } from "./manifest";
@@ -13,10 +13,18 @@ export interface Env {
   RELEASES: R2Bucket;
   /** KV 命名空间：保存客户端版本检查统计 */
   STATS: KVNamespace;
+  /** 信息图服务密钥，仅通过 wrangler secret put 注入 */
+  INFOGRAPHIC_API_KEY?: string;
+  /** 信息图上游地址，可通过 vars 覆盖 */
+  INFOGRAPHIC_API_URL?: string;
+  /** 信息图模型，可通过 vars 覆盖 */
+  INFOGRAPHIC_MODEL?: string;
+  /** 信息图尺寸，可通过 vars 覆盖 */
+  INFOGRAPHIC_SIZE?: string;
 }
 
 /** CORS 允许的方法 */
-const CORS_ALLOWED_METHODS = "GET, OPTIONS";
+const CORS_ALLOWED_METHODS = "GET, POST, OPTIONS";
 /** CORS 允许的请求头 */
 const CORS_ALLOWED_HEADERS = "Content-Type, X-Client-Version";
 
@@ -63,6 +71,121 @@ function extractVersion(request: Request, url: URL): string | null {
   return null;
 }
 
+const DEFAULT_INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generations";
+const DEFAULT_INFOGRAPHIC_MODEL = "sensenova-u1-fast";
+const DEFAULT_INFOGRAPHIC_SIZE = "2752x1536";
+const INFOGRAPHIC_MAX_PROMPT_LENGTH = 30_000;
+const INFOGRAPHIC_DAILY_REQUEST_LIMIT = 100;
+const INFOGRAPHIC_TYPES = new Set(["personal", "work", "daily", "weekly", "monthly"]);
+
+function isImageUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2_000) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function extractImageUrl(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const body = value as { url?: unknown; data?: unknown };
+  if (isImageUrl(body.url)) return body.url;
+  if (Array.isArray(body.data)) {
+    const first = body.data[0];
+    if (first && typeof first === "object" && isImageUrl((first as { url?: unknown }).url)) {
+      return (first as { url: string }).url;
+    }
+  }
+  return null;
+}
+
+async function handleInfographicGeneration(request: Request, env: Env): Promise<Response> {
+  if (!env.INFOGRAPHIC_API_KEY?.trim()) {
+    return jsonResponse({ error: "capability-unavailable" }, 503);
+  }
+  if (!(await takeInfographicRateLimit(request, env))) {
+    return jsonResponse({ error: "rate-limited" }, 429);
+  }
+  const declaredLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > INFOGRAPHIC_MAX_PROMPT_LENGTH * 2) {
+    return jsonResponse({ error: "request-too-large" }, 413);
+  }
+
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return jsonResponse({ error: "invalid-json" }, 400);
+  }
+
+  if (!input || typeof input !== "object") {
+    return jsonResponse({ error: "invalid-request" }, 400);
+  }
+  const body = input as { prompt?: unknown; reportType?: unknown };
+  if (
+    typeof body.prompt !== "string" ||
+    body.prompt.trim().length === 0 ||
+    body.prompt.length > INFOGRAPHIC_MAX_PROMPT_LENGTH ||
+    (body.reportType !== undefined &&
+      (typeof body.reportType !== "string" || !INFOGRAPHIC_TYPES.has(body.reportType)))
+  ) {
+    return jsonResponse({ error: "invalid-request" }, 400);
+  }
+
+  const endpoint = env.INFOGRAPHIC_API_URL?.trim() || DEFAULT_INFOGRAPHIC_API_URL;
+  const model = env.INFOGRAPHIC_MODEL?.trim() || DEFAULT_INFOGRAPHIC_MODEL;
+  const size = env.INFOGRAPHIC_SIZE?.trim() || DEFAULT_INFOGRAPHIC_SIZE;
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.INFOGRAPHIC_API_KEY.trim()}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        prompt: body.prompt,
+        size,
+        n: 1,
+      }),
+    });
+  } catch {
+    return jsonResponse({ error: "upstream-unreachable" }, 502);
+  }
+
+  if (!upstream.ok) {
+    return jsonResponse({ error: "upstream-failed", status: upstream.status }, 502);
+  }
+
+  let responseBody: unknown;
+  try {
+    responseBody = await upstream.json();
+  } catch {
+    return jsonResponse({ error: "upstream-invalid-response" }, 502);
+  }
+  const imageUrl = extractImageUrl(responseBody);
+  if (!imageUrl) {
+    return jsonResponse({ error: "upstream-missing-image" }, 502);
+  }
+  return jsonResponse({ url: imageUrl });
+}
+
+async function takeInfographicRateLimit(request: Request, env: Env): Promise<boolean> {
+  const ip = (request.headers.get("CF-Connecting-IP") ?? "unknown").slice(0, 80);
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `infographic:${day}:${ip}`;
+  const current = Number.parseInt((await env.STATS.get(key)) ?? "0", 10) || 0;
+  if (current >= INFOGRAPHIC_DAILY_REQUEST_LIMIT) return false;
+  // KV 是最终一致的，极端并发时可能略超出上限，但可阻断普通滥用。
+  await env.STATS.put(key, String(current + 1), { expirationTtl: 172_800 });
+  return true;
+}
+
 export default {
   async fetch(
     request: Request,
@@ -84,6 +207,15 @@ export default {
             },
           })
         );
+      }
+
+      // ─── POST /api/infographic/generate ────────────────
+      // 只代理固定的信息图模型；上游密钥永不返回给客户端。
+      if (path === "/api/infographic/generate") {
+        if (method !== "POST") {
+          return jsonResponse({ error: "method-not-allowed" }, 405);
+        }
+        return handleInfographicGeneration(request, env);
       }
 
       // ─── 路由：仅支持 GET ─────────────────────────────

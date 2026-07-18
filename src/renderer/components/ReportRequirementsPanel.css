@@ -1,5 +1,5 @@
 .reports-requirements-bar {
-  max-width: 920px;
+  max-width: none;
   width: 100%;
   display: flex;
   align-items: center;

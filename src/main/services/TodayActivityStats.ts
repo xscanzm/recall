@@ -2,6 +2,7 @@ import type {
   TodayActivityEpisode,
   TodayActivityOverview,
   TodayActivityStats,
+  TodayActivityWindow,
   TimelineBlockCategory,
 } from "../../shared/types";
 
@@ -50,6 +51,8 @@ interface ObservationInterval {
   minutes: number;
 }
 
+const ACTIVITY_WINDOW_MAX_GAP_MS = 5 * 60 * 1000;
+
 export function buildTodayActivityOverview(
   observations: ActivityObservation[],
   episodes: ActivityEpisodeInput[],
@@ -61,18 +64,28 @@ export function buildTodayActivityOverview(
   const stats = calculateStats(intervals, episodes);
   const factsById = new Map(facts.map((fact) => [fact.id, fact]));
   const projectNamesById = new Map(projects.map((project) => [project.id, project.name]));
+  const activityEpisodes = episodes
+    .map((episode) => buildEpisodeOverview(
+      episode,
+      intervals,
+      facts,
+      factsById,
+      projectNamesById
+    ))
+    .sort((left, right) => left.startAt.localeCompare(right.startAt));
+  const observedStartAt = intervals.length > 0
+    ? new Date(intervals[0].startMs).toISOString()
+    : null;
+  const observedEndAt = intervals.length > 0
+    ? new Date(Math.max(...intervals.map((interval) => interval.endMs))).toISOString()
+    : null;
 
   return {
     stats,
-    episodes: episodes
-      .map((episode) => buildEpisodeOverview(
-        episode,
-        intervals,
-        facts,
-        factsById,
-        projectNamesById
-      ))
-      .sort((left, right) => left.startAt.localeCompare(right.startAt)),
+    episodes: activityEpisodes,
+    windows: mergeActivityWindows(activityEpisodes),
+    observedStartAt,
+    observedEndAt,
   };
 }
 
@@ -207,6 +220,98 @@ function buildEpisodeOverview(
       .map((fact) => fact.content)
       .filter((content, index, values) => values.indexOf(content) === index),
   };
+}
+
+function mergeActivityWindows(episodes: TodayActivityEpisode[]): TodayActivityWindow[] {
+  const windows: TodayActivityWindow[] = [];
+  for (const episode of episodes) {
+    const previous = windows[windows.length - 1];
+    if (!previous || !canMergeWindow(previous, episode)) {
+      windows.push(createActivityWindow(episode));
+      continue;
+    }
+
+    const sourceEpisodeIds = [...previous.sourceEpisodeIds, episode.id];
+    previous.endAt = maxIso(previous.endAt, episode.endAt);
+    previous.summary = mergeText(previous.summary, episode.summary);
+    previous.categoryConfidence = averageConfidence(
+      previous.categoryConfidence,
+      episode.categoryConfidence,
+      previous.sourceEpisodeIds.length,
+      1
+    );
+    previous.sourceEpisodeIds = sourceEpisodeIds;
+    previous.sourceObservationIds = uniqueStrings([
+      ...previous.sourceObservationIds,
+      ...episode.sourceObservationIds,
+    ]);
+    previous.projectNames = uniqueStrings([
+      ...previous.projectNames,
+      ...episode.projectNames,
+    ]);
+    previous.topicTexts = uniqueStrings([
+      ...previous.topicTexts,
+      ...episode.topicTexts,
+    ]);
+  }
+  return windows;
+}
+
+function createActivityWindow(episode: TodayActivityEpisode): TodayActivityWindow {
+  return {
+    id: `activity-window:${episode.id}`,
+    startAt: episode.startAt,
+    endAt: episode.endAt,
+    title: episode.title,
+    summary: episode.summary,
+    category: episode.category,
+    categoryConfidence: episode.categoryConfidence,
+    sourceEpisodeIds: [episode.id],
+    sourceObservationIds: [...episode.sourceObservationIds],
+    projectNames: [...episode.projectNames],
+    topicTexts: [...episode.topicTexts],
+  };
+}
+
+function canMergeWindow(
+  previous: TodayActivityWindow,
+  current: TodayActivityEpisode
+): boolean {
+  if (previous.category !== current.category) return false;
+  const previousEnd = Date.parse(previous.endAt);
+  const currentStart = Date.parse(current.startAt);
+  if (!Number.isFinite(previousEnd) || !Number.isFinite(currentStart)) return false;
+  if (currentStart - previousEnd > ACTIVITY_WINDOW_MAX_GAP_MS) return false;
+
+  if (previous.projectNames.length > 0 || current.projectNames.length > 0) {
+    return previous.projectNames.some((name) => current.projectNames.includes(name));
+  }
+  return true;
+}
+
+function mergeText(left: string, right: string): string {
+  if (!right || left === right) return left;
+  if (!left) return right;
+  return `${left}；${right}`.slice(0, 1000);
+}
+
+function averageConfidence(
+  previous: number,
+  current: number,
+  previousWeight: number,
+  currentWeight: number
+): number {
+  const totalWeight = previousWeight + currentWeight;
+  if (totalWeight <= 0) return 0;
+  return Math.round(((previous * previousWeight + current * currentWeight) / totalWeight) * 100) / 100;
+}
+
+function maxIso(left: string, right: string): string {
+  return Date.parse(left) >= Date.parse(right) ? left : right;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim()))];
 }
 
 function uniqueById<T extends { id: string }>(values: T[]): T[] {

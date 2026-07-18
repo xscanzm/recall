@@ -29,3 +29,9 @@ bucket_name = "recall-releases"
 [[kv_namespaces]]
 binding = "STATS"
 id = "390817d3c39c4fc38e290fea1d9a6739"
+
+# 信息图能力的非敏感默认参数；密钥必须通过 `wrangler secret put INFOGRAPHIC_API_KEY` 注入。
+[vars]
+INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generations"
+INFOGRAPHIC_MODEL = "sensenova-u1-fast"
+INFOGRAPHIC_SIZE = "2752x1536"
