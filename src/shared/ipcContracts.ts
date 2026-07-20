@@ -111,9 +111,11 @@ export const TodayTimelineProjectionSchema = z.object({
 export const TimelineBlockSchema = TodayTimelineProjectionSchema;
 
 export const WorkReportSchema = z.object({
-  id: z.string(), dateKey, title: z.string(), plainText: z.string(),
+  id: z.string(), dateKey, title: z.string(),
+  reportType: z.enum(["work_daily_report", "daily"]).optional(),
+  plainText: z.string(),
   sections: z.object({ completed: stringArray, projectProgress: stringArray, risks: stringArray, tomorrowPlan: stringArray }),
-  sourceTimelineBlockIds: stringArray, sourceFactIds: stringArray, omittedForPrivacy: z.number(), warnings: stringArray,
+  sourceTimelineBlockIds: stringArray, sourceSceneIds: stringArray.optional(), sourceFactIds: stringArray, omittedForPrivacy: z.number(), warnings: stringArray,
   createdAt: z.string().optional(), updatedAt: z.string().optional(),
 });
 

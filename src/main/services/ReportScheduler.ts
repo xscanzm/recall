@@ -2,7 +2,7 @@
 // 报告调度（来自 06 文档 / 02 文档 Flow 7、8）
 //
 // 职责：
-// - 每日固定时间生成工作日报（默认 19:00，可配置）
+// - 每日固定时间生成工作日报（默认 17:30，可配置）
 // - 每日固定时间生成个人复盘（默认 23:00，可配置）
 // - 每周固定时间生成周报（可配置，默认周五 20:00）
 // - 支持手动生成（用户点击）
@@ -467,7 +467,7 @@ export class ReportScheduler {
    *
    * 重要修正：
    * - 补 today 时，必须先检查"当前时间 >= 当天触发时刻"，
-   *   否则早晨启动时（19:00 还没到）会过早生成"今天的报告"，数据范围才到早晨。
+   *   否则早晨启动时（17:30 还没到）会过早生成"今天的报告"，数据范围才到早晨。
    * - today 的失败重试交给 checkSchedule 处理（按指数退避），backfill 只负责历史日期。
    */
   private async checkMissedSchedules(): Promise<void> {
@@ -849,7 +849,7 @@ function parseTime(time: string): { hour: number; minute: number } {
 
 /**
  * 计算给定时间字符串对应的"今天触发时刻"的 Date 对象
- * 例如 time="19:00" → 今天的 19:00:00
+ * 例如 time="17:30" → 今天的 17:30:00
  */
 function getTodayTriggerDate(time: string): Date {
   const { hour, minute } = parseTime(time);
@@ -877,8 +877,8 @@ function isPastTriggerTime(time: string, now: Date = new Date()): boolean {
 
 /**
  * 判断当前时间是否正好处于触发那一分钟
- * - 例如 time="19:00"，now=19:00:30 → true
- * - 例如 time="19:00"，now=19:01:30 → false
+ * - 例如 time="17:30"，now=17:30:30 → true
+ * - 例如 time="17:30"，now=17:31:30 → false
  */
 function isAtTriggerMinute(time: string, now: Date = new Date()): boolean {
   const { hour, minute } = parseTime(time);

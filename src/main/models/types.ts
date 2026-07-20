@@ -104,7 +104,7 @@ export interface AppSettings {
    * - lastWeeklyReportWeekStart: 上次成功生成 weekly 的 weekStart
    * - lastPersonalReviewDate: 上次成功生成 personal_daily_review 的 dateKey
    * - 修复：之前是内存变量（ReportScheduler.lastDailyReportDate），应用重启就丢
-   *   → 应用没在 18:30 开着那一天就永远漏报
+   *   → 应用没在 17:30 开着那一天就永远漏报
    */
   schedule: {
     lastDailyReportDate: string | null;
@@ -151,7 +151,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notification: {
     inAppReminders: true,
     desktopNotifications: false,
-    dailyReportTime: "19:00",
+    dailyReportTime: "17:30",
     weeklyReportTime: "20:00",
   },
   endOfDayReview: {
@@ -161,7 +161,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   dailyReport: {
     autoGenerate: false,
-    time: "19:00",
+    time: "17:30",
   },
   personalReview: {
     autoGenerate: false,

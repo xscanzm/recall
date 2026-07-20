@@ -20,6 +20,23 @@ import "./styles.css";
 
 const DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/latest";
 const SOURCE_URL = "https://github.com/xscanzm/recall";
+const METRICS_URL = "https://recall-update.ppclaw.online/api/metrics/website-visit";
+
+function useWebsiteVisitMetric() {
+  React.useEffect(() => {
+    const sessionKey = "recall-website-visit-recorded";
+    try {
+      if (window.sessionStorage.getItem(sessionKey)) return;
+      window.sessionStorage.setItem(sessionKey, "true");
+    } catch {
+      // 存储不可用时仍尝试发送一次聚合访问计数。
+    }
+
+    void fetch(METRICS_URL, { method: "POST", mode: "cors", keepalive: true }).catch(() => {
+      // 统计失败不能影响官网访问或下载。
+    });
+  }, []);
+}
 
 function Mark({ compact = false }: { compact?: boolean }) {
   return (
@@ -70,7 +87,28 @@ function AppPreview() {
   );
 }
 
+function CommunityQr({ hero = false }: { hero?: boolean }) {
+  return (
+    <aside className={`community-qr ${hero ? "community-qr--hero" : ""}`} aria-label="Recall 公测用户沟通群">
+      <img src="/recall-early-user-wechat-qr.jpg" alt="回声 Recall 公测用户沟通群微信二维码" />
+      <div className="community-qr__copy">
+        <p className="community-qr__eyebrow">{hero ? "首批公测支持" : "公测用户沟通群"}</p>
+        {hero ? (
+          <>
+            <strong>前 100 名入群并完成申请的用户，我们将提供 API Key，并承担公测期间的模型调用费用。</strong>
+            <p className="community-qr__hint">微信扫码加入群聊，向群内管理员申请。</p>
+          </>
+        ) : (
+          <p className="community-qr__hint">微信扫码加入群聊<br />首批 100 名申请用户，公测期 API 调用费用由我们承担</p>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 function App() {
+  useWebsiteVisitMetric();
+
   return (
     <>
       <header className="site-header">
@@ -84,12 +122,13 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.4.2</p>
+            <p className="eyebrow"><span /> Windows 公开测试版 · 0.4.3</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
             <div className="hero-actions"><DownloadLink /><a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a></div>
-            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 92 MB <span /> 需自备兼容模型 API Key</p>
+            <CommunityQr hero />
+            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 92 MB <span /> 首批用户可申请公测 API Key</p>
           </div>
           <AppPreview />
         </section>
@@ -164,18 +203,23 @@ function App() {
         <section className="before-section" id="before">
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 92 MB，版本 0.4.2。</small></p>
+            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 92 MB，版本 0.4.3。</small></p>
             <p><span>02</span><b>需要自备模型服务</b><small>首次使用需填写兼容模型的 Endpoint、模型名和 API Key。</small></p>
             <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
           </div>
         </section>
 
         <section className="final-cta">
-          <Mark />
-          <p>一天会过去。</p>
-          <h2>但你走过的路，<br />可以留下回声。</h2>
-          <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-          <small>Windows x64 · v0.4.2 · 自带 API Key</small>
+          <div className="final-cta__content">
+            <div className="final-cta__copy">
+              <Mark />
+              <p>一天会过去。</p>
+              <h2>但你走过的路，<br />可以留下回声。</h2>
+              <DownloadLink>下载 Windows 公开测试版</DownloadLink>
+              <small>Windows x64 · v0.4.3 · 首批 100 名入群申请用户可获公测 API Key</small>
+            </div>
+            <CommunityQr />
+          </div>
         </section>
       </main>
 

@@ -626,7 +626,7 @@ function PrivacyStep(props: PrivacyStepProps) {
         <p><strong>截图保留策略</strong>：{retentionLabel}</p>
         <p><strong>应用内提醒</strong>：{settings?.notification.inAppReminders ? "已开启（默认）" : "已关闭"}</p>
         <p><strong>桌面通知</strong>：报告生成会提示一次，其他提醒{settings?.notification.desktopNotifications ? "已开启" : "已关闭（默认）"}</p>
-        <p><strong>日报时间</strong>：{settings?.notification.dailyReportTime ?? "18:30"}</p>
+        <p><strong>日报时间</strong>：{settings?.notification.dailyReportTime ?? "17:30"}</p>
         <p><strong>周报时间</strong>：{settings?.notification.weeklyReportTime ?? "20:00（每周日）"}</p>
 
         <p style={{ marginTop: "8px" }}><strong>已生效的隐私规则</strong>（共 {privacyRules.length} 条）：</p>

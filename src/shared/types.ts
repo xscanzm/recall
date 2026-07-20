@@ -215,6 +215,8 @@ export interface WorkReport {
   id: string;
   dateKey: string;
   title: string;
+  /** 来源类型：人工选片段工作日报，或自动日报在工作日报 Tab 的展示投影。 */
+  reportType?: "work_daily_report" | "daily";
   plainText: string;
   sections: {
     completed: string[];
@@ -223,6 +225,7 @@ export interface WorkReport {
     tomorrowPlan: string[];
   };
   sourceTimelineBlockIds: string[];
+  sourceSceneIds?: string[];
   sourceFactIds: string[];
   omittedForPrivacy: number;
   warnings: string[];

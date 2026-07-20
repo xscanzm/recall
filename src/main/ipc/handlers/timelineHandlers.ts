@@ -51,12 +51,14 @@ export function registerWorkReportHandlers(deps: IpcDeps): void {
           id: typeof parsed.id === "string" ? parsed.id : report.id,
           dateKey: typeof parsed.dateKey === "string" ? parsed.dateKey : report.dateKey,
           title: typeof parsed.title === "string" ? parsed.title : report.title,
+          reportType: "work_daily_report",
           plainText: typeof parsed.plainText === "string" ? parsed.plainText : "",
           sections: {
             completed: strings(sections.completed), projectProgress: strings(sections.projectProgress),
             risks: strings(sections.risks), tomorrowPlan: strings(sections.tomorrowPlan),
           },
           sourceTimelineBlockIds: strings(parsed.sourceTimelineBlockIds), sourceFactIds: strings(parsed.sourceFactIds),
+          sourceSceneIds: report.sourceSceneIds,
           omittedForPrivacy: typeof parsed.omittedForPrivacy === "number" ? parsed.omittedForPrivacy : 0,
           warnings: strings(parsed.warnings), createdAt: report.createdAt, updatedAt: report.updatedAt,
         };

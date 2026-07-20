@@ -18,6 +18,7 @@ import type {
 import type { UpdateStatus, DownloadProgress } from "../../shared/updateTypes";
 import type { ReportRequirements } from "../../shared/reportRequirements";
 import { getIpc, fetchTodayPageData } from "./ipc";
+import { dailyReportRecordToWorkReport } from "./reportAdapters";
 import { isCurrentTodayPageRequest, shouldRollOverTodayDate } from "./todayNavigation";
 import { clearAllDataAction, clearScreenshotsOnlyAction, exportDataAction, forgetRecentAction, getCacheSizeAction, searchMemoryAction } from "./searchDataActions";
 
@@ -2333,14 +2334,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } else if (tab === "work") {
       if (state.workReport) return;
-      const list = await getIpc().reports.list<{ dateKey: string }>({
-        type: "work_daily_report",
-        dateTo: today,
-        limit: 1,
-      });
-      if (list.length > 0 && list[0]?.dateKey && list[0].dateKey !== currentDateKey) {
-        set({ reportsDateKey: list[0].dateKey });
-        await get().loadWorkReport(list[0].dateKey);
+      const [manualReports, dailyReports] = await Promise.all([
+        getIpc().reports.list<{ dateKey: string; updatedAt?: string }>({
+          type: "work_daily_report",
+          dateTo: today,
+          limit: 1,
+        }),
+        getIpc().reports.list<{ dateKey: string; updatedAt?: string }>({
+          type: "daily",
+          dateTo: today,
+          limit: 1,
+        }),
+      ]);
+      const latest = [...manualReports, ...dailyReports]
+        .filter((report) => report.dateKey)
+        .sort((left, right) => {
+          const dateOrder = right.dateKey.localeCompare(left.dateKey);
+          if (dateOrder !== 0) return dateOrder;
+          return (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "");
+        })[0];
+      if (latest?.dateKey && latest.dateKey !== currentDateKey) {
+        set({ reportsDateKey: latest.dateKey });
+        await get().loadWorkReport(latest.dateKey);
       }
     }
   },
@@ -2404,7 +2419,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const res = await getIpc().workReport.get(dateKey);
       if (res.ok) {
-        const data = res.data as WorkReport | null | undefined;
+        let data = res.data as WorkReport | null | undefined;
+        // 定时自动日报使用 type=daily；工作日报 Tab 在没有人工选片段报告时兼容展示它。
+        if (!data) {
+          const dailyReports = await getIpc().reports.list<ReportItem>({
+            type: "daily",
+            dateFrom: dateKey,
+            dateTo: dateKey,
+            limit: 1,
+          });
+          data = dailyReportRecordToWorkReport(dailyReports[0]);
+        }
         if (dateKey >= todayDateKey()) {
           set({ reportsDateKeySetByUser: false });
         }

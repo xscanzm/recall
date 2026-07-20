@@ -1,3 +1,65 @@
+## v0.4.3 — 自动日报显示修复 + 日报时间调整
+
+本次版本修复一个影响报告可见性的重要问题：定时生成的「自动日报」之前在工作日报 Tab 完全显示不出来。同时调整日报默认触发时间为 17:30，并让数据窗口与配置时间联动；附带上线官网运营数据采集与公测用户社群引导。
+
+### 修复
+
+#### 1. 自动日报在工作日报页面显示不出来（核心修复）
+
+**现象**：用户开启了日报自动生成后，到了设定时间，工作日报 Tab 仍然空白，看不到自动生成的日报。
+
+**根因**：回声 Recall 存在两种结构不同的日报：
+- 人工选片段工作日报：`type = "work_daily_report"`，直接以 `WorkReport` 结构存入 reports 表
+- 自动日报：`type = "daily"`，`contentJson` 字段保存结构化 JSON（headline / overview / completed / projectUpdates / openTasks / decisions / risks / tomorrowSuggestions / needsReview）
+
+工作日报 Tab 之前完全没有针对 `type = "daily"` 做查询和投影，导致只有自动日报的日期在 Tab 中被完全跳过，`loadWorkReport` 也只查 `work_daily_report` 返回 null。
+
+**修复方案**：保持两种报告的持久化类型独立（不合并存储），在工作日报 Tab 增加适配器层 + 兜底查询：
+
+- **新增 `src/renderer/state/reportAdapters.ts`**：`dailyReportRecordToWorkReport(record)` 把 `type=daily` 的记录投影为 `WorkReport` 视图模型
+  - 解析 `contentJson`（容错：JSON 解析失败或非对象返回 null）
+  - 字段映射：`headline` → `title`；`completed` / `risks` / `tomorrowSuggestions` → `sections`；`projectUpdates` 拼成「项目名：摘要」；`openTasks` 拼成「文本（状态）」；`needsReview` 拼成「文本（原因）」
+  - **保留用户编辑**：若 `parsed.edited === true` 且存在 `parsed.plainText`，直接用编辑后的正文，不再重新拼接
+  - 否则调用 `composeDailyPlainText` 按「标题 / 概览 / 项目进展 / 今日完成 / 待处理事项 / 重要决策 / 问题与风险 / 明日建议 / 需要确认」顺序合成 `plainText`
+  - 设置 `reportType: "daily"`，透传 `sourceFactIds` / `sourceSceneIds` / `createdAt` / `updatedAt`
+- **`store.ts` Tab 切换取最新日期**：旧逻辑只查 `work_daily_report`；新逻辑 `Promise.all` 同时查 `work_daily_report` 和 `daily` 两类报告，按 `dateKey` 降序（相同则按 `updatedAt` 降序）合并排序取最新一条作为 Tab 落点
+- **`store.ts` `loadWorkReport` 兜底查询**：`workReport.get(dateKey)` 返回 null 时，再查 `reports.list({ type: "daily", dateFrom, dateTo, limit: 1 })`，通过 `dailyReportRecordToWorkReport` 投影为 `WorkReport`
+- **`ReportsPage.tsx` UI 适配**：自动日报时隐藏风格切换控件（仅对人工选片段报告有意义），改为显示「自动生成」标签；「重新选择片段」按钮文案改为「选择片段生成工作日报」；`setSourcePanel` 的 `sceneIds` 改为 `workReport.sourceSceneIds ?? []`，让自动日报也能展示来源场景
+- **类型契约补全**：`WorkReport` 接口新增 `reportType?: "work_daily_report" | "daily"` 和 `sourceSceneIds?: string[]`；`WorkReportSchema` 同步；`timelineHandlers.ts` 在构造 `work_daily_report` 响应时显式写 `reportType` 与 `sourceSceneIds`
+- **新增单元测试** `reportAdapters.test.ts`：覆盖完整字段映射 + 用户编辑后正文保留两个用例
+
+#### 2. 日报数据窗口与配置时间不一致
+
+- **现象**：用户改了日报调度时间后，数据窗口仍按 19:00 滚动，导致生成的内容覆盖范围与配置不符
+- **修复**：`ReporterWorker.getDateRange(date)` 改为 `getDateRange(date, reportTime)`，数据窗口从硬编码 19:00 改为读取 `settings.notification.dailyReportTime`（兜底 17:30）；新增 `getDailyReportTime()` 和 `parseReportTime()` 辅助函数
+
+### 改进
+
+#### 3. 日报默认触发时间 19:00 → 17:30
+
+- `DEFAULT_SETTINGS.notification.dailyReportTime` 与 `DEFAULT_SETTINGS.dailyReport.time` 从 19:00 调整为 17:30，更贴合下班前生成
+- Onboarding 展示兜底文案、SettingsPage hint 文案、ReportScheduler 注释同步更新
+
+#### 4. 官网运营数据采集（cloudflare/worker + website）
+
+- 官网上线公测用户微信群二维码与 API Key 申请引导（hero 区与 final-cta 区各放一个二维码，hero 文案改为「首批用户可申请公测 API Key」）
+- Cloudflare Worker 新增官网访问 / 下载 / 更新检查的聚合统计与运营数据页：
+  - `POST /api/metrics/website-visit`：官网访问计数，按 CST 日期聚合，不收设备/用户信息
+  - `GET /api/metrics/daily?date=YYYY-MM-DD`：带 `STATS_READ_TOKEN` 鉴权，返回当日聚合 + 按版本计数
+  - `GET /admin/stats?date=...&range=7|30|all`：Basic Auth 鉴权的运营数据页
+  - 旧端点 `GET /api/ping` 被新的 metrics 体系替代
+- 官网新增 `useWebsiteVisitMetric` Hook（首次进入会话时上报，sessionStorage 去重，失败不影响页面）
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试 `reportAdapters.test.ts`：自动日报字段映射 + 用户编辑正文保留
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.4.2 — 报告信息图 + 月报独立 + 生成通知
 
 本次版本聚焦「报告呈现与触达」：把文字报告升级为「文字 + 信息图 + 桌面提醒」的完整闭环，月报从周报复用模式独立为自有契约，调度器不再受 autoGenerate 门控始终按设定时间自动生成，今日活动节奏图从固定 0-24h 时钟映射改为实际观察时段映射。

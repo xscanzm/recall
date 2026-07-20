@@ -128,7 +128,7 @@ export function SettingsPage() {
 
   const [inAppReminders, setInAppReminders] = useState(true);
   const [desktopNotifications, setDesktopNotifications] = useState(false);
-  const [dailyReportTime, setDailyReportTime] = useState("18:30");
+  const [dailyReportTime, setDailyReportTime] = useState("17:30");
   const [personalReviewTime, setPersonalReviewTime] = useState("22:00");
   const [weeklyReportTime, setWeeklyReportTime] = useState("20:00");
   const [endOfDayEnabled, setEndOfDayEnabled] = useState(true);
@@ -874,7 +874,7 @@ export function SettingsPage() {
                     value={dailyReportTime}
                     onChange={(e) => setDailyReportTime(e.target.value)}
                   />
-                  <p className="settings-form__hint">每天此时间触发日报生成（默认 18:30）</p>
+                  <p className="settings-form__hint">每天此时间触发日报生成（默认 17:30）</p>
                 </div>
 
                 <div className="settings-form__field">

@@ -253,7 +253,7 @@ export class ReporterWorker {
     }
 
     // 2. 查询今日数据
-    const { startOfDay, endOfDay } = getDateRange(date);
+    const { startOfDay, endOfDay } = getDateRange(date, this.getDailyReportTime());
     const scenes = filterReportableSources(this.fetchScenesByDateRange(startOfDay, endOfDay));
     const facts = filterReportableSources(this.fetchFactsByDateRange(startOfDay, endOfDay));
     const projects = this.fetchActiveProjects();
@@ -770,6 +770,18 @@ export class ReporterWorker {
   }
 
   /**
+   * 获取日报生成时间，保证数据窗口与调度时间一致。
+   */
+  private getDailyReportTime(): string {
+    try {
+      const settings = this.settingsService?.getAll();
+      return settings?.notification.dailyReportTime || settings?.dailyReport.time || "17:30";
+    } catch {
+      return "17:30";
+    }
+  }
+
+  /**
    * 查询指定日期范围内的 daily reports
    */
   private fetchDailyReportsByDateRange(
@@ -880,29 +892,25 @@ export class ReporterWorker {
 // ============================================================================
 
 /**
- * 计算指定本地日期的 UTC ISO 范围（startOfDay / endOfDay）
- *
- * 修复：之前直接用 `${date}T00:00:00.000Z` 把"本地日期"当 UTC 解释，
- * 在 UTC+8 时区下：
- * - startOfDay 实际是本地 08:00，**漏掉**当天 0:00-8:00 的事实
- * - endOfDay 实际是次日 07:59:59，**误吸**次日 0:00-8:00 的事实
- *
- * 新版：用 Intl.DateTimeFormat 或 Date.UTC 反推本地 0:00 对应的 UTC ISO 字符串。
- * - 本地 0:00 → 减去时区偏移 → UTC ISO
- * - 本地 23:59:59.999 → 同上 + 24h - 1ms
+ * 计算日报滚动 24 小时的 UTC ISO 范围。
+ * 例如日报时间为 17:30，则范围是前一天 17:30 到当天 17:30。
  */
-function getDateRange(date: string): { startOfDay: string; endOfDay: string } {
-  // 2026-07-07 变更：工作日报数据范围改为昨天 19:00 → 今天 19:00（滚动 24 小时）
-  // 原因：工作日报在 19:00 生成，覆盖"从昨天下班后到今天下班前"的完整工作周期
+function getDateRange(date: string, reportTime = "17:30"): { startOfDay: string; endOfDay: string } {
   const [y, m, d] = date.split("-").map(Number);
-  // 今天 19:00（本地）
-  const today19 = new Date(y, (m ?? 1) - 1, d ?? 1, 19, 0, 0, 0);
-  // 昨天 19:00（本地）= 今天 19:00 - 24h
-  const yesterday19 = new Date(today19.getTime() - 24 * 60 * 60 * 1000);
+  const { hour, minute } = parseReportTime(reportTime);
+  const todayTrigger = new Date(y, (m ?? 1) - 1, d ?? 1, hour, minute, 0, 0);
+  const previousTrigger = new Date(todayTrigger.getTime() - 24 * 60 * 60 * 1000);
   return {
-    startOfDay: yesterday19.toISOString(),
-    endOfDay: today19.toISOString(),
+    startOfDay: previousTrigger.toISOString(),
+    endOfDay: todayTrigger.toISOString(),
   };
+}
+
+function parseReportTime(time: string): { hour: number; minute: number } {
+  const match = /^(?:[01]\d|2[0-3]):[0-5]\d$/.exec(time);
+  if (!match) return { hour: 17, minute: 30 };
+  const [hour, minute] = time.split(":").map(Number);
+  return { hour, minute };
 }
 
 /**

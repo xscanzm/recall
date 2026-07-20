@@ -15,7 +15,7 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 - **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 92 MB）
 - **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-> 下载后可校验完整性：`certutil -hashfile Recall-0.4.2-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
+> 下载后可校验完整性：`certutil -hashfile Recall-0.4.3-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
 
 ---
 
@@ -52,7 +52,8 @@ Windows OCR + 多模态大模型双管线理解：L0 Observation
 
 ## 版本演进
 
-- **v0.4.2**（最新）：报告信息图生成（16:9 中文信息图，嵌入报告正文上方）+ 月报独立契约（专属 schema/prompt/调度入口，自然月首末日）+ 报告生成通知（桌面卡片弹窗 + 顶栏 Bell 角标 + 未读持久化）+ 调度器始终自动执行（不再受 autoGenerate 门控，周报触发日改为周五）+ 今日活动窗口化与节奏图重构（实际观察时段映射，相邻同类 Episode 自动合并）
+- **v0.4.3**（最新）：修复自动日报在工作日报页面显示不出来的问题（新增 reportAdapters 适配器层 + store 兜底查询 + ReportsPage UI 适配，自动日报带「自动生成」标签）+ 日报默认时间 19:00→17:30 + ReporterWorker 数据窗口与配置时间联动 + 官网运营数据采集与公测用户社群引导
+- **v0.4.2**：报告信息图生成（16:9 中文信息图，嵌入报告正文上方）+ 月报独立契约（专属 schema/prompt/调度入口，自然月首末日）+ 报告生成通知（桌面卡片弹窗 + 顶栏 Bell 角标 + 未读持久化）+ 调度器始终自动执行（不再受 autoGenerate 门控，周报触发日改为周五）+ 今日活动窗口化与节奏图重构（实际观察时段映射，相邻同类 Episode 自动合并）
 - **v0.4.1**：今日活动可视化（注意力甜甜圈 / 一天节奏路径 / 关键词云）+ 报告需求系统（4 类报告 × 3 字段 + 本次补充要求）+ Episode 活动分类（11 类，打通 L2 抽取层到 L1 scenes 表与 TodayPage 可视化）
 - **v0.3.x**：OCR + 大模型双管线架构升级（v0.3.0）、OCR 证据传输稳定性优化（v0.3.1）、episode_fact_extractor 巨量数据严重问题修复（v0.3.2）、prompt cache 前缀失效 + WPS 黑屏截图修复（v0.3.3）
 - **v0.2.x**：记忆系统重构、版本更新系统、CI 自动发布
@@ -64,7 +65,7 @@ Windows OCR + 多模态大模型双管线理解：L0 Observation
 ## 快速开始（用户视角）
 
 1. 前往 <https://recall.ppclaw.online/> 了解产品，或直接下载最新版：<https://recall-update.ppclaw.online/download/latest>。
-2. 双击安装 `Recall-0.4.2-setup.exe`，桌面会出现 **Recall** 图标。
+2. 双击安装 `Recall-0.4.3-setup.exe`，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
 5. 点击「**开始观察**」。
@@ -83,7 +84,7 @@ npm run build           # 编译 main + renderer
 npm run package         # electron-builder NSIS，输出到 release/
 ```
 
-> 构建产物 `release/Recall-0.4.2-setup.exe` 即对应发布通道的分发物。
+> 构建产物 `release/Recall-0.4.3-setup.exe` 即对应发布通道的分发物。
 
 类型检查：
 

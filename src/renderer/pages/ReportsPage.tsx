@@ -779,7 +779,7 @@ export function ReportsPage() {
               setSourcePanel({
                 title: "工作日报来源",
                 factIds: workReport.sourceFactIds,
-                sceneIds: [],
+                sceneIds: workReport.sourceSceneIds ?? [],
                 blockIds: workReport.sourceTimelineBlockIds,
               })
             }
@@ -1307,6 +1307,8 @@ function WorkReportTab(props: WorkReportTabProps) {
     imageDataUrl,
   } = props;
 
+  const isAutomaticDaily = workReport?.reportType === "daily";
+
   if (loading && !workReport) {
     return <div className="reports-loading">正在加载工作日报...</div>;
   }
@@ -1440,17 +1442,20 @@ function WorkReportTab(props: WorkReportTabProps) {
         </div>
         <div className="reports-toolbar__actions">
           {/* 风格切换 */}
-          <div className="seg-control">
-            {WORK_STYLE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className={`seg-control__btn${style === opt.value ? " is-active" : ""}`}
-                onClick={() => onStyleChange(opt.value)}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+          {!isAutomaticDaily && (
+            <div className="seg-control">
+              {WORK_STYLE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  className={`seg-control__btn${style === opt.value ? " is-active" : ""}`}
+                  onClick={() => onStyleChange(opt.value)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {isAutomaticDaily && <span className="tag">自动生成</span>}
           <button className="tb-btn" onClick={() => onCopy(workReport.plainText)}>
             复制
           </button>
@@ -1461,7 +1466,7 @@ function WorkReportTab(props: WorkReportTabProps) {
             编辑
           </button>
           <button className="tb-btn" onClick={onEnterSelection}>
-            重新选择片段
+            {isAutomaticDaily ? "选择片段生成工作日报" : "重新选择片段"}
           </button>
           <button
             className="tb-btn"

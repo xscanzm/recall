@@ -3,7 +3,7 @@
 Cloudflare Worker + R2 托管的桌面端版本更新分发后端，并代理统一的信息图生成能力。
 - API 端点返回版本元数据
 - 安装包文件存到 R2，客户端从 R2 下载（国内访问快、免出口流量费）
-- KV 记录客户端版本检查统计
+- KV 记录官网访问、下载与更新请求的聚合统计
 - 信息图服务密钥仅保存在 Worker Secret，桌面客户端只拿到生成后的图片地址
 
 ## 前置条件
@@ -28,7 +28,7 @@ npx wrangler login
 # 4. 创建 R2 存储桶（保存安装包与 manifest.json）
 npx wrangler r2 bucket create recall-releases
 
-# 5. 创建 KV 命名空间（保存版本检查统计）
+# 5. 创建 KV 命名空间（保存官网访问、下载与更新请求统计）
 npx wrangler kv namespace create recall-stats
 # 命令会输出形如：
 #   [[kv_namespaces]]
@@ -107,13 +107,25 @@ npm run publish-release -- 0.1.2 ./Recall-0.1.2-setup.exe ./release-notes.md
 
 当 manifest 不存在时返回 `hasUpdate: false` 且 `latestVersion` 等于客户端上报版本。
 
-### `GET /api/ping`
+### 分发统计
 
-记录一次版本检查。客户端版本号通过下列任一方式传递：
-- 请求头 `X-Client-Version: 0.1.0`
-- 查询参数 `?version=0.1.0`
+官网打开时会向 `POST /api/metrics/website-visit` 发出一个空请求；Worker 只按中国标准时间日期记录总数，不接收页面、设备或用户数据。
 
-响应：`{ ok: true }`（统计通过 `ctx.waitUntil` 异步写入，不阻塞响应）
+Worker 同时按日期和版本记录：
+
+- `GET /download/latest` 的官网发起下载次数；
+- 最终安装包的无 Range 请求次数，区分官网重定向和直接请求；
+- `GET /api/check` 的更新检查次数，以及检测到新版本的次数。
+
+运营读取日汇总前，先设置仅用于读取的 Worker Secret：
+
+```bash
+npx wrangler secret put STATS_READ_TOKEN
+```
+
+再通过 `GET /api/metrics/daily?date=YYYY-MM-DD` 请求，并附上 `Authorization: Bearer <STATS_READ_TOKEN>`。响应只包含当日的聚合计数与按版本的计数。
+
+运营数据页位于 `GET /admin/stats?date=YYYY-MM-DD&range=7|30|all`，使用浏览器标准 Basic Auth。页面提供近 7 天、近 30 天和全部历史的累计、每日趋势与按版本统计。先分别设置 `STATS_ADMIN_USERNAME` 与 `STATS_ADMIN_PASSWORD` 两个 Worker Secret；它们不会写入仓库或返回给浏览器。
 
 ### `POST /api/infographic/generate`
 
