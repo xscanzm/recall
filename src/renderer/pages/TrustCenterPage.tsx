@@ -81,7 +81,7 @@ export function TrustCenterPage() {
         </header>
         <div className="trust-card__body">
           <p>
-            Recall 使用你配置的视觉模型和语言模型 API。API Key 保存在系统安全存储中，不写入数据库。
+            Recall 可以使用默认模型服务，也可以直连你配置的视觉、语言或多模态模型。自己的 API Key 保存在系统安全存储中，不写入数据库。
           </p>
           <ul className="trust-card__list">
             <li>API Key 通过系统安全存储（Electron safeStorage / keytar）保存</li>
@@ -89,10 +89,12 @@ export function TrustCenterPage() {
             <li>不会出现在 renderer 进程内存或日志中</li>
             <li>测试失败时不显示完整 key（main 进程已 sanitize）</li>
             <li>输入框使用 type=password，不显示明文</li>
-            <li>删除模型配置时同时删除 SecretService 中的 key</li>
+            <li>删除模型配置时同时删除系统安全存储中的 Key</li>
+            <li>默认服务只记录匿名安装标识、任务类型、客户端版本和调用结果，不记录提示词、截图或模型回答</li>
+            <li>使用自己配置的 Key 时直接调用对应 endpoint，不向 Recall 上报调用统计</li>
           </ul>
           <p className="trust-card__hint">
-            模型调用直接从本机发往你配置的模型 endpoint。Recall 不会替你托管或转发 API Key。
+            自有模型调用直接从本机发往你配置的 endpoint；默认模型调用经 Recall 固定代理转发，上游 Key 不会下发到桌面端。
           </p>
         </div>
       </section>

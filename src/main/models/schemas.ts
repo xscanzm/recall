@@ -155,6 +155,10 @@ export const SettingsUpdateSchema = z.object({
   dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
   personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
   reportRequirements: ReportRequirementsSchema.optional(),
+  defaultModelService: z.object({
+    consent: z.enum(["pending", "accepted", "declined"]),
+    acceptedAt: z.string().datetime().nullable(),
+  }).optional(),
   schedule: z.object({
     lastDailyReportDate: z.string().nullable(),
     lastWeeklyReportWeekStart: z.string().nullable(),

@@ -344,7 +344,7 @@ export class LinkerSceneJudgeWorker {
       captureId,
       rateLimitKey: multimodalModelConfigId,
       executor: async () => {
-        return this.modelGateway.callMultimodal<LinkerSceneJudgeOutput>(
+        return this.modelGateway.callByConfigId<LinkerSceneJudgeOutput>(
           {
             kind: "multimodal",
             configId: multimodalModelConfigId,

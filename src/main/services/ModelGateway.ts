@@ -48,6 +48,13 @@ import {
 import { zodToDescription } from "./zodToDescription";
 import { logger } from "./Logger";
 import { parseRetryAfterMs } from "./ModelJobQueue";
+import type { DefaultModelConsentService } from "./DefaultModelConsentService";
+import type { InstallationIdentityService } from "./InstallationIdentityService";
+import {
+  createRecallDefaultModelConfig,
+  isRecallDefaultConfigId,
+  type ModelTaskKind,
+} from "./ModelTargets";
 
 /**
  * 模型种类
@@ -244,6 +251,9 @@ export interface ModelGatewayDeps {
   timeoutMs?: number;
   /** Test seam for a fully offline OpenAI-compatible transport. */
   fetchImpl?: typeof fetch;
+  defaultModelConsentService?: DefaultModelConsentService;
+  installationIdentityService?: InstallationIdentityService;
+  clientVersion?: string;
 }
 
 /**
@@ -268,6 +278,9 @@ export class ModelGateway {
   private readonly modelJobRepo: ModelJobRepository;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly defaultModelConsentService?: DefaultModelConsentService;
+  private readonly installationIdentityService?: InstallationIdentityService;
+  private readonly clientVersion: string;
 
   constructor(deps: ModelGatewayDeps) {
     this.settingsService = deps.settingsService;
@@ -275,6 +288,31 @@ export class ModelGateway {
     this.modelJobRepo = deps.modelJobRepo;
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.fetchImpl = deps.fetchImpl ?? fetch;
+    this.defaultModelConsentService = deps.defaultModelConsentService;
+    this.installationIdentityService = deps.installationIdentityService;
+    this.clientVersion = deps.clientVersion ?? "unknown";
+  }
+
+  async resolveConfigId(taskKind: ModelTaskKind): Promise<string | null> {
+    return this.settingsService.resolveModelConfigId(taskKind);
+  }
+
+  async callByConfigId<T>(
+    input: ModelCallInput,
+    schema: ZodSchemaLike<T>
+  ): Promise<ModelCallResult<T>> {
+    const config = createRecallDefaultModelConfig(input.configId)
+      ?? this.settingsService.getModelConfigById(input.configId);
+    if (!config) {
+      return {
+        ok: false,
+        errorCode: "unknown_error",
+        errorMessage: `未找到模型配置: ${input.configId}`,
+        requestCount: 0,
+        rateLimitKey: input.configId,
+      };
+    }
+    return this.callInternal({ ...input, kind: config.kind }, schema);
   }
 
   /**
@@ -420,8 +458,11 @@ export class ModelGateway {
   ): Promise<ModelCallResult<T>> {
     const startedAt = Date.now();
     const rateLimitKey = input.configId;
-    // 1. 读取 model_config
-    const config = this.settingsService.getModelConfigById(input.configId);
+    // 1. 读取用户配置，或构造固定的 Recall 默认代理配置。
+    const recallDefault = isRecallDefaultConfigId(input.configId);
+    const config = recallDefault
+      ? createRecallDefaultModelConfig(input.configId)
+      : this.settingsService.getModelConfigById(input.configId);
     if (!config) {
       return {
         ok: false,
@@ -453,17 +494,49 @@ export class ModelGateway {
       };
     }
 
-    // 2. 从 SecretService 获取 API Key
-    const apiKey = await this.secretService.getApiKey(input.configId);
-    if (!apiKey) {
-      return {
-        ok: false,
-        errorCode: "auth_error",
-        errorMessage: `未找到 API Key（configId=${input.configId}）`,
-        requestCount: 0,
-        rateLimitKey,
-        latencyMs: Date.now() - startedAt,
-      };
+    // 2. 用户配置读取本机 Key；Recall 默认代理只带匿名安装标识，不带上游 Key。
+    let requestHeaders: Record<string, string>;
+    if (recallDefault) {
+      const accepted = await this.defaultModelConsentService?.ensureAccepted();
+      if (!accepted) {
+        return {
+          ok: false,
+          errorCode: "auth_error",
+          errorMessage: "未同意使用 Recall 默认模型服务，请在设置中选择模型服务。",
+          requestCount: 0,
+          rateLimitKey,
+          latencyMs: Date.now() - startedAt,
+        };
+      }
+      const installationId = this.installationIdentityService?.getId();
+      if (!installationId) {
+        return {
+          ok: false,
+          errorCode: "unknown_error",
+          errorMessage: "Recall 默认模型服务初始化失败：无法读取安装标识。",
+          requestCount: 0,
+          rateLimitKey,
+          latencyMs: Date.now() - startedAt,
+        };
+      }
+      requestHeaders = buildRecallDefaultHeaders(
+        installationId,
+        input.jobType,
+        this.clientVersion
+      );
+    } else {
+      const apiKey = await this.secretService.getApiKey(input.configId);
+      if (!apiKey) {
+        return {
+          ok: false,
+          errorCode: "auth_error",
+          errorMessage: `用户模型配置缺少 API Key（configId=${input.configId}）`,
+          requestCount: 0,
+          rateLimitKey,
+          latencyMs: Date.now() - startedAt,
+        };
+      }
+      requestHeaders = buildHeaders(apiKey);
     }
 
     // 3. 解析 options_json
@@ -556,8 +629,8 @@ export class ModelGateway {
     // 6. 第一次调用
     attempts++;
     const firstResult = input.streaming
-      ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, input.timeoutMs)
-      : await this.sendRequest(url, apiKey, requestBody, input.timeoutMs);
+      ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, input.timeoutMs)
+      : await this.sendRequest(url, requestHeaders, requestBody, input.timeoutMs);
     requestCount += firstResult.requestCount;
     retryAfterMs = firstResult.retryAfterMs;
     if (firstResult.ok) {
@@ -619,7 +692,7 @@ export class ModelGateway {
         const repairResult = await this.callRepair(
           url,
           config,
-          apiKey,
+          requestHeaders,
           schema,
           rawOutput,
           lastErrorMessage ?? "",
@@ -691,7 +764,9 @@ export class ModelGateway {
     return {
       ok: false,
       errorCode: lastErrorCode ?? "unknown_error",
-      errorMessage: lastErrorMessage,
+      errorMessage: !recallDefault && lastErrorMessage
+        ? `用户模型配置调用失败：${lastErrorMessage}`
+        : lastErrorMessage,
       jobId: job.id,
       modelJobId: job.id,
       attempts,
@@ -710,7 +785,7 @@ export class ModelGateway {
   private async callRepair(
     url: string,
     config: ModelConfig,
-    apiKey: string,
+    requestHeaders: Record<string, string>,
     _schema: ZodSchemaLike<unknown>,
     badOutput: string,
     errorMessage: string,
@@ -746,8 +821,8 @@ export class ModelGateway {
     }
     applyModelCompatibilityOptions(requestBody, config.model, extraOptions);
     const result = streaming
-      ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, timeoutMs)
-      : await this.sendRequest(url, apiKey, requestBody, timeoutMs);
+      ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, timeoutMs)
+      : await this.sendRequest(url, requestHeaders, requestBody, timeoutMs);
     if (
       result.ok
       && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= maxTokens)
@@ -764,31 +839,31 @@ export class ModelGateway {
 
   private async sendStreamingRequestWithFallback(
     url: string,
-    apiKey: string,
+    requestHeaders: Record<string, string>,
     requestBody: Record<string, unknown>,
     firstResponseTimeoutMs?: number
   ): Promise<ModelHttpResult> {
-    const withUsage = await this.sendStreamingRequest(url, apiKey, requestBody, firstResponseTimeoutMs);
+    const withUsage = await this.sendStreamingRequest(url, requestHeaders, requestBody, firstResponseTimeoutMs);
     if (withUsage.ok || withUsage.receivedContent || !isStreamCompatibilityError(withUsage)) {
       return withUsage;
     }
 
     const withoutStreamOptions = { ...requestBody };
     delete withoutStreamOptions.stream_options;
-    const basicStream = await this.sendStreamingRequest(url, apiKey, withoutStreamOptions, firstResponseTimeoutMs);
+    const basicStream = await this.sendStreamingRequest(url, requestHeaders, withoutStreamOptions, firstResponseTimeoutMs);
     if (basicStream.ok || basicStream.receivedContent || !isStreamCompatibilityError(basicStream)) {
       return addRequestCount(basicStream, withUsage.requestCount);
     }
 
     const nonStreamingBody = { ...withoutStreamOptions };
     delete nonStreamingBody.stream;
-    const nonStreaming = await this.sendRequest(url, apiKey, nonStreamingBody, firstResponseTimeoutMs);
+    const nonStreaming = await this.sendRequest(url, requestHeaders, nonStreamingBody, firstResponseTimeoutMs);
     return addRequestCount(nonStreaming, withUsage.requestCount + basicStream.requestCount);
   }
 
   private async sendStreamingRequest(
     url: string,
-    apiKey: string,
+    requestHeaders: Record<string, string>,
     requestBody: Record<string, unknown>,
     firstResponseTimeoutMs?: number
   ): Promise<ModelHttpResult> {
@@ -805,7 +880,7 @@ export class ModelGateway {
     try {
       const response = await this.fetchImpl(url, {
         method: "POST",
-        headers: buildHeaders(apiKey),
+        headers: requestHeaders,
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
@@ -945,14 +1020,14 @@ export class ModelGateway {
    */
   private async sendRequest(
     url: string,
-    apiKey: string,
+    requestHeaders: Record<string, string>,
     requestBody: Record<string, unknown>,
     timeoutMsOverride?: number
   ): Promise<ModelHttpResult> {
     try {
       const response = await this.fetchWithTimeout(url, {
         method: "POST",
-        headers: buildHeaders(apiKey),
+        headers: requestHeaders,
         body: JSON.stringify(requestBody),
       }, timeoutMsOverride);
 
@@ -1090,6 +1165,19 @@ function buildHeaders(apiKey: string): Record<string, string> {
   return {
     "Content-Type": "application/json",
     Authorization: `Bearer ${apiKey}`,
+  };
+}
+
+function buildRecallDefaultHeaders(
+  installationId: string,
+  taskType: string,
+  clientVersion: string
+): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "X-Recall-Installation-Id": installationId,
+    "X-Recall-Task-Type": taskType,
+    "X-Recall-Client-Version": clientVersion,
   };
 }
 

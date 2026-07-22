@@ -125,12 +125,12 @@ export class PersonalReviewWriterWorker {
     generationRequirement?: string
   ): Promise<PersonalReviewResult> {
     // 1. 获取多模态模型配置
-    const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
+    const multimodalModelConfigId = await this.modelGateway.resolveConfigId("text");
     if (!multimodalModelConfigId) {
       return {
         ok: false,
         errorCode: "no_language_model",
-        errorMessage: "未配置启用的多模态模型，无法生成个人复盘",
+        errorMessage: "没有可用的语言模型服务，无法生成个人复盘",
       };
     }
 
@@ -203,7 +203,7 @@ export class PersonalReviewWriterWorker {
       type: "reporter",
       rateLimitKey: multimodalModelConfigId,
       executor: async () => {
-        return this.modelGateway.callMultimodal<PersonalReviewOutput>(
+        return this.modelGateway.callByConfigId<PersonalReviewOutput>(
           {
             kind: "multimodal",
             configId: multimodalModelConfigId,
@@ -273,20 +273,6 @@ export class PersonalReviewWriterWorker {
   // ----------------------------------------------------------------
   // 数据检索
   // ----------------------------------------------------------------
-
-  /**
-   * 获取启用的多模态模型配置 id
-   */
-  private getActiveMultimodalModelConfigId(): string | null {
-    if (!this.settingsService) return null;
-    try {
-      const configs = this.settingsService.listMultimodalModelConfigs();
-      const enabled = configs.find((c) => c.enabled);
-      return enabled?.id ?? null;
-    } catch {
-      return null;
-    }
-  }
 
   /**
    * 查询当天 TimelineBlock

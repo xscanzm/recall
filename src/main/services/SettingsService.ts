@@ -34,6 +34,7 @@ import {
   SETTINGS_FILENAME,
 } from "../../shared/constants";
 import { normalizeReportRequirements } from "../../shared/reportRequirements";
+import { resolveModelConfigId as resolveModelTargetId, type ModelTaskKind } from "./ModelTargets";
 
 export class SettingsService {
   private cache: AppSettings = DEFAULT_SETTINGS;
@@ -82,6 +83,8 @@ export class SettingsService {
       personalReview: patch.personalReview ?? this.cache.personalReview,
       reportRequirements:
         patch.reportRequirements ?? this.cache.reportRequirements,
+      defaultModelService:
+        patch.defaultModelService ?? this.cache.defaultModelService,
       schedule: patch.schedule ?? this.cache.schedule,
       onboardingCompleted:
         patch.onboardingCompleted ?? this.cache.onboardingCompleted,
@@ -172,6 +175,25 @@ export class SettingsService {
 
   listMultimodalModelConfigs(): ModelConfig[] {
     return this.settingsRepo.listMultimodalModelConfigs();
+  }
+
+  async resolveModelConfigId(taskKind: ModelTaskKind): Promise<string | null> {
+    return resolveModelTargetId({
+      taskKind,
+      configs: this.listModelConfigs(),
+      getApiKey: (configId) => this.secretService.getApiKey(configId),
+      defaultConsent: this.getAll().defaultModelService.consent,
+    });
+  }
+
+  async isModelConfigUsable(configId: string): Promise<boolean> {
+    const config = this.getModelConfigById(configId);
+    return Boolean(
+      config?.enabled
+      && config.endpoint.trim()
+      && config.model.trim()
+      && await this.secretService.getApiKey(configId)
+    );
   }
 
   /**
@@ -281,23 +303,7 @@ export class SettingsService {
       const content = fs.readFileSync(filePath, "utf-8");
       const parsed = JSON.parse(content) as Partial<AppSettings>;
       // 合并默认值，避免缺失字段（兼容旧版本 settings.json）
-      return {
-        observation: { ...DEFAULT_SETTINGS.observation, ...parsed.observation },
-        screenshot: { ...DEFAULT_SETTINGS.screenshot, ...parsed.screenshot },
-        notification: { ...DEFAULT_SETTINGS.notification, ...parsed.notification },
-        endOfDayReview: { ...DEFAULT_SETTINGS.endOfDayReview, ...parsed.endOfDayReview },
-        dailyReport: { ...DEFAULT_SETTINGS.dailyReport, ...parsed.dailyReport },
-        personalReview: {
-          ...DEFAULT_SETTINGS.personalReview,
-          ...parsed.personalReview,
-        },
-        reportRequirements: normalizeReportRequirements(parsed.reportRequirements),
-        schedule: { ...DEFAULT_SETTINGS.schedule, ...parsed.schedule },
-        onboardingCompleted:
-          parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,
-        debug: { ...DEFAULT_SETTINGS.debug, ...(parsed.debug ?? {}) },
-        update: { ...DEFAULT_UPDATE_SETTINGS, ...(parsed.update ?? {}) },
-      };
+      return normalizeAppSettings(parsed);
     } catch {
       // 文件损坏时回退到默认值
       return DEFAULT_SETTINGS;
@@ -319,4 +325,24 @@ export function createSettingsService(
   secretService: SecretService
 ): SettingsService {
   return new SettingsService(settingsRepo, secretService);
+}
+
+export function normalizeAppSettings(parsed: Partial<AppSettings>): AppSettings {
+  return {
+    observation: { ...DEFAULT_SETTINGS.observation, ...parsed.observation },
+    screenshot: { ...DEFAULT_SETTINGS.screenshot, ...parsed.screenshot },
+    notification: { ...DEFAULT_SETTINGS.notification, ...parsed.notification },
+    endOfDayReview: { ...DEFAULT_SETTINGS.endOfDayReview, ...parsed.endOfDayReview },
+    dailyReport: { ...DEFAULT_SETTINGS.dailyReport, ...parsed.dailyReport },
+    personalReview: { ...DEFAULT_SETTINGS.personalReview, ...parsed.personalReview },
+    reportRequirements: normalizeReportRequirements(parsed.reportRequirements),
+    defaultModelService: {
+      ...DEFAULT_SETTINGS.defaultModelService,
+      ...(parsed.defaultModelService ?? {}),
+    },
+    schedule: { ...DEFAULT_SETTINGS.schedule, ...parsed.schedule },
+    onboardingCompleted: parsed.onboardingCompleted ?? DEFAULT_SETTINGS.onboardingCompleted,
+    debug: { ...DEFAULT_SETTINGS.debug, ...(parsed.debug ?? {}) },
+    update: { ...DEFAULT_UPDATE_SETTINGS, ...(parsed.update ?? {}) },
+  };
 }

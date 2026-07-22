@@ -416,6 +416,10 @@ export interface AppSettingsState {
     time: string;
   };
   reportRequirements: ReportRequirements;
+  defaultModelService: {
+    consent: "pending" | "accepted" | "declined";
+    acceptedAt: string | null;
+  };
   onboardingCompleted: boolean;
   debug: {
     enabled: boolean;
@@ -1771,6 +1775,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           personalReview: patch.personalReview ?? previous.personalReview,
           reportRequirements:
             patch.reportRequirements ?? previous.reportRequirements,
+          defaultModelService:
+            patch.defaultModelService ?? previous.defaultModelService,
           onboardingCompleted: patch.onboardingCompleted ?? previous.onboardingCompleted,
           debug: patch.debug ?? previous.debug,
         },

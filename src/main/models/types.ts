@@ -97,6 +97,11 @@ export interface AppSettings {
   };
   /** 四类报告分别维护的长期要求。 */
   reportRequirements: ReportRequirements;
+  /** Recall 默认模型服务的首次调用授权状态。 */
+  defaultModelService: {
+    consent: "pending" | "accepted" | "declined";
+    acceptedAt: string | null;
+  };
   /**
    * 调度器持久化状态（不直接暴露给用户 UI）
    * - 应用重启后用来判断哪些周期的报告/复盘/周报还没生成（补跑）
@@ -168,6 +173,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     time: "23:00",
   },
   reportRequirements: createEmptyReportRequirements(),
+  defaultModelService: {
+    consent: "pending",
+    acceptedAt: null,
+  },
   schedule: {
     lastDailyReportDate: null,
     lastWeeklyReportWeekStart: null,

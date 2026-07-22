@@ -271,6 +271,7 @@ const demoSettings = {
   },
   dailyReport: { autoGenerate: false, time: "18:00" },
   personalReview: { autoGenerate: false, time: "22:00" },
+  defaultModelService: { consent: "pending" as const, acceptedAt: null },
   onboardingCompleted: true,
   debug: { enabled: false, verboseModelIO: false },
   reportRequirements: {

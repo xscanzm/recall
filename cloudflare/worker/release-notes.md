@@ -1,3 +1,72 @@
+## v0.4.5 — 默认模型服务 + 安装身份识别 + 匿名统计
+
+本次版本聚焦开箱即用体验：新用户无需自备 API Key 即可试用 Recall，首次启动时通过同意弹窗授权使用 Recall 代理的默认模型服务（language=deepseek-v4-flash, multimodal=sensenova-6.7-flash-lite）；同时引入持久化安装身份标识，为匿名使用统计奠定基础；Cloudflare Worker 端新增 `/api/model/language` 与 `/api/model/multimodal` 代理路由，并完善统计与测试基础设施。
+
+### 新增功能
+
+#### 1. 默认模型服务（ModelTargets + DefaultModelConsentService）
+
+让新用户开箱即用，无需自备 API Key 即可试用完整功能。首次需要调用模型时弹窗询问是否接受 Recall 代理的默认模型服务，用户可选择接受或继续使用自配模型：
+
+- 新增 `src/main/services/ModelTargets.ts`：定义 `RECALL_DEFAULT_LANGUAGE_CONFIG_ID` / `RECALL_DEFAULT_MULTIMODAL_CONFIG_ID` 两个保留配置 ID，endpoint 指向 `https://recall-update.ppclaw.online/api/model/{language|multimodal}` 代理
+- 新增 `src/main/services/DefaultModelConsentService.ts`：基于 Promise 的同步等待机制，`ensureAccepted()` 在用户未决策时挂起调用方，`resolve(accepted)` 由 UI 回调写入 settings；状态持久化为 `pending / accepted / declined`
+- 新增 `src/renderer/components/DefaultModelConsentDialog.tsx`：首次使用时的同意弹窗，说明数据经 Recall 代理转发的工作机制
+- `resolveModelConfigId`：根据用户已有配置、API Key 存在性、默认模型同意状态，决定使用用户自配模型还是 Recall 默认模型
+- `SettingsService` 新增 `defaultModelService: { consent, acceptedAt }` 配置项
+
+#### 2. 安装身份识别（InstallationIdentityService）
+
+为匿名使用统计提供持久化的安装标识，不采集任何个人信息：
+
+- 新增 `src/main/services/InstallationIdentityService.ts`：首次启动生成随机 UUID v4 并写入 `userData/recall-data/installation-id` 文件（权限 0o600），后续读取复用
+- UUID 格式严格校验，文件损坏时自动重建
+- 用于 Worker 端 `/api/ping` 匿名统计安装活跃度
+
+#### 3. Cloudflare Worker 模型代理路由
+
+Worker 端新增模型代理路由，将客户端请求转发到上游模型服务，不记录请求体内容：
+
+- `cloudflare/worker/src/index.ts` 新增 `/api/model/language` 与 `/api/model/multimodal` 两个 POST 路由，转发到上游 provider
+- `cloudflare/worker/src/stats.ts` 统计基础设施完善
+- 新增 `cloudflare/worker/src/env.d.ts` + `worker-configuration.d.ts` 类型声明
+- 新增 `cloudflare/worker/vitest.config.ts` + `cloudflare/worker/src/index.test.ts` Worker 端测试
+
+### 改进
+
+#### 4. 全量 Worker 接入默认模型机制
+
+所有模型调用 worker 接入 `ModelTargets + DefaultModelConsentService`，统一走 `resolveModelConfigId` 决策：
+
+- `EpisodeFactExtractorWorker` / `LinkerSceneJudgeWorker` / `ObserverExtractorWorker` / `PersonalReviewWriterWorker` / `ReporterWorker` / `TimelineBuilderWorker` / `WorkReportWriterWorker` 全部改造
+- `ModelGateway` 适配默认模型配置的鉴权方式
+- `MemoryPipeline` 统一注入 `DefaultModelConsentService` 依赖
+
+#### 5. UI 适配
+
+- `Onboarding.tsx`：引导流程适配默认模型服务
+- `SettingsPage.tsx`：模型配置区展示 Recall 默认模型服务条目
+- `TrustCenterPage.tsx`：信任中心补充默认模型服务数据流向说明
+- `TodayPage.tsx`：适配模型调用链路变更
+- `App.tsx`：注入 `DefaultModelConsentService` + `InstallationIdentityService` 依赖
+
+#### 6. 测试基础设施
+
+- 新增 `DefaultModelConsentService.test.ts`：同意/拒绝/挂起状态机测试
+- 新增 `InstallationIdentityService.test.ts`：UUID 生成、复用、文件损坏重建
+- 新增 `ModelTargets.test.ts`：配置 ID 识别、默认配置创建、决策逻辑
+- 新增 `SettingsService.defaultModel.test.ts`：默认模型配置初始化
+- `ModelGateway.test.ts` 扩充：默认模型鉴权适配
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试：DefaultModelConsentService、InstallationIdentityService、ModelTargets、SettingsService 默认模型配置、Worker 端路由
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.4.4 — 模型调用稳健性 + 优雅关闭 + 性能与去重优化
 
 本次版本聚焦底层稳定性与性能：让多模态调用在面对限流/网络错误时按 provider 的 Retry-After 头与 endpoint 级冷却做精细化重试；新增统一 shutdownRuntime 编排，应用退出前依次排空 capture / batch / model 队列；Today 活动概览移除 1000 条上限并修复跨日边界；Observer 帧近似去重复用前一帧结果节省模型调用；同时把臃肿的 handlers.ts 与 ReportsPage.tsx 做模块化拆分，并接入离线测试与 CI 自动发布。
@@ -71,10 +140,6 @@
 - TypeScript 主进程与渲染进程类型检查通过
 - 新增/扩充单元测试：ModelGateway（限流/退避/metrics）、ModelJobQueue（请求预算/endpoint 冷却/调度唤醒）、TodayActivityStats（窗口合并）、ObserverBatchFrames（dHash 去重）、BatchProcessor（stopAndDrainActive）、CaptureBatcher（drain）、FactRepository、MemoryObjectRepository、activityHandlers、reportsHandlers、reportFormatting、offlineFixtureTransport、generate-manifest
 - 本地构建与 NSIS 安装包打包通过
-
----
-
-以下为历史版本发布说明：
 
 ## v0.4.3 — 自动日报显示修复 + 日报时间调整
 

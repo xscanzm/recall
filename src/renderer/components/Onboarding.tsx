@@ -125,6 +125,16 @@ export function Onboarding(props: OnboardingProps) {
     }
   };
 
+  const handleUseDefaultModelService = async () => {
+    await updateSettings({
+      defaultModelService: {
+        consent: "pending",
+        acceptedAt: null,
+      },
+    });
+    setStep("privacy");
+  };
+
   /**
    * 跳过当前步骤
    */
@@ -140,7 +150,7 @@ export function Onboarding(props: OnboardingProps) {
   const renderProgress = () => {
     const steps: Array<{ key: OnboardingStep; label: string }> = [
       { key: "welcome", label: "欢迎" },
-      { key: "multimodal", label: "多模态模型" },
+      { key: "multimodal", label: "模型服务" },
       { key: "privacy", label: "隐私确认" },
       { key: "complete", label: "完成" },
     ];
@@ -193,6 +203,7 @@ export function Onboarding(props: OnboardingProps) {
               onSaved={handleModelSaved}
               onNext={handleSkipStep}
               onSkip={handleSkipStep}
+              onUseDefault={handleUseDefaultModelService}
             />
           )}
 
@@ -210,6 +221,10 @@ export function Onboarding(props: OnboardingProps) {
               visionConfigured={visionConfigured}
               languageConfigured={languageConfigured}
               multimodalConfigured={multimodalConfigured}
+              defaultServiceSelected={
+                settings?.defaultModelService?.consent === "pending"
+                || settings?.defaultModelService?.consent === "accepted"
+              }
               onComplete={handleComplete}
             />
           )}
@@ -388,6 +403,45 @@ export function Onboarding(props: OnboardingProps) {
           margin: 0;
           font-style: italic;
         }
+        .onboarding__service-options {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+        .onboarding__service-option {
+          display: flex;
+          align-items: flex-start;
+          gap: 10px;
+          min-height: 92px;
+          padding: 14px;
+          border: 1px solid var(--recall-border);
+          border-radius: var(--radius-md);
+          background: var(--recall-surface);
+          color: var(--recall-text-muted);
+          font-size: 12px;
+          line-height: 1.55;
+          cursor: pointer;
+        }
+        .onboarding__service-option.is-selected {
+          border-color: var(--recall-accent);
+          background: var(--recall-accent-soft);
+          color: var(--recall-text);
+        }
+        .onboarding__service-option input {
+          margin-top: 3px;
+          accent-color: var(--recall-accent);
+        }
+        .onboarding__service-option strong {
+          display: block;
+          margin-bottom: 4px;
+          color: var(--recall-text);
+          font-size: 13px;
+        }
+        @media (max-width: 620px) {
+          .onboarding__service-options {
+            grid-template-columns: 1fr;
+          }
+        }
         .onboarding__status-banner {
           padding: 10px 12px;
           border-radius: var(--radius-md);
@@ -463,21 +517,21 @@ function WelcomeStep(props: WelcomeStepProps) {
           <span className="onboarding__list-icon">1</span>
           <div className="onboarding__list-text">
             <strong>只观察活动窗口</strong>
-            Recall 只在当前活动窗口切换、标题变化、内容差异或长时间稳定时触发采集。不采集全屏。
+            Recall 只在当前活动窗口切换、标题变化、内容差异或长时间稳定时触发采集。
           </div>
         </div>
         <div className="onboarding__list-item">
           <span className="onboarding__list-icon">2</span>
           <div className="onboarding__list-text">
-            <strong>所有数据保存在本机</strong>
-            截图、结构化记忆、用户反馈都保存在你的电脑。MVP 不建设云端，不上传任何数据。
+            <strong>记忆数据保存在本机</strong>
+            截图、结构化记忆和你的修改保存在电脑中。调用模型时，只发送完成当前任务所需的内容。
           </div>
         </div>
         <div className="onboarding__list-item">
           <span className="onboarding__list-icon">3</span>
           <div className="onboarding__list-text">
-            <strong>模型调用由你掌控</strong>
-            你配置自己的视觉模型和语言模型 endpoint。API Key 保存在系统安全存储，不进入数据库或日志。
+            <strong>默认即可使用，也支持自己的模型</strong>
+            不配置自己 Key，使用 Recall 默认模型服务；也可以配置自己的 endpoint 和 API Key 直接调用。
           </div>
         </div>
         <div className="onboarding__list-item">
@@ -490,7 +544,7 @@ function WelcomeStep(props: WelcomeStepProps) {
       </div>
 
       <p className="onboarding__hint">
-        引导将依次配置视觉模型、语言模型，并确认隐私默认设置。每一步都可跳过，后续可在设置中调整。如果你使用支持视觉+语言的多模态模型（如 gpt-4o），可在设置中只配置一个多模态模型即可。
+        下一步选择模型服务并确认隐私设置。整个引导可以跳过，之后仍可在设置中完成选择。
       </p>
 
       <div className="onboarding__actions">
@@ -534,51 +588,74 @@ interface ModelStepProps {
   onSaved: () => void;
   onNext: () => void;
   onSkip: () => void;
+  onUseDefault: () => Promise<void>;
 }
 
 function ModelStep(props: ModelStepProps) {
   const { kind, alreadyConfigured, onSave, onDelete, onTest, onSaved, onNext, onSkip } = props;
+  const [serviceChoice, setServiceChoice] = useState<"recall" | "custom">(
+    alreadyConfigured ? "custom" : "recall"
+  );
   const kindLabel =
     kind === "vision" ? "视觉模型" : kind === "language" ? "语言模型" : "多模态模型";
 
   return (
     <div className="onboarding__model-step">
-      <h2 className="onboarding__title">配置 {kindLabel}</h2>
+      <h2 className="onboarding__title">选择模型服务</h2>
       <p className="onboarding__subtitle">
-        {kind === "vision"
-          ? "视觉模型用于分析屏幕截图，识别窗口内容、实体和可能意图。需要支持 vision 的模型（如 gpt-4o / qwen-vl-max）。"
-          : kind === "language"
-          ? "语言模型用于提取线索、构建场景、生成报告和回答用户问题。任何 OpenAI-compatible 模型均可。"
-          : "早测版本使用一个多模态模型完成截图理解、记忆整理和报告生成。请配置支持图片输入的 OpenAI-compatible 模型。"}
+        默认服务无需填写 API 地址和 Key。使用自己的模型时，调用会从本机直接发往你配置的 endpoint。
       </p>
 
-      {alreadyConfigured && (
+      <div className="onboarding__service-options" role="radiogroup" aria-label="模型服务">
+        <label className={`onboarding__service-option ${serviceChoice === "recall" ? "is-selected" : ""}`}>
+          <input
+            type="radio"
+            name="model-service"
+            checked={serviceChoice === "recall"}
+            onChange={() => setServiceChoice("recall")}
+          />
+          <span><strong>使用 Recall 默认模型服务</strong>不配置自己 Key，直接开始使用。</span>
+        </label>
+        <label className={`onboarding__service-option ${serviceChoice === "custom" ? "is-selected" : ""}`}>
+          <input
+            type="radio"
+            name="model-service"
+            checked={serviceChoice === "custom"}
+            onChange={() => setServiceChoice("custom")}
+          />
+          <span><strong>使用自己的模型</strong>配置支持图片输入的 OpenAI-compatible 模型。</span>
+        </label>
+      </div>
+
+      {serviceChoice === "custom" && alreadyConfigured && (
         <div className="onboarding__status-banner is-success">
           已配置 {kindLabel}。你可以继续配置下一步，或保留当前配置直接进入下一步。
         </div>
       )}
 
-      <ModelConfigForm
-        kind={kind}
-        configs={props.configs}
-        loading={props.loading}
-        error={props.error}
-        onSave={onSave}
-        onDelete={onDelete}
-        onTest={onTest}
-        wizardMode
-        onSaved={onSaved}
-      />
-
-      <p className="onboarding__hint">
-        提示：可以先跳过此步骤，后续在「设置 - 模型配置」中完成。未配置多模态模型时无法开始观察采集。
-      </p>
+      {serviceChoice === "custom" && (
+        <ModelConfigForm
+          kind={kind}
+          configs={props.configs}
+          loading={props.loading}
+          error={props.error}
+          onSave={onSave}
+          onDelete={onDelete}
+          onTest={onTest}
+          wizardMode
+          onSaved={onSaved}
+        />
+      )}
 
       <div className="onboarding__actions">
         <button type="button" className="secondary" onClick={onSkip}>
           跳过此步
         </button>
-        <button type="button" className="primary" onClick={onNext}>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => serviceChoice === "recall" ? void props.onUseDefault() : onNext()}
+        >
           下一步
         </button>
       </div>
@@ -627,7 +704,7 @@ function PrivacyStep(props: PrivacyStepProps) {
         <p><strong>应用内提醒</strong>：{settings?.notification.inAppReminders ? "已开启（默认）" : "已关闭"}</p>
         <p><strong>桌面通知</strong>：报告生成会提示一次，其他提醒{settings?.notification.desktopNotifications ? "已开启" : "已关闭（默认）"}</p>
         <p><strong>日报时间</strong>：{settings?.notification.dailyReportTime ?? "17:30"}</p>
-        <p><strong>周报时间</strong>：{settings?.notification.weeklyReportTime ?? "20:00（每周日）"}</p>
+        <p><strong>周报时间</strong>：{settings?.notification.weeklyReportTime ?? "20:00"}（每周五）</p>
 
         <p style={{ marginTop: "8px" }}><strong>已生效的隐私规则</strong>（共 {privacyRules.length} 条）：</p>
         <ul>
@@ -661,14 +738,15 @@ interface CompleteStepProps {
   visionConfigured: boolean;
   languageConfigured: boolean;
   multimodalConfigured: boolean;
+  defaultServiceSelected: boolean;
   onComplete: (startObserving: boolean) => void;
 }
 
 function CompleteStep(props: CompleteStepProps) {
-  const { visionConfigured, languageConfigured, multimodalConfigured } = props;
+  const { visionConfigured, languageConfigured, multimodalConfigured, defaultServiceSelected } = props;
 
   // 当前主流水线依赖多模态模型；旧视觉/语言配置仅作为高级兼容保留。
-  const hasValidModelConfig = multimodalConfigured;
+  const hasValidModelConfig = defaultServiceSelected || multimodalConfigured || visionConfigured;
   const legacyConfigured = visionConfigured || languageConfigured;
 
   return (
@@ -679,9 +757,10 @@ function CompleteStep(props: CompleteStepProps) {
       </p>
 
       <div className="onboarding__complete-summary">
+        <p><strong>模型服务</strong>：{defaultServiceSelected ? "Recall 默认模型服务" : "自己的模型"}</p>
         <p><strong>多模态模型</strong>：{multimodalConfigured ? "已配置" : "未配置（可在设置中后续完成）"}</p>
         {legacyConfigured && (
-          <p><strong>高级兼容模型</strong>：已配置视觉/语言模型，当前版本仍优先使用多模态模型。</p>
+          <p><strong>分别配置</strong>：已配置视觉或语言模型，对应任务会优先使用。</p>
         )}
         <p><strong>隐私规则</strong>：已加载默认黑名单</p>
         <p><strong>截图保留</strong>：当天（次日启动时自动清理）</p>
@@ -690,7 +769,7 @@ function CompleteStep(props: CompleteStepProps) {
 
       {!hasValidModelConfig ? (
         <p className="onboarding__hint">
-          提示：未配置多模态模型时无法开始观察采集。请在「设置 - 模型配置」中配置一个支持图片输入的多模态模型。
+          提示：使用 Recall 默认模型服务或配置自己的模型后，即可开始观察采集。
         </p>
       ) : (
         <p className="onboarding__hint">

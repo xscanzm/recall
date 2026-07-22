@@ -1,10 +1,11 @@
-# Recall 更新分发与信息图代理 Worker
+# Recall 更新分发与默认能力代理 Worker
 
-Cloudflare Worker + R2 托管的桌面端版本更新分发后端，并代理统一的信息图生成能力。
+Cloudflare Worker + R2 托管的桌面端版本更新分发后端，并代理统一的信息图和默认模型能力。
 - API 端点返回版本元数据
 - 安装包文件存到 R2，客户端从 R2 下载（国内访问快、免出口流量费）
 - KV 记录官网访问、下载与更新请求的聚合统计
 - 信息图服务密钥仅保存在 Worker Secret，桌面客户端只拿到生成后的图片地址
+- 默认语言/多模态模型密钥仅保存在 Worker Secret，桌面端不持有共享 Key
 
 ## 前置条件
 
@@ -42,8 +43,11 @@ npm run dev
 # 7. 部署到 workers.dev
 npm run deploy
 
-# 8. 配置信息图服务密钥（不要写入 wrangler.toml 或客户端源码）
+# 8. 配置服务密钥（不要写入 wrangler.toml 或客户端源码）
 npx wrangler secret put INFOGRAPHIC_API_KEY
+npx wrangler secret put DEFAULT_LANGUAGE_API_KEY
+npx wrangler secret put DEFAULT_MULTIMODAL_API_KEY
+npx wrangler secret put MODEL_STATS_HASH_SECRET
 ```
 
 部署后你会得到形如 `https://recall-update-worker.<your-subdomain>.workers.dev` 的域名。
@@ -140,6 +144,17 @@ npx wrangler secret put STATS_READ_TOKEN
 ```
 
 成功响应：`{ "url": "https://..." }`。未配置 `INFOGRAPHIC_API_KEY` 时返回 `503 capability-unavailable`，桌面端会保持文字报告可用并隐藏图片区域。
+
+### 默认模型代理
+
+- `POST /api/model/language/v1/chat/completions`
+- `POST /api/model/multimodal/v1/chat/completions`
+
+两个端点兼容 OpenAI Chat Completions 的 JSON 与 SSE 响应。Worker 会覆盖客户端传入的 `model`，只允许调用 `wrangler.toml` 中固定的上游与模型，并从对应 Worker Secret 注入 Key。请求体最大 32 MiB，字段和图片输入格式均经过白名单校验。
+
+桌面端只发送随机安装 UUID、任务类型和客户端版本。Worker 使用 `MODEL_STATS_HASH_SECRET` 对安装 UUID 做 HMAC 后才写入 KV，不保存原始标识、提示词、截图或模型回答。`/admin/stats` 只展示经过 Recall 默认代理的调用；用户自配 Key 的直连调用不上报。
+
+紧急停用默认模型代理时，将 `MODEL_PROXY_ENABLED` 设为 `false` 并重新部署。
 
 ### `GET /download/:filename`
 

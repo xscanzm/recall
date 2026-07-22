@@ -42,6 +42,7 @@ import type { SecretService } from "../services/SecretService";
 import type { AppSettings } from "../models/types";
 import type { SettingsService } from "../services/SettingsService";
 import type { ModelGateway } from "../services/ModelGateway";
+import type { DefaultModelConsentService } from "../services/DefaultModelConsentService";
 import type { PrivacyGuard } from "../services/PrivacyGuard";
 import type { ScreenshotCache } from "../services/ScreenshotCache";
 import type { ActivityService } from "../services/ActivityService";
@@ -101,6 +102,8 @@ export interface IpcDeps {
   getMainWindow: () => BrowserWindow | null;
   settingsService: SettingsService;
   modelGateway: ModelGateway;
+  defaultModelConsentService?: DefaultModelConsentService;
+  onDefaultModelConsentResolved?: () => void;
   /**
    * M8 新增：SecretService 用于 model:saveConfig 时写入 API Key
    * API Key 不进 renderer / SQLite / 日志
@@ -191,6 +194,11 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       fail("schema_invalid", `settings:update 参数校验失败: ${parsed.error.message}`);
     }
     const updated = deps.settingsService.update(parsed.data as Partial<AppSettings>);
+    const defaultConsent = parsed.data.defaultModelService?.consent;
+    if (defaultConsent === "accepted" || defaultConsent === "declined") {
+      deps.defaultModelConsentService?.resolve(defaultConsent === "accepted");
+      deps.onDefaultModelConsentResolved?.();
+    }
     // 调试模式开关：保存后立即同步到 Logger（无需重启应用）
     logger.setDevDebug(updated.debug?.enabled ?? false);
     return { ok: true, settings: updated };
@@ -249,6 +257,17 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       code: result.errorCode ?? "unknown_error",
       message: result.errorMessage ?? "未知错误",
     };
+  });
+
+  ipcMain.handle("model:defaultConsent:resolve", (_event, input: unknown) => {
+    const parsed = z.object({ accepted: z.boolean() }).safeParse(input);
+    if (!parsed.success) {
+      fail("schema_invalid", `model:defaultConsent:resolve 参数校验失败: ${parsed.error.message}`);
+    }
+    if (!deps.defaultModelConsentService) fail("not_ready", "默认模型授权服务未初始化");
+    deps.defaultModelConsentService.resolve(parsed.data.accepted);
+    deps.onDefaultModelConsentResolved?.();
+    return { ok: true };
   });
 
   // -------- M8 新增：模型配置 CRUD --------
@@ -649,17 +668,15 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       };
     }
 
-    // 2. 选取启用的 language 模型配置
-    const langConfigs = deps.settingsService.listLanguageModelConfigs().filter((c) => c.enabled);
-    if (langConfigs.length === 0) {
+    // 2. 按统一规则选择语言任务目标。
+    const configId = await deps.modelGateway.resolveConfigId("text");
+    if (!configId) {
       return {
         ok: false,
         code: "no_language_model",
-        message: "未配置启用的语言模型。请先在设置中配置。",
+        message: "没有可用的语言模型服务，请在设置中选择模型服务。",
       };
     }
-    const langConfig = langConfigs[0];
-
     // 3. 构造检索结果上下文
     const contextBlocks = searchResults.map((r) => {
       const parts: string[] = [];
@@ -696,10 +713,10 @@ ${context}
 }`;
 
     // 5. 调用 ModelGateway.callLanguage
-    const result = await deps.modelGateway.callLanguage(
+    const result = await deps.modelGateway.callByConfigId(
       {
         kind: "language",
-        configId: langConfig.id,
+        configId,
         systemPrompt,
         userPrompt,
         jobType: "memory_ask",
@@ -1411,6 +1428,7 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "settings:get",
   "settings:update",
   "model:testConnection",
+  "model:defaultConsent:resolve",
   // M8 新增：模型配置 CRUD
   "model:listConfigs",
   "model:saveConfig",

@@ -200,7 +200,7 @@ export function TodayPage() {
           title="今天还没有记录"
           description="开启观察后，Recall 会把你的电脑工作整理成时间轴、待收尾和日报素材。"
           primaryAction={{ label: "开始观察", onClick: handleStartObserving }}
-          secondaryAction={{ label: "配置模型", onClick: handleGoSettings }}
+          secondaryAction={{ label: "选择模型服务", onClick: handleGoSettings }}
         />
       </div>
     );

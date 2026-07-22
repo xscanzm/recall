@@ -165,7 +165,7 @@ export class EpisodeFactExtractorWorker {
       priority: 2,
       rateLimitKey: multimodalModelConfigId,
       executor: async () => {
-        return this.modelGateway.callMultimodal<EpisodeFactExtractorOutput>(
+        return this.modelGateway.callByConfigId<EpisodeFactExtractorOutput>(
           {
             kind: "multimodal",
             configId: multimodalModelConfigId,

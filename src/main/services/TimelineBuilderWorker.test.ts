@@ -38,7 +38,11 @@ describe("TimelineBuilderWorker", () => {
       ? { ok: false, errorCode: "failed", errorMessage: "failed" }
       : input.executor());
     const worker = new TimelineBuilderWorker({
-      modelGateway: { callMultimodal } as never, modelJobQueue: { enqueueMultimodalJob } as never,
+      modelGateway: {
+        callMultimodal,
+        callByConfigId: callMultimodal,
+        resolveConfigId: vi.fn(async () => "model"),
+      } as never, modelJobQueue: { enqueueMultimodalJob } as never,
       observationRepo: { listByCapturedAt: vi.fn((query) => {
         if (opts.observationError) throw opts.observationError;
         const matches = [...(opts.observations ?? [])]

@@ -267,7 +267,7 @@ export class ObserverExtractorWorker {
       captureId: captureBundle.captureId,
       rateLimitKey: multimodalModelConfigId,
       executor: async () => {
-        return this.modelGateway.callMultimodal<ObserverExtractorOutput>(
+        return this.modelGateway.callByConfigId<ObserverExtractorOutput>(
           {
             kind: "multimodal",
             configId: multimodalModelConfigId,
@@ -452,7 +452,7 @@ export class ObserverExtractorWorker {
         captureId: batchBundle.batchId,
         rateLimitKey: multimodalModelConfigId,
         executor: async () => {
-          return this.modelGateway.callMultimodal<BatchObserverExtractorOutput>(
+          return this.modelGateway.callByConfigId<BatchObserverExtractorOutput>(
             {
               kind: "multimodal",
               configId: multimodalModelConfigId,
@@ -581,7 +581,7 @@ export class ObserverExtractorWorker {
         captureId: batchBundle.batchId,
         rateLimitKey: multimodalModelConfigId,
         executor: async () => {
-          return this.modelGateway.callMultimodal<BatchObserverOutput>(
+          return this.modelGateway.callByConfigId<BatchObserverOutput>(
             {
               kind: "multimodal",
               configId: multimodalModelConfigId,

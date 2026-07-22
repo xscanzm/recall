@@ -165,9 +165,9 @@ export class TimelineBuilderWorker {
   }
 
   private async runBuild(dateKey: string, mode: TimelineBuildMode): Promise<TimelineBuilderResult> {
-    const multimodalModelConfigId = this.getActiveMultimodalModelConfigId();
+    const multimodalModelConfigId = await this.modelGateway.resolveConfigId("text");
     if (!multimodalModelConfigId) {
-      return failure("no_language_model", "未配置启用的多模态模型，无法生成时间轴");
+      return failure("no_language_model", "没有可用的语言模型服务，无法生成时间轴");
     }
 
     let checkpoint: string | null;
@@ -305,7 +305,7 @@ export class TimelineBuilderWorker {
       priority: isInitialBuild ? 1 : 3,
       dedupeKey: `timeline_builder:${dateKey}`,
       rateLimitKey: multimodalModelConfigId,
-      executor: async () => this.modelGateway.callMultimodal<TimelineBuilderOutput>(
+      executor: async () => this.modelGateway.callByConfigId<TimelineBuilderOutput>(
         {
           kind: "multimodal",
           configId: multimodalModelConfigId,
@@ -367,20 +367,6 @@ export class TimelineBuilderWorker {
   // ----------------------------------------------------------------
   // 数据检索
   // ----------------------------------------------------------------
-
-  /**
-   * 获取启用的多模态模型配置 id
-   */
-  private getActiveMultimodalModelConfigId(): string | null {
-    if (!this.settingsService) return null;
-    try {
-      const configs = this.settingsService.listMultimodalModelConfigs();
-      const enabled = configs.find((c) => c.enabled);
-      return enabled?.id ?? null;
-    } catch {
-      return null;
-    }
-  }
 
   /**
    * 查询指定日期范围的 observations

@@ -21,6 +21,7 @@ import { PeoplePage } from "./pages/PeoplePage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TrustCenterPage } from "./pages/TrustCenterPage";
 import { DebugPage } from "./pages/DebugPage";
+import { DefaultModelConsentDialog } from "./components/DefaultModelConsentDialog";
 import { useAppStore, type AppSettingsState } from "./state/store";
 import { getIpc } from "./state/ipc";
 import type { UpdateStatus } from "../shared/updateTypes";
@@ -38,6 +39,8 @@ export default function App() {
   const loadCurrentVersion = useAppStore((s) => s.loadCurrentVersion);
   const [bootError, setBootError] = useState<string | null>(null);
   const [bootState, setBootState] = useState<"loading" | "ready" | "onboarding">("loading");
+  const [defaultConsentOpen, setDefaultConsentOpen] = useState(false);
+  const [defaultConsentBusy, setDefaultConsentBusy] = useState(false);
 
   useEffect(() => {
     const ipc = getIpc();
@@ -54,11 +57,15 @@ export default function App() {
     let unsubProgress: (() => void) | undefined;
     let unsubUpdateStatus: (() => void) | undefined;
     let unsubReportsGenerated: (() => void) | undefined;
+    let unsubDefaultConsent: (() => void) | undefined;
     let cancelled = false;
 
     try {
       unsubReportsGenerated = getIpc().reports.onGenerated((report) => {
         useAppStore.getState().addUnreadReport(report);
+      });
+      unsubDefaultConsent = getIpc().model.onDefaultConsentRequested(() => {
+        setDefaultConsentOpen(true);
       });
     } catch {
       // preload 不可用时由启动流程统一展示错误。
@@ -123,6 +130,7 @@ export default function App() {
       if (unsubProgress) unsubProgress();
       if (unsubUpdateStatus) unsubUpdateStatus();
       if (unsubReportsGenerated) unsubReportsGenerated();
+      if (unsubDefaultConsent) unsubDefaultConsent();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -134,6 +142,18 @@ export default function App() {
   const handleOnboardingComplete = () => {
     void loadSettings();
     setBootState("ready");
+  };
+
+  const resolveDefaultConsent = async (accepted: boolean) => {
+    setDefaultConsentBusy(true);
+    try {
+      await getIpc().model.resolveDefaultConsent(accepted);
+      setDefaultConsentOpen(false);
+      await loadSettings();
+      if (!accepted) useAppStore.getState().setPage("settings");
+    } finally {
+      setDefaultConsentBusy(false);
+    }
   };
 
   if (bootError) {
@@ -195,9 +215,18 @@ export default function App() {
   }
 
   return (
-    <AppShell>
-      {renderPage(currentPage)}
-    </AppShell>
+    <>
+      <AppShell>
+        {renderPage(currentPage)}
+      </AppShell>
+      {defaultConsentOpen && (
+        <DefaultModelConsentDialog
+          busy={defaultConsentBusy}
+          onAccept={() => void resolveDefaultConsent(true)}
+          onDecline={() => void resolveDefaultConsent(false)}
+        />
+      )}
+    </>
   );
 }
 

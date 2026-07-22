@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_MODEL_PROMPT_TEXT_CHARS, ModelGateway } from "./ModelGateway";
+import { RECALL_DEFAULT_LANGUAGE_CONFIG_ID } from "./ModelTargets";
 
 const schema = {
   safeParse: (input: unknown) => ({ success: true as const, data: input }),
@@ -361,5 +362,82 @@ describe("ModelGateway response diagnostics", () => {
         requestCount: 1,
       })
     );
+  });
+});
+
+describe("ModelGateway selected targets", () => {
+  it("uses the Recall proxy without Authorization and preserves headers for repair", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }))
+      .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }));
+    const gateway = new ModelGateway({
+      settingsService: { isVerboseModelIO: vi.fn(() => false) } as never,
+      secretService: { getApiKey: vi.fn() } as never,
+      modelJobRepo: {
+        create: vi.fn(() => ({ id: "job-default" })),
+        markRunning: vi.fn(),
+        markSucceeded: vi.fn(),
+        markFailed: vi.fn(),
+      } as never,
+      defaultModelConsentService: { ensureAccepted: vi.fn(async () => true) } as never,
+      installationIdentityService: { getId: vi.fn(() => "123e4567-e89b-42d3-a456-426614174000") } as never,
+      clientVersion: "0.4.4",
+      fetchImpl,
+    });
+
+    const result = await gateway.callByConfigId({
+      kind: "language",
+      configId: RECALL_DEFAULT_LANGUAGE_CONFIG_ID,
+      systemPrompt: "",
+      userPrompt: "test",
+      jobType: "reporter",
+    }, schema);
+
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    for (const [url, init] of fetchImpl.mock.calls) {
+      expect(url).toBe("https://recall-update.ppclaw.online/api/model/language/v1/chat/completions");
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBeUndefined();
+      expect(headers["X-Recall-Installation-Id"]).toBe("123e4567-e89b-42d3-a456-426614174000");
+      expect(headers["X-Recall-Task-Type"]).toBe("reporter");
+      expect(headers["X-Recall-Client-Version"]).toBe("0.4.4");
+    }
+  });
+
+  it("reports a selected user configuration failure without switching targets", async () => {
+    const fetchImpl = vi.fn(async () => Response.json({ error: { message: "bad key" } }, { status: 401 }));
+    const gateway = new ModelGateway({
+      settingsService: {
+        getModelConfigById: vi.fn(() => ({
+          id: "user-language",
+          kind: "language",
+          endpoint: "https://user.example/v1",
+          model: "user-model",
+          enabled: true,
+          optionsJson: "{}",
+        })),
+        isVerboseModelIO: vi.fn(() => false),
+      } as never,
+      secretService: { getApiKey: vi.fn(async () => "user-key") } as never,
+      modelJobRepo: {
+        create: vi.fn(() => ({ id: "job-user" })),
+        markRunning: vi.fn(),
+        markSucceeded: vi.fn(),
+        markFailed: vi.fn(),
+      } as never,
+      fetchImpl,
+    });
+    const result = await gateway.callByConfigId({
+      kind: "language",
+      configId: "user-language",
+      systemPrompt: "",
+      userPrompt: "test",
+      jobType: "reporter",
+    }, schema);
+
+    expect(result).toMatchObject({ ok: false, errorCode: "auth_error" });
+    expect(result.errorMessage).toContain("用户模型配置调用失败");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 });

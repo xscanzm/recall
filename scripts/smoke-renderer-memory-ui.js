@@ -10,6 +10,9 @@ const captureDir = process.env.RECALL_CAPTURE_DIR || null;
 const now = "2026-07-09T10:08:00.000Z";
 const dateKey = "2026-07-09";
 const marketingCapture = Boolean(captureDir);
+const onboardingCapture = process.env.RECALL_ONBOARDING_CAPTURE === "1";
+const defaultModelCapture = process.env.RECALL_DEFAULT_MODEL_CAPTURE === "1";
+const defaultModelConsentCapture = process.env.RECALL_DEFAULT_MODEL_CONSENT_CAPTURE === "1";
 
 function writePreload() {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -23,6 +26,8 @@ const { contextBridge } = require("electron");
 const now = "${now}";
 const dateKey = "${dateKey}";
 const marketingCapture = ${marketingCapture};
+const onboardingCapture = ${onboardingCapture};
+const defaultModelConsentCapture = ${defaultModelConsentCapture};
 const copy = marketingCapture ? {
   appName: "浏览器",
   windowTitle: "夏日市集活动方案",
@@ -74,7 +79,12 @@ const settings = {
     weeklyReportTime: "18:00",
   },
   dailyReport: { autoGenerate: false, time: "18:30" },
-  onboardingCompleted: true,
+  personalReview: { autoGenerate: false, time: "23:00" },
+  defaultModelService: {
+    consent: defaultModelConsentCapture ? "pending" : "accepted",
+    acceptedAt: defaultModelConsentCapture ? null : now,
+  },
+  onboardingCompleted: !onboardingCapture,
   debug: { enabled: false, verboseModelIO: false },
 };
 
@@ -343,6 +353,11 @@ const api = {
     update: async () => ({ ok: true }),
   },
   model: {
+    resolveDefaultConsent: async () => ({ ok: true }),
+    onDefaultConsentRequested: (callback) => {
+      if (defaultModelConsentCapture) setTimeout(callback, 50);
+      return () => undefined;
+    },
     testConnection: async () => ({ ok: true }),
     listConfigs: async () => [],
     saveConfig: async () => ({ ok: true }),
@@ -442,6 +457,7 @@ const api = {
     list: async () => reports,
     get: async ({ id }) => reports.find((item) => item.id === id) || null,
     getImage: async () => ({ ok: true, data: null }),
+    onGenerated: () => () => undefined,
     onImageReady: () => () => {},
     getEvidenceByIds: async ({ factIds = [], sceneIds = [], blockIds = [] }) => ({
       ok: true,
@@ -612,9 +628,21 @@ async function assertTextAbsent(win, text, timeoutMs = 3000) {
 async function capturePage(win, fileName) {
   if (!captureDir) return;
   fs.mkdirSync(captureDir, { recursive: true });
+  if (!win.isVisible()) win.showInactive();
   await wait(350);
-  const image = await win.webContents.capturePage();
-  fs.writeFileSync(path.join(captureDir, fileName), image.toPNG());
+  const debug = win.webContents.debugger;
+  const attachedHere = !debug.isAttached();
+  if (attachedHere) debug.attach("1.3");
+  try {
+    const result = await debug.sendCommand("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: false,
+    });
+    fs.writeFileSync(path.join(captureDir, fileName), Buffer.from(result.data, "base64"));
+  } finally {
+    if (attachedHere && debug.isAttached()) debug.detach();
+  }
 }
 
 async function run() {
@@ -627,12 +655,13 @@ async function run() {
   const win = new BrowserWindow({
     width: 1365,
     height: 900,
-    show: false,
+    show: Boolean(captureDir),
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      backgroundThrottling: false,
     },
   });
 
@@ -650,6 +679,35 @@ async function run() {
   });
 
   await win.loadFile(indexPath);
+  if (captureDir) {
+    win.showInactive();
+    await wait(500);
+  }
+  if (onboardingCapture) {
+    await waitForText(win, "欢迎使用 Recall");
+    await clickByLabel(win, "开始引导");
+    await assertTexts(win, ["选择模型服务", "使用 Recall 默认模型服务", "使用自己的模型"]);
+    await capturePage(win, "onboarding-model-service.png");
+    console.log(JSON.stringify({ ok: true, pages: ["首次引导模型服务"], preloadPath }, null, 2));
+    win.close();
+    return;
+  }
+  if (defaultModelCapture) {
+    await waitForText(win, "今日");
+    await clickByLabel(win, "设置");
+    await assertTexts(win, ["模型服务", "使用 Recall 默认模型服务", "只使用自己的模型", "分别配置视觉模型与语言模型"]);
+    await capturePage(win, "settings-model-service.png");
+    console.log(JSON.stringify({ ok: true, pages: ["设置"], preloadPath }, null, 2));
+    win.close();
+    return;
+  }
+  if (defaultModelConsentCapture) {
+    await assertTexts(win, ["使用 Recall 默认模型服务？", "同意并继续", "暂不使用"]);
+    await capturePage(win, "default-model-consent.png");
+    console.log(JSON.stringify({ ok: true, pages: ["首次调用确认"], preloadPath }, null, 2));
+    win.close();
+    return;
+  }
   await waitForText(win, "今日");
   await assertTexts(win, [
     "微信讨论 Recall 记忆系统分层",
@@ -742,12 +800,16 @@ async function run() {
   await clickByLabel(win, "查看来源");
   await assertTexts(win, ["工作日报来源", "来源事实", "时间轴片段", "需要把 L0 先稳定为低判断观察层"]);
 
+  await clickByLabel(win, "设置");
+  await assertTexts(win, ["模型服务", "使用 Recall 默认模型服务", "只使用自己的模型", "分别配置视觉模型与语言模型"]);
+  await capturePage(win, "settings-model-service.png");
+
   const severeMessages = consoleMessages.filter((item) => item.level >= 2);
   if (pageErrors.length > 0 || severeMessages.length > 0) {
     throw new Error(JSON.stringify({ pageErrors, severeMessages }, null, 2));
   }
 
-  console.log(JSON.stringify({ ok: true, pages: ["今日", "待收尾", "项目", "人物", "记忆库", "报告"], preloadPath }, null, 2));
+  console.log(JSON.stringify({ ok: true, pages: ["今日", "待收尾", "项目", "人物", "记忆库", "报告", "设置"], preloadPath }, null, 2));
   win.close();
 }
 

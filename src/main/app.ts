@@ -38,6 +38,8 @@ import { CaptureInboxRepository } from "./db/repositories/CaptureInboxRepository
 import { SecretService } from "./services/SecretService";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
+import { DefaultModelConsentService } from "./services/DefaultModelConsentService";
+import { InstallationIdentityService } from "./services/InstallationIdentityService";
 import { ActivityService } from "./services/ActivityService";
 import { CaptureService } from "./services/CaptureService";
 import { PrivacyGuard } from "./services/PrivacyGuard";
@@ -128,6 +130,7 @@ let mainWindow: BrowserWindow | null = null;
 let pendingReportGeneratedEvents: ReportGeneratedEvent[] = [];
 /** 收工回顾服务创建前暂存的报告桌面卡片，避免启动补跑丢失弹窗。 */
 let pendingReportNotifications: ReportGeneratedEvent[] = [];
+let defaultModelConsentRequested = false;
 // tray 由 TrayService 单例管理，不再需要模块级变量
 
 // ============================================================================
@@ -248,8 +251,9 @@ function createMainWindow(): BrowserWindow {
 
   // 启动后再显示，避免白屏
   win.once("ready-to-show", () => {
-    if (!shouldStartHidden()) {
+    if (!shouldStartHidden() || defaultModelConsentRequested) {
       win.show();
+      if (defaultModelConsentRequested) win.focus();
     }
   });
 
@@ -270,6 +274,9 @@ function createMainWindow(): BrowserWindow {
     // 给 renderer 一次事件循环完成 IPC 订阅，再补发启动期间的报告事件。
     setTimeout(() => {
       if (mainWindow === win) flushPendingReportGeneratedEvents(win);
+      if (mainWindow === win && defaultModelConsentRequested) {
+        win.webContents.send("model:defaultConsentRequested");
+      }
     }, 0);
   });
 
@@ -304,6 +311,17 @@ function createMainWindow(): BrowserWindow {
   }
 
   return win;
+}
+
+function requestDefaultModelConsent(): void {
+  defaultModelConsentRequested = true;
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  win.show();
+  win.focus();
+  if (!win.webContents.isLoading()) {
+    win.webContents.send("model:defaultConsentRequested");
+  }
 }
 
 function queuePendingReportGeneratedEvent(payload: ReportGeneratedEvent): void {
@@ -494,11 +512,20 @@ app.whenReady().then(async () => {
     // 清理失败不阻断启动
   }
 
+  const defaultModelConsentService = new DefaultModelConsentService(
+    settingsService,
+    requestDefaultModelConsent
+  );
+  const installationIdentityService = new InstallationIdentityService(app.getPath("userData"));
+
   // ModelGateway：统一调用 OpenAI-compatible endpoint
   const modelGateway = new ModelGateway({
     settingsService,
     secretService,
     modelJobRepo,
+    defaultModelConsentService,
+    installationIdentityService,
+    clientVersion: app.getVersion(),
   });
 
   // -------- M3 服务初始化 --------
@@ -901,6 +928,10 @@ app.whenReady().then(async () => {
     getMainWindow: () => mainWindow,
     settingsService,
     modelGateway,
+    defaultModelConsentService,
+    onDefaultModelConsentResolved: () => {
+      defaultModelConsentRequested = false;
+    },
     // M8 新增：SecretService 用于 model:saveConfig 时写入 API Key
     secretService,
     privacyGuard,

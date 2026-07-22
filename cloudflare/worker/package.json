@@ -5,11 +5,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "test": "node ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts",
     "publish-release": "bash scripts/publish-release.sh"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250101.0",
     "typescript": "^5.6.0",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.113.0"
   }
 }

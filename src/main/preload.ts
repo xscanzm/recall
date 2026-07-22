@@ -68,6 +68,13 @@ const recallApi = {
 
   // -------------------- model --------------------
   model: {
+    resolveDefaultConsent: (accepted: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke("model:defaultConsent:resolve", { accepted }),
+    onDefaultConsentRequested: (callback: () => void): (() => void) => {
+      const handler = () => callback();
+      ipcRenderer.on("model:defaultConsentRequested", handler);
+      return () => ipcRenderer.removeListener("model:defaultConsentRequested", handler);
+    },
     testConnection: (input: {
       kind: "vision" | "language" | "multimodal";
       endpoint: string;

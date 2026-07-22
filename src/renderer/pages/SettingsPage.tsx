@@ -135,6 +135,7 @@ export function SettingsPage() {
   const [endOfDayFirstTime, setEndOfDayFirstTime] = useState("17:30");
   const [endOfDaySecondTime, setEndOfDaySecondTime] = useState("18:00");
   const [notificationSaving, setNotificationSaving] = useState(false);
+  const [modelServiceSaving, setModelServiceSaving] = useState(false);
 
   // 观察状态切换 loading
   const [observationToggling, setObservationToggling] = useState(false);
@@ -207,6 +208,20 @@ export function SettingsPage() {
     } finally {
       setLaunchAtLoginLoading(false);
     }
+  };
+
+  const handleModelServiceChange = async (useRecallDefault: boolean) => {
+    setModelServiceSaving(true);
+    const result = await updateSettings({
+      defaultModelService: {
+        consent: useRecallDefault ? "accepted" : "declined",
+        acceptedAt: useRecallDefault ? new Date().toISOString() : null,
+      },
+    });
+    if (!result.ok) {
+      setActionMessage({ kind: "err", text: result.error ?? "模型服务设置保存失败" });
+    }
+    setModelServiceSaving(false);
   };
 
   // ============================================================================
@@ -564,7 +579,7 @@ export function SettingsPage() {
       <header className="page-header">
         <h2>设置</h2>
         <p className="page-header__sub">
-          早测版本推荐只配置一个多模态模型。API Key 保存在系统安全存储，不会进入数据库或日志。
+          不配置自己 Key，使用 Recall 默认模型服务；也可以配置自己的模型直接调用。
         </p>
       </header>
 
@@ -573,14 +588,40 @@ export function SettingsPage() {
         <header className="settings-section__header">
           <h3 className="settings-section__title">1. 模型配置</h3>
           <p className="settings-section__hint">
-            当前记忆流水线需要一个支持图片输入的多模态模型，用于截图理解、记忆整理、待收尾判断和报告生成。API Key 通过系统安全存储保存，不写入数据库、不进日志。
+            语言任务优先使用你的语言模型，其次使用你的多模态模型；图片任务优先使用你的视觉模型，其次使用你的多模态模型。没有可用的自有配置时才使用 Recall 默认服务。
           </p>
         </header>
         <div className="settings-section__content">
           <div className="settings-section__block">
-            <h4 className="settings-section__subtitle">多模态模型（必填）</h4>
+            <h4 className="settings-section__subtitle">模型服务</h4>
+            <div className="model-service-choice" role="radiogroup" aria-label="模型服务">
+              <label className={settings?.defaultModelService?.consent === "accepted" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="settings-model-service"
+                  checked={settings?.defaultModelService?.consent === "accepted"}
+                  disabled={modelServiceSaving}
+                  onChange={() => void handleModelServiceChange(true)}
+                />
+                <span><strong>使用 Recall 默认模型服务</strong>无需配置 API 地址和 Key。默认服务只统计匿名安装级调用，不记录内容。</span>
+              </label>
+              <label className={settings?.defaultModelService?.consent === "declined" ? "is-selected" : ""}>
+                <input
+                  type="radio"
+                  name="settings-model-service"
+                  checked={settings?.defaultModelService?.consent === "declined"}
+                  disabled={modelServiceSaving}
+                  onChange={() => void handleModelServiceChange(false)}
+                />
+                <span><strong>只使用自己的模型</strong>调用从本机直连你的 endpoint，不向 Recall 上报；配置失败会明确提示，不会自动切换。</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="settings-section__block">
+            <h4 className="settings-section__subtitle">自己的多模态模型</h4>
             <p className="settings-section__hint">
-              早测用户只需要配置这一项。模型必须兼容 OpenAI Chat Completions，并支持图片输入。
+              可选。模型需兼容 OpenAI Chat Completions，并支持图片输入。
             </p>
             <ModelConfigForm
               kind="multimodal"
@@ -594,9 +635,9 @@ export function SettingsPage() {
           </div>
 
           <details className="settings-section__advanced">
-            <summary>高级兼容：分开配置视觉模型与语言模型</summary>
+            <summary>分别配置视觉模型与语言模型</summary>
             <p className="settings-section__hint">
-              旧版本保留入口。当前主流水线优先使用多模态模型，早测用户通常不需要配置这里。
+              有对应配置时分别优先使用；缺少某一类配置时再使用上面的多模态模型。
             </p>
 
           <div className="settings-section__block">

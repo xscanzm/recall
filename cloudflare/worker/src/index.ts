@@ -8,39 +8,23 @@ import {
   getDistributionStatsHistory,
   recordDistributionMetric,
   type DailyDistributionStats,
+  getDefaultModelInstallationStats,
+  getDefaultModelStatsHistory,
+  recordDefaultModelCall,
+  type DailyModelStats,
+  type ModelInstallationStats,
 } from "./stats";
-
-/**
- * Worker 环境变量与绑定
- */
-export interface Env {
-  /** R2 存储桶：保存 manifest.json 与安装包 */
-  RELEASES: R2Bucket;
-  /** KV 命名空间：保存官网访问、下载与更新请求统计 */
-  STATS: KVNamespace;
-  /** 分发统计查询密钥，仅通过 wrangler secret put 注入 */
-  STATS_READ_TOKEN?: string;
-  /** 统计页登录账号，仅通过 wrangler secret put 注入 */
-  STATS_ADMIN_USERNAME?: string;
-  /** 统计页登录密码，仅通过 wrangler secret put 注入 */
-  STATS_ADMIN_PASSWORD?: string;
-  /** 信息图服务密钥，仅通过 wrangler secret put 注入 */
-  INFOGRAPHIC_API_KEY?: string;
-  /** 信息图上游地址，可通过 vars 覆盖 */
-  INFOGRAPHIC_API_URL?: string;
-  /** 信息图模型，可通过 vars 覆盖 */
-  INFOGRAPHIC_MODEL?: string;
-  /** 信息图尺寸，可通过 vars 覆盖 */
-  INFOGRAPHIC_SIZE?: string;
-}
 
 /** CORS 允许的方法 */
 const CORS_ALLOWED_METHODS = "GET, POST, OPTIONS";
 /** CORS 允许的请求头 */
-const CORS_ALLOWED_HEADERS = "Authorization, Content-Type, X-Client-Version";
+const CORS_ALLOWED_HEADERS = "Authorization, Content-Type, X-Client-Version, X-Recall-Installation-Id, X-Recall-Task-Type, X-Recall-Client-Version";
 const WEBSITE_ORIGIN = "https://recall.ppclaw.online";
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CHINA_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
+const MODEL_PROXY_MAX_BODY_BYTES = 32 * 1024 * 1024;
+const MODEL_TASK_TYPE_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,79}$/i;
+const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * 给响应附加 CORS 头
@@ -224,8 +208,70 @@ function renderTrendChart(days: DailyDistributionStats[]): string {
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="每日官网访问和下载点击趋势"><line x1="${padding.left}" y1="${padding.top + plotHeight}" x2="${width - padding.right}" y2="${padding.top + plotHeight}" stroke="#b9c5c0" /><line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${padding.top + plotHeight}" stroke="#b9c5c0" /><text x="${padding.left - 8}" y="${padding.top + 5}" text-anchor="end">${maximum}</text><text x="${padding.left - 8}" y="${padding.top + plotHeight}" text-anchor="end">0</text>${bars}</svg>`;
 }
 
+function emptyModelStats(date: string): DailyModelStats {
+  return { date, totalCalls: 0, successes: 0, failures: 0, languageCalls: 0, multimodalCalls: 0, callsByTask: {}, installationHashes: [] };
+}
+
+function fillModelDateRange(history: DailyModelStats[], startDate: string, endDate: string): DailyModelStats[] {
+  const existing = new Map(history.map((day) => [day.date, day]));
+  const days: DailyModelStats[] = [];
+  for (let date = startDate; date <= endDate; date = shiftDate(date, 1)) {
+    days.push(existing.get(date) ?? emptyModelStats(date));
+  }
+  return days;
+}
+
+function aggregateModelStats(days: DailyModelStats[]): DailyModelStats {
+  const result = emptyModelStats("all");
+  const installations = new Set<string>();
+  for (const day of days) {
+    result.totalCalls += day.totalCalls;
+    result.successes += day.successes;
+    result.failures += day.failures;
+    result.languageCalls += day.languageCalls;
+    result.multimodalCalls += day.multimodalCalls;
+    mergeMetricValues(result.callsByTask, day.callsByTask);
+    for (const hash of day.installationHashes) installations.add(hash);
+  }
+  result.installationHashes = [...installations];
+  return result;
+}
+
+function renderModelTaskRows(values: Record<string, number>): string {
+  const entries = Object.entries(values).sort((left, right) => right[1] - left[1]);
+  if (entries.length === 0) return '<tr><td colspan="2" class="empty">暂无数据</td></tr>';
+  return entries.map(([task, count]) => `<tr><td>${escapeHtml(task)}</td><td>${count}</td></tr>`).join("");
+}
+
+function renderInstallationRows(values: ModelInstallationStats[]): string {
+  if (values.length === 0) return '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+  return values.slice(0, 100).map((item) => `<tr><td><code>${escapeHtml(item.installationHash.slice(0, 12))}</code></td><td>${escapeHtml(item.clientVersion)}</td><td>${item.totalCalls}</td><td>${item.failures}</td><td>${escapeHtml(item.lastSeenAt.slice(0, 16).replace("T", " "))}</td></tr>`).join("");
+}
+
+function renderModelTrendChart(days: DailyModelStats[]): string {
+  const width = 960;
+  const height = 260;
+  const padding = { top: 18, right: 18, bottom: 42, left: 42 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maximum = Math.max(1, ...days.flatMap((day) => [day.totalCalls, day.installationHashes.length]));
+  const step = plotWidth / Math.max(days.length, 1);
+  const barWidth = Math.max(2, Math.min(12, step * 0.32));
+  const labelsEvery = days.length > 30 ? Math.ceil(days.length / 8) : Math.max(1, Math.ceil(days.length / 7));
+  const bars = days.map((day, index) => {
+    const center = padding.left + step * index + step / 2;
+    const callsHeight = (day.totalCalls / maximum) * plotHeight;
+    const devicesHeight = (day.installationHashes.length / maximum) * plotHeight;
+    const label = index % labelsEvery === 0 || index === days.length - 1 ? `<text x="${center}" y="${height - 14}" text-anchor="middle">${escapeHtml(day.date.slice(5))}</text>` : "";
+    return `<rect x="${center - barWidth - 1}" y="${padding.top + plotHeight - callsHeight}" width="${barWidth}" height="${callsHeight}" fill="#1d6b58" /><rect x="${center + 1}" y="${padding.top + plotHeight - devicesHeight}" width="${barWidth}" height="${devicesHeight}" fill="#a4553f" />${label}`;
+  }).join("");
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="每日默认模型调用和活跃安装趋势"><line x1="${padding.left}" y1="${padding.top + plotHeight}" x2="${width - padding.right}" y2="${padding.top + plotHeight}" stroke="#b9c5c0" /><line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${padding.top + plotHeight}" stroke="#b9c5c0" /><text x="${padding.left - 8}" y="${padding.top + 5}" text-anchor="end">${maximum}</text><text x="${padding.left - 8}" y="${padding.top + plotHeight}" text-anchor="end">0</text>${bars}</svg>`;
+}
+
 function statsPageResponse(
   history: DailyDistributionStats[],
+  modelHistory: DailyModelStats[],
+  installationStats: ModelInstallationStats[],
   endDate: string,
   range: StatsRange
 ): Response {
@@ -239,6 +285,14 @@ function statsPageResponse(
   const updateChecks = sumMetricValues(stats.updateChecksByVersion);
   const updatesAvailable = sumMetricValues(stats.updatesAvailableByVersion);
   const rangeLabel = range === "all" ? "全部历史" : `近 ${range} 天`;
+  const modelFirstDate = modelHistory[0]?.date ?? endDate;
+  const modelStartDate = range === "all" ? modelFirstDate : startDate;
+  const visibleModelDays = fillModelDateRange(modelHistory, modelStartDate, endDate);
+  const modelStats = aggregateModelStats(visibleModelDays);
+  const visibleInstallations = installationStats.filter((item) => {
+    const date = item.lastSeenAt.slice(0, 10);
+    return date >= modelStartDate && date <= endDate;
+  });
 
   return new Response(
     `<!doctype html>
@@ -266,6 +320,7 @@ function statsPageResponse(
       .range-tabs a:last-child { border-right: 0; }
       .range-tabs a.active { background: #1d6b58; color: #fff; }
       .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid #d8dfdc; background: #fff; }
+      .summary.model { grid-template-columns: repeat(6, minmax(0, 1fr)); }
       .metric { padding: 20px; border-right: 1px solid #d8dfdc; min-height: 112px; }
       .metric:last-child { border-right: 0; }
       .metric span { display: block; color: #60706d; font-size: 13px; }
@@ -285,8 +340,10 @@ function statsPageResponse(
       .legend { display: flex; gap: 16px; margin: 0 0 8px 8px; color: #60706d; font-size: 13px; }
       .legend i { display: inline-block; width: 9px; height: 9px; margin-right: 5px; }
       .legend .visit { background: #1d6b58; } .legend .download { background: #c6782a; }
+      .legend .model-call { background: #1d6b58; } .legend .installation { background: #a4553f; }
+      code { font-family: Consolas, monospace; font-size: 12px; }
       footer { margin-top: 28px; color: #71807c; font-size: 12px; }
-      @media (max-width: 760px) { main { width: min(100% - 24px, 1080px); padding-top: 28px; } header { align-items: start; flex-direction: column; } .toolbar { align-items: start; flex-direction: column; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(2) { border-right: 0; } .metric:nth-child(n + 3) { border-top: 1px solid #d8dfdc; } .tables { grid-template-columns: 1fr; } }
+      @media (max-width: 760px) { main { width: min(100% - 24px, 1080px); padding-top: 28px; } header { align-items: start; flex-direction: column; } .toolbar { align-items: start; flex-direction: column; } .summary, .summary.model { grid-template-columns: repeat(2, minmax(0, 1fr)); } .metric:nth-child(2) { border-right: 0; } .metric:nth-child(n + 3) { border-top: 1px solid #d8dfdc; } .tables { grid-template-columns: 1fr; overflow-x: auto; } }
     </style>
   </head>
   <body>
@@ -311,7 +368,22 @@ function statsPageResponse(
         <table><thead><tr><th>更新检查版本</th><th>请求数</th></tr></thead><tbody>${renderVersionRows(stats.updateChecksByVersion)}</tbody></table>
         <table><thead><tr><th>可更新至版本</th><th>请求数</th></tr></thead><tbody>${renderVersionRows(stats.updatesAvailableByVersion)}</tbody></table>
       </div></section>
-      <footer>所有数字均为请求聚合统计，不代表独立安装用户数。版本表与图表均按当前选定范围统计。</footer>
+      <section class="section"><h2>Recall 默认模型服务</h2>
+        <div class="summary model">
+          <div class="metric"><span>总调用</span><strong>${modelStats.totalCalls}</strong></div>
+          <div class="metric"><span>成功</span><strong>${modelStats.successes}</strong></div>
+          <div class="metric"><span>失败</span><strong>${modelStats.failures}</strong></div>
+          <div class="metric"><span>语言模型</span><strong>${modelStats.languageCalls}</strong></div>
+          <div class="metric"><span>多模态模型</span><strong>${modelStats.multimodalCalls}</strong></div>
+          <div class="metric"><span>活跃安装</span><strong>${modelStats.installationHashes.length}</strong></div>
+        </div>
+      </section>
+      <section class="section"><h2>默认模型每日趋势</h2><div class="chart"><p class="legend"><span><i class="model-call"></i>调用</span><span><i class="installation"></i>活跃安装</span></p>${renderModelTrendChart(visibleModelDays)}</div></section>
+      <section class="section"><h2>默认模型明细</h2><div class="tables">
+        <table><thead><tr><th>任务类型</th><th>调用数</th></tr></thead><tbody>${renderModelTaskRows(modelStats.callsByTask)}</tbody></table>
+        <table><thead><tr><th>安装标识</th><th>版本</th><th>调用</th><th>失败</th><th>最近调用</th></tr></thead><tbody>${renderInstallationRows(visibleInstallations)}</tbody></table>
+      </div></section>
+      <footer>分发数字是请求聚合统计，不代表独立用户。默认模型仅统计经过 Recall 代理的调用；“活跃安装”按匿名安装标识去重，用户自配 Key 的直连调用完全不上报。</footer>
     </main>
   </body>
 </html>`,
@@ -322,6 +394,183 @@ function statsPageResponse(
       },
     }
   );
+}
+
+type ModelProxyKind = "language" | "multimodal";
+
+async function readJsonBodyBounded(request: Request, maxBytes: number): Promise<unknown> {
+  const declaredLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new Error("request-too-large");
+  }
+  if (!request.body) throw new Error("invalid-json");
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    total += next.value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      throw new Error("request-too-large");
+    }
+    chunks.push(next.value);
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(joined));
+  } catch {
+    throw new Error("invalid-json");
+  }
+}
+
+function isValidMessageContent(value: unknown): boolean {
+  if (typeof value === "string") return value.length <= 1_000_000;
+  if (!Array.isArray(value) || value.length > 64) return false;
+  return value.every((part) => {
+    if (!part || typeof part !== "object") return false;
+    const item = part as Record<string, unknown>;
+    if (item.type === "text") return typeof item.text === "string" && item.text.length <= 1_000_000;
+    if (item.type !== "image_url" || !item.image_url || typeof item.image_url !== "object") return false;
+    const imageUrl = (item.image_url as Record<string, unknown>).url;
+    return typeof imageUrl === "string"
+      && imageUrl.length <= MODEL_PROXY_MAX_BODY_BYTES
+      && (imageUrl.startsWith("data:image/") || imageUrl.startsWith("https://"));
+  });
+}
+
+function sanitizeModelProxyBody(value: unknown, fixedModel: string): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  if (!Array.isArray(input.messages) || input.messages.length === 0 || input.messages.length > 64) return null;
+  const messages = input.messages.map((message) => {
+    if (!message || typeof message !== "object") return null;
+    const item = message as Record<string, unknown>;
+    if (!["system", "user", "assistant"].includes(String(item.role))) return null;
+    if (!isValidMessageContent(item.content)) return null;
+    return { role: item.role, content: item.content };
+  });
+  if (messages.some((message) => message === null)) return null;
+
+  const output: Record<string, unknown> = { model: fixedModel, messages };
+  if (input.temperature !== undefined) {
+    if (typeof input.temperature !== "number" || input.temperature < 0 || input.temperature > 2) return null;
+    output.temperature = input.temperature;
+  }
+  if (input.max_tokens !== undefined) {
+    if (!Number.isInteger(input.max_tokens) || Number(input.max_tokens) < 1 || Number(input.max_tokens) > 65_536) return null;
+    output.max_tokens = input.max_tokens;
+  }
+  if (input.response_format !== undefined) {
+    if (
+      !input.response_format
+      || typeof input.response_format !== "object"
+      || (input.response_format as Record<string, unknown>).type !== "json_object"
+    ) return null;
+    output.response_format = { type: "json_object" };
+  }
+  if (input.stream !== undefined) {
+    if (typeof input.stream !== "boolean") return null;
+    output.stream = input.stream;
+  }
+  if (input.stream_options !== undefined) {
+    if (
+      !input.stream_options
+      || typeof input.stream_options !== "object"
+      || (input.stream_options as Record<string, unknown>).include_usage !== true
+    ) return null;
+    output.stream_options = { include_usage: true };
+  }
+  if (input.reasoning_effort !== undefined) {
+    if (!["none", "low", "medium", "high"].includes(String(input.reasoning_effort))) return null;
+    output.reasoning_effort = input.reasoning_effort;
+  }
+  return output;
+}
+
+function proxyResponse(upstream: Response): Response {
+  const headers = new Headers();
+  for (const name of ["content-type", "cache-control", "retry-after", "x-request-id"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set("Cache-Control", "no-store");
+  return withCors(new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  }));
+}
+
+async function handleDefaultModelProxy(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  kind: ModelProxyKind
+): Promise<Response> {
+  if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
+    return jsonResponse({ error: "capability-disabled" }, 503);
+  }
+  const installationId = request.headers.get("X-Recall-Installation-Id")?.trim() ?? "";
+  const taskType = request.headers.get("X-Recall-Task-Type")?.trim() ?? "";
+  const clientVersion = (request.headers.get("X-Recall-Client-Version")?.trim() || "unknown").slice(0, 40);
+  if (!INSTALLATION_ID_PATTERN.test(installationId) || !MODEL_TASK_TYPE_PATTERN.test(taskType)) {
+    return jsonResponse({ error: "invalid-client-metadata" }, 400);
+  }
+
+  const apiUrl = (kind === "language" ? env.DEFAULT_LANGUAGE_API_URL : env.DEFAULT_MULTIMODAL_API_URL)?.trim()
+    || "https://api.ppclaw.online";
+  const model = (kind === "language" ? env.DEFAULT_LANGUAGE_MODEL : env.DEFAULT_MULTIMODAL_MODEL)?.trim()
+    || (kind === "language" ? "deepseek-v4-flash" : "sensenova-6.7-flash-lite");
+  const apiKey = (kind === "language" ? env.DEFAULT_LANGUAGE_API_KEY : env.DEFAULT_MULTIMODAL_API_KEY)?.trim();
+  if (!apiKey) return jsonResponse({ error: "capability-unavailable" }, 503);
+
+  let parsed: unknown;
+  try {
+    parsed = await readJsonBodyBounded(request, MODEL_PROXY_MAX_BODY_BYTES);
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "invalid-request" }, 400);
+  }
+  const body = sanitizeModelProxyBody(parsed, model);
+  if (!body) return jsonResponse({ error: "invalid-request" }, 400);
+
+  const endpoint = `${apiUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1/chat/completions`;
+  const record = (status: "success" | "failure") => {
+    const secret = env.MODEL_STATS_HASH_SECRET?.trim();
+    if (!secret) return;
+    ctx.waitUntil(recordDefaultModelCall(env.STATS, secret, {
+      date: currentDateKey(),
+      installationId,
+      kind,
+      taskType,
+      status,
+      clientVersion,
+    }));
+  };
+
+  try {
+    const upstream = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        Accept: body.stream === true ? "text/event-stream" : "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    record(upstream.ok ? "success" : "failure");
+    return proxyResponse(upstream);
+  } catch {
+    record("failure");
+    return jsonResponse({ error: "upstream-unreachable" }, 502);
+  }
 }
 
 const DEFAULT_INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generations";
@@ -462,6 +711,17 @@ export default {
         );
       }
 
+      // ─── POST /api/model/{language|multimodal}/v1/chat/completions ───
+      // 固定上游与模型，默认服务 Key 只存在于 Worker Secret。
+      if (path === "/api/model/language/v1/chat/completions") {
+        if (method !== "POST") return jsonResponse({ error: "method-not-allowed" }, 405);
+        return handleDefaultModelProxy(request, env, ctx, "language");
+      }
+      if (path === "/api/model/multimodal/v1/chat/completions") {
+        if (method !== "POST") return jsonResponse({ error: "method-not-allowed" }, 405);
+        return handleDefaultModelProxy(request, env, ctx, "multimodal");
+      }
+
       // ─── POST /api/infographic/generate ────────────────
       // 只代理固定的信息图模型；上游密钥永不返回给客户端。
       if (path === "/api/infographic/generate") {
@@ -569,7 +829,12 @@ export default {
           return jsonResponse({ error: "invalid-date" }, 400);
         }
         const range = selectedRange(url.searchParams.get("range"));
-        return statsPageResponse(await getDistributionStatsHistory(env.STATS), endDate, range);
+        const [distributionHistory, modelHistory, installationStats] = await Promise.all([
+          getDistributionStatsHistory(env.STATS),
+          getDefaultModelStatsHistory(env.STATS),
+          getDefaultModelInstallationStats(env.STATS),
+        ]);
+        return statsPageResponse(distributionHistory, modelHistory, installationStats, endDate, range);
       }
 
       // ─── GET /download/latest ──────────────────────

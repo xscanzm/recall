@@ -34,6 +34,7 @@ export type IpcChannel =
   | "endOfDayReview:dismiss"
   | "endOfDayReview:expired"
   | "model:testConnection"
+  | "model:defaultConsent:resolve"
   // M8 新增：模型配置 CRUD
   | "model:listConfigs"
   | "model:saveConfig"
@@ -135,6 +136,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "endOfDayReview:dismiss",
   "endOfDayReview:expired",
   "model:testConnection",
+  "model:defaultConsent:resolve",
   "model:listConfigs",
   "model:saveConfig",
   "model:deleteConfig",

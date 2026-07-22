@@ -239,14 +239,15 @@ export class MemoryPipeline {
     // 调试模式：初始化 debugEvents 收集器
     const debugEvents: DebugEvent[] | undefined = this.settingsService?.isDebugMode() ? [] : undefined;
 
-    // 解析多模态模型 config id
-    const multimodalConfigId = await this.resolveMultimodalConfigId();
+    // 图片理解与后续纯文本整理分别解析目标，避免把所有任务绑在同一多模态配置上。
+    const visualConfigId = await this.resolveConfigId("vision");
+    const textConfigId = await this.resolveConfigId("text");
 
-    if (!multimodalConfigId) {
+    if (!visualConfigId) {
       result.errors.push({
         step: "observerExtractor",
         code: "no_multimodal_config",
-        message: "未配置多模态模型，跳过 pipeline",
+        message: "没有可用的视觉模型服务，跳过 pipeline",
       });
       return result;
     }
@@ -255,7 +256,7 @@ export class MemoryPipeline {
     this.updatePipelineState("observing");
     const observerExtractorResult = await this.runObserverExtractor(
       bundle,
-      multimodalConfigId
+      visualConfigId
     );
     result.steps.observerExtractor = observerExtractorResult.ok;
     if (!observerExtractorResult.ok || !observerExtractorResult.data) {
@@ -300,7 +301,7 @@ export class MemoryPipeline {
     result.written.observationId = normalizeResult.observation.id;
 
     // ---------------- 步骤 3：LinkerSceneJudge ----------------
-    if (observerExtractorResult.data.facts.length > 0) {
+    if (observerExtractorResult.data.facts.length > 0 && textConfigId) {
       this.updatePipelineState("linking");
       const shouldTriggerSceneBuilder =
         this.config.enableSceneBuilder && this.shouldTriggerSceneBuilder(bundle);
@@ -308,7 +309,7 @@ export class MemoryPipeline {
       const linkerSceneJudgeResult = await this.runLinkerSceneJudge(
         observerExtractorResult.data.facts,
         bundle.captureId,
-        multimodalConfigId,
+        textConfigId,
         shouldTriggerSceneBuilder,
         debugEvents
       );
@@ -329,9 +330,15 @@ export class MemoryPipeline {
         // 调试模式：持久化 debugEvents 到 model_jobs
         this.persistDebugEvents(linkerSceneJudgeResult.data.modelJobId, debugEvents);
       }
-    } else {
+    } else if (observerExtractorResult.data.facts.length === 0) {
       // 没有 facts，LinkerSceneJudge 跳过
       result.steps.linkerSceneJudge = true;
+    } else {
+      result.errors.push({
+        step: "linkerSceneJudge",
+        code: "no_text_model",
+        message: "没有可用的语言模型服务，已保留本次观察结果。",
+      });
     }
 
     this.updatePipelineState("idle");
@@ -389,13 +396,13 @@ export class MemoryPipeline {
     // 调试模式：初始化 debugEvents 收集器
     const debugEvents: DebugEvent[] | undefined = this.settingsService?.isDebugMode() ? [] : undefined;
 
-    // 解析多模态模型 config id
-    const multimodalConfigId = await this.resolveMultimodalConfigId();
-    if (!multimodalConfigId) {
+    const visualConfigId = await this.resolveConfigId("vision");
+    const textConfigId = await this.resolveConfigId("text");
+    if (!visualConfigId) {
       result.errors.push({
         step: "observerExtractor",
         code: "no_multimodal_config",
-        message: "未配置多模态模型，跳过批次 pipeline",
+        message: "没有可用的视觉模型服务，跳过批次 pipeline",
       });
       return result;
     }
@@ -405,7 +412,7 @@ export class MemoryPipeline {
     if (progress?.stages.observer !== "succeeded") progress?.markRunning("observer");
     const observerResult = progress?.stages.observer === "succeeded"
       ? null
-      : await this.runBatchObserver(batchBundle, multimodalConfigId);
+      : await this.runBatchObserver(batchBundle, visualConfigId);
     result.steps.observerExtractor = progress?.stages.observer === "succeeded" || observerResult?.ok === true;
     if (!result.steps.observerExtractor || (observerResult && !observerResult.data)) {
       result.errors.push({
@@ -476,9 +483,19 @@ export class MemoryPipeline {
     } else {
       this.updatePipelineState("extracting");
       if (progress?.stages.atom !== "succeeded") progress?.markRunning("atom");
+      if (!textConfigId) {
+        result.errors.push({
+          step: "episodeFactExtractor",
+          code: "no_text_model",
+          message: "没有可用的语言模型服务，已保留本批次观察与场景。",
+        });
+        progress?.markFailed("atom", "no text model");
+        this.updatePipelineState("idle");
+        return result;
+      }
       const episodeFactResult = progress?.stages.atom === "succeeded" ? null : await this.runEpisodeFactExtractor(
         writtenEpisodes,
-        multimodalConfigId,
+        textConfigId,
         debugEvents
       );
       if (episodeFactResult && (!episodeFactResult.ok || !episodeFactResult.data)) {
@@ -512,7 +529,7 @@ export class MemoryPipeline {
         : await this.runLinkerSceneJudge(
             episodeFacts,
             batchBundle.batchId,
-            multimodalConfigId,
+            textConfigId,
             false,
             debugEvents
           );
@@ -708,13 +725,16 @@ export class MemoryPipeline {
    * - 优先使用配置中的 multimodalModelConfigId
    * - 否则使用第一个 enabled 的 multimodal config
    */
-  private async resolveMultimodalConfigId(): Promise<string | null> {
-    if (this.config.multimodalModelConfigId) {
-      return this.config.multimodalModelConfigId;
-    }
+  private async resolveConfigId(taskKind: "text" | "vision"): Promise<string | null> {
     if (!this.settingsService) return null;
     try {
-      return this.settingsService.getActiveMultimodalModelConfigId();
+      if (
+        this.config.multimodalModelConfigId
+        && await this.settingsService.isModelConfigUsable(this.config.multimodalModelConfigId)
+      ) {
+        return this.config.multimodalModelConfigId;
+      }
+      return this.settingsService.resolveModelConfigId(taskKind);
     } catch {
       return null;
     }
