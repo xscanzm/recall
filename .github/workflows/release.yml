@@ -35,62 +35,54 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Read version from package.json
+        id: version
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          $expectedTag = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+            throw "Release tag $env:GITHUB_REF_NAME does not match package version $version"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "filename=Recall-$version-setup.exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Released version: $version"
+
       - name: Build & package NSIS installer
         run: npm run package
         env:
-          # electron-builder 在 CI 环境会尝试发布到 GitHub Release
-          # 这里允许它创建 draft release（需要 GH_TOKEN 才会真正发布）
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Read version from package.json
-        id: version
-        shell: bash
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "filename=Recall-${VERSION}-setup.exe" >> $GITHUB_OUTPUT
-          echo "Released version: $VERSION"
 
       - name: Calculate SHA256
         id: sha
-        shell: bash
+        shell: pwsh
         run: |
-          SHA=$(sha256sum "release/${{ steps.version.outputs.filename }}" | awk '{print $1}')
-          echo "sha256=$SHA" >> $GITHUB_OUTPUT
-          echo "SHA256: $SHA"
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "release/${{ steps.version.outputs.filename }}").Hash.ToLowerInvariant()
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "SHA256: $hash"
+
+      - name: Generate manifest.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA256: ${{ steps.sha.outputs.sha256 }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          NOTES_PATH: cloudflare/worker/release-notes.md
+          OUTPUT_PATH: cloudflare/worker/manifest.release.json
+        run: node scripts/generate-manifest.js
 
       - name: Upload installer to Cloudflare R2
         working-directory: cloudflare/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          npx wrangler r2 object put "recall-releases/${{ steps.version.outputs.filename }}" --file="../../release/${{ steps.version.outputs.filename }}"
+        run: npx wrangler r2 object put "recall-releases/${{ steps.version.outputs.filename }}" --file="../../release/${{ steps.version.outputs.filename }}"
 
-      - name: Generate and upload manifest.json
+      - name: Upload manifest.json to Cloudflare R2
         working-directory: cloudflare/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          VERSION: ${{ steps.version.outputs.version }}
-          SHA256: ${{ steps.sha.outputs.sha256 }}
-          PUBLISHED_AT: ${{ steps.version.outputs.publishedAt }}
-        run: |
-          # 读取 release-notes.md，生成 manifest.json，上传到 R2
-          PUBLISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          node -e '
-            const fs = require("fs");
-            const data = {
-              version: process.env.VERSION,
-              downloadUrl: `/download/Recall-${process.env.VERSION}-setup.exe`,
-              sha256: process.env.SHA256,
-              releaseNotes: fs.readFileSync("release-notes.md", "utf8"),
-              publishedAt: process.env.PUBLISHED_AT
-            };
-            fs.writeFileSync("manifest.release.json", JSON.stringify(data, null, 2) + "\n");
-            console.log(JSON.stringify(data, null, 2));
-          '
-          npx wrangler r2 object put "recall-releases/manifest.json" --file="manifest.release.json"
+        run: npx wrangler r2 object put "recall-releases/manifest.json" --file="manifest.release.json"
 
       - name: Verify deployment
         env:

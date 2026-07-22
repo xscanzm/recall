@@ -64,11 +64,36 @@ export function buildTodayActivityOverview(
   const stats = calculateStats(intervals, episodes);
   const factsById = new Map(facts.map((fact) => [fact.id, fact]));
   const projectNamesById = new Map(projects.map((project) => [project.id, project.name]));
+
+  const intervalsById = new Map(intervals.map((interval) => [interval.id, interval]));
+  const factsByEpisodeId = new Map<string, ActivityFactInput[]>();
+  const factsByObservationId = new Map<string, ActivityFactInput[]>();
+
+  for (const fact of facts) {
+    for (const epId of fact.sourceEpisodeIds) {
+      let list = factsByEpisodeId.get(epId);
+      if (!list) {
+        list = [];
+        factsByEpisodeId.set(epId, list);
+      }
+      list.push(fact);
+    }
+    for (const obsId of fact.sourceObservationIds) {
+      let list = factsByObservationId.get(obsId);
+      if (!list) {
+        list = [];
+        factsByObservationId.set(obsId, list);
+      }
+      list.push(fact);
+    }
+  }
+
   const activityEpisodes = episodes
     .map((episode) => buildEpisodeOverview(
       episode,
-      intervals,
-      facts,
+      intervalsById,
+      factsByEpisodeId,
+      factsByObservationId,
       factsById,
       projectNamesById
     ))
@@ -76,8 +101,12 @@ export function buildTodayActivityOverview(
   const observedStartAt = intervals.length > 0
     ? new Date(intervals[0].startMs).toISOString()
     : null;
-  const observedEndAt = intervals.length > 0
-    ? new Date(Math.max(...intervals.map((interval) => interval.endMs))).toISOString()
+  let observedEndMs = Number.NEGATIVE_INFINITY;
+  for (const interval of intervals) {
+    observedEndMs = Math.max(observedEndMs, interval.endMs);
+  }
+  const observedEndAt = Number.isFinite(observedEndMs)
+    ? new Date(observedEndMs).toISOString()
     : null;
 
   return {
@@ -169,25 +198,37 @@ function calculateStats(
 
 function buildEpisodeOverview(
   episode: ActivityEpisodeInput,
-  intervals: ObservationInterval[],
-  facts: ActivityFactInput[],
+  intervalsById: Map<string, ObservationInterval>,
+  factsByEpisodeId: Map<string, ActivityFactInput[]>,
+  factsByObservationId: Map<string, ActivityFactInput[]>,
   factsById: Map<string, ActivityFactInput>,
   projectNamesById: Map<string, string>
 ): TodayActivityEpisode {
-  const observationIds = new Set(episode.observationIds);
-  const episodeIntervals = intervals.filter((interval) => observationIds.has(interval.id));
-  const startAt = episodeIntervals.length > 0
-    ? new Date(Math.min(...episodeIntervals.map((interval) => interval.startMs))).toISOString()
+  let episodeStartMs = Number.POSITIVE_INFINITY;
+  let episodeEndMs = Number.NEGATIVE_INFINITY;
+  for (const observationId of episode.observationIds) {
+    const interval = intervalsById.get(observationId);
+    if (!interval) continue;
+    episodeStartMs = Math.min(episodeStartMs, interval.startMs);
+    episodeEndMs = Math.max(episodeEndMs, interval.endMs);
+  }
+  const startAt = Number.isFinite(episodeStartMs)
+    ? new Date(episodeStartMs).toISOString()
     : episode.startAt;
-  const endAt = episodeIntervals.length > 0
-    ? new Date(Math.max(...episodeIntervals.map((interval) => interval.endMs))).toISOString()
+  const endAt = Number.isFinite(episodeEndMs)
+    ? new Date(episodeEndMs).toISOString()
     : episode.endAt;
+
+  const relatedFactsFromFactIds = episode.factIds.flatMap((id) => factsById.get(id) ?? []);
+  const relatedFactsFromEp = factsByEpisodeId.get(episode.id) ?? [];
+  const relatedFactsFromObs = episode.observationIds.flatMap(
+    (obsId) => factsByObservationId.get(obsId) ?? []
+  );
+
   const relatedFacts = uniqueById([
-    ...episode.factIds.flatMap((id) => factsById.get(id) ?? []),
-    ...facts.filter((fact) =>
-      fact.sourceEpisodeIds.includes(episode.id)
-      || fact.sourceObservationIds.some((id) => observationIds.has(id))
-    ),
+    ...relatedFactsFromFactIds,
+    ...relatedFactsFromEp,
+    ...relatedFactsFromObs,
   ]);
   const projectNames = new Set<string>();
   const projectHints = new Set<string>();
@@ -223,15 +264,14 @@ function buildEpisodeOverview(
 }
 
 function mergeActivityWindows(episodes: TodayActivityEpisode[]): TodayActivityWindow[] {
-  const windows: TodayActivityWindow[] = [];
+  const windows: ActivityWindowAccumulator[] = [];
   for (const episode of episodes) {
     const previous = windows[windows.length - 1];
     if (!previous || !canMergeWindow(previous, episode)) {
-      windows.push(createActivityWindow(episode));
+      windows.push(createActivityWindowAccumulator(episode));
       continue;
     }
 
-    const sourceEpisodeIds = [...previous.sourceEpisodeIds, episode.id];
     previous.endAt = maxIso(previous.endAt, episode.endAt);
     previous.summary = mergeText(previous.summary, episode.summary);
     previous.categoryConfidence = averageConfidence(
@@ -240,24 +280,22 @@ function mergeActivityWindows(episodes: TodayActivityEpisode[]): TodayActivityWi
       previous.sourceEpisodeIds.length,
       1
     );
-    previous.sourceEpisodeIds = sourceEpisodeIds;
-    previous.sourceObservationIds = uniqueStrings([
-      ...previous.sourceObservationIds,
-      ...episode.sourceObservationIds,
-    ]);
-    previous.projectNames = uniqueStrings([
-      ...previous.projectNames,
-      ...episode.projectNames,
-    ]);
-    previous.topicTexts = uniqueStrings([
-      ...previous.topicTexts,
-      ...episode.topicTexts,
-    ]);
+    previous.sourceEpisodeIds.push(episode.id);
+    appendUnique(previous.sourceObservationIds, previous.sourceObservationIdSet, episode.sourceObservationIds);
+    appendUnique(previous.projectNames, previous.projectNameSet, episode.projectNames);
+    appendUnique(previous.topicTexts, previous.topicTextSet, episode.topicTexts);
   }
-  return windows;
+  return windows.map(({ sourceObservationIdSet: _sourceObservationIdSet, projectNameSet: _projectNameSet,
+    topicTextSet: _topicTextSet, ...window }) => window);
 }
 
-function createActivityWindow(episode: TodayActivityEpisode): TodayActivityWindow {
+interface ActivityWindowAccumulator extends TodayActivityWindow {
+  sourceObservationIdSet: Set<string>;
+  projectNameSet: Set<string>;
+  topicTextSet: Set<string>;
+}
+
+function createActivityWindowAccumulator(episode: TodayActivityEpisode): ActivityWindowAccumulator {
   return {
     id: `activity-window:${episode.id}`,
     startAt: episode.startAt,
@@ -270,11 +308,14 @@ function createActivityWindow(episode: TodayActivityEpisode): TodayActivityWindo
     sourceObservationIds: [...episode.sourceObservationIds],
     projectNames: [...episode.projectNames],
     topicTexts: [...episode.topicTexts],
+    sourceObservationIdSet: new Set(episode.sourceObservationIds),
+    projectNameSet: new Set(episode.projectNames),
+    topicTextSet: new Set(episode.topicTexts),
   };
 }
 
 function canMergeWindow(
-  previous: TodayActivityWindow,
+  previous: ActivityWindowAccumulator,
   current: TodayActivityEpisode
 ): boolean {
   if (previous.category !== current.category) return false;
@@ -284,7 +325,7 @@ function canMergeWindow(
   if (currentStart - previousEnd > ACTIVITY_WINDOW_MAX_GAP_MS) return false;
 
   if (previous.projectNames.length > 0 || current.projectNames.length > 0) {
-    return previous.projectNames.some((name) => current.projectNames.includes(name));
+    return current.projectNames.some((name) => previous.projectNameSet.has(name));
   }
   return true;
 }
@@ -310,8 +351,12 @@ function maxIso(left: string, right: string): string {
   return Date.parse(left) >= Date.parse(right) ? left : right;
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.trim()))];
+function appendUnique(target: string[], seen: Set<string>, values: string[]): void {
+  for (const value of values) {
+    if (!value.trim() || seen.has(value)) continue;
+    seen.add(value);
+    target.push(value);
+  }
 }
 
 function uniqueById<T extends { id: string }>(values: T[]): T[] {

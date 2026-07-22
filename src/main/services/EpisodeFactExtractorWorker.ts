@@ -163,6 +163,7 @@ export class EpisodeFactExtractorWorker {
     const result = await this.modelJobQueue.enqueueMultimodalJob<EpisodeFactExtractorOutput>({
       type: "episode_fact_extractor",
       priority: 2,
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<EpisodeFactExtractorOutput>(
           {

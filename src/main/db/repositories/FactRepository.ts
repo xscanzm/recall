@@ -116,12 +116,15 @@ export class FactRepository {
   }
 
   listBySourceEpisodeIds(episodeIds: string[]): Fact[] {
-    if (episodeIds.length === 0) return [];
-    const rows = this.db.prepare(`SELECT * FROM facts WHERE deleted_at IS NULL AND EXISTS (
-      SELECT 1 FROM json_each(facts.source_episode_ids_json)
-      WHERE json_each.value IN (${episodeIds.map(() => "?").join(",")})
-    ) ORDER BY created_at ASC`).all(...episodeIds) as FactRow[];
-    return rows.map(mapRow);
+    return this.listByJsonSourceIds("source_episode_ids_json", episodeIds);
+  }
+
+  /**
+   * Query active facts linked to any of the supplied observations.
+   * Inputs are chunked to stay below SQLite's host-parameter limit.
+   */
+  listBySourceObservationIds(observationIds: string[]): Fact[] {
+    return this.listByJsonSourceIds("source_observation_ids_json", observationIds);
   }
 
   listByCreatedAt(opts: {
@@ -178,18 +181,45 @@ export class FactRepository {
    */
   listByIds(ids: string[]): Fact[] {
     if (ids.length === 0) return [];
-    const placeholders = ids.map(() => "?").join(", ");
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM facts WHERE id IN (${placeholders}) AND deleted_at IS NULL`
-      )
-      .all(...ids) as FactRow[];
+    const uniqueIds = [...new Set(ids)];
+    const rows = chunkValues(uniqueIds).flatMap((chunk) => {
+      const placeholders = chunk.map(() => "?").join(", ");
+      return this.db
+        .prepare(
+          `SELECT * FROM facts WHERE id IN (${placeholders}) AND deleted_at IS NULL`
+        )
+        .all(...chunk) as FactRow[];
+    });
     const facts = rows.map(mapRow);
     // 按输入 ids 顺序排序（找不到的 id 跳过）
     const byId = new Map(facts.map((f) => [f.id, f]));
     return ids
       .map((id) => byId.get(id))
       .filter((f): f is Fact => f !== undefined);
+  }
+
+  private listByJsonSourceIds(
+    column: "source_episode_ids_json" | "source_observation_ids_json",
+    ids: string[]
+  ): Fact[] {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return [];
+
+    const factsById = new Map<string, Fact>();
+    for (const chunk of chunkValues(uniqueIds)) {
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.db.prepare(`SELECT * FROM facts WHERE deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM json_each(facts.${column})
+        WHERE json_each.value IN (${placeholders})
+      ) ORDER BY created_at ASC`).all(...chunk) as FactRow[];
+      for (const row of rows) {
+        const fact = mapRow(row);
+        factsById.set(fact.id, fact);
+      }
+    }
+    return [...factsById.values()].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt)
+    );
   }
 
   /**
@@ -725,6 +755,16 @@ function safeParseArray<T = unknown>(json: string): T[] {
   } catch {
     return [];
   }
+}
+
+const SQLITE_QUERY_CHUNK_SIZE = 500;
+
+function chunkValues<T>(values: T[]): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += SQLITE_QUERY_CHUNK_SIZE) {
+    chunks.push(values.slice(index, index + SQLITE_QUERY_CHUNK_SIZE));
+  }
+  return chunks;
 }
 
 function generateId(prefix: string): string {

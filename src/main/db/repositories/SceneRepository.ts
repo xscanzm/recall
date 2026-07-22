@@ -33,6 +33,19 @@ interface SceneRow {
   derivation_version: number;
 }
 
+export interface MinimalScene {
+  id: string;
+  title: string;
+  summary: string;
+  startAt: string;
+  endAt: string;
+  projectId: string | null;
+  activityCategory: Scene["activityCategory"];
+  activityConfidence: number;
+  factIds: string[];
+  observationIds: string[];
+}
+
 export class SceneRepository {
   constructor(private db: DB) {}
 
@@ -138,7 +151,7 @@ export class SceneRepository {
       params.push(opts.from);
     }
     if (opts.to) {
-      conditions.push("start_at <= ?");
+      conditions.push("start_at < ?");
       params.push(opts.to);
     }
     if (!opts.includeDeleted) {
@@ -152,6 +165,62 @@ export class SceneRepository {
       .prepare(`SELECT * FROM scenes ${where} ORDER BY start_at ${order} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as SceneRow[];
     return rows.map(mapRow);
+  }
+
+  /**
+   * 按时间范围查询轻量字段（专供 Today 概览使用，无 1000 限制）
+   */
+  listByStartAtMinimal(opts: {
+    from?: string;
+    to?: string;
+    includeDeleted?: boolean;
+    limit?: number;
+    order?: "asc" | "desc";
+  } = {}): MinimalScene[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.from) {
+      conditions.push("start_at >= ?");
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      conditions.push("start_at <= ?");
+      params.push(opts.to);
+    }
+    if (!opts.includeDeleted) {
+      conditions.push("deleted_at IS NULL");
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const order = opts.order === "asc" ? "ASC" : "DESC";
+    const limitClause = typeof opts.limit === "number" && opts.limit > 0 ? `LIMIT ${opts.limit}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT id, title, summary, start_at, end_at, project_id, activity_category, activity_confidence, fact_ids_json, observation_ids_json FROM scenes ${where} ORDER BY start_at ${order} ${limitClause}`
+      )
+      .all(...params) as Array<{
+        id: string;
+        title: string;
+        summary: string;
+        start_at: string;
+        end_at: string;
+        project_id: string | null;
+        activity_category: Scene["activityCategory"];
+        activity_confidence: number;
+        fact_ids_json: string;
+        observation_ids_json: string;
+      }>;
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      summary: row.summary,
+      startAt: row.start_at,
+      endAt: row.end_at,
+      projectId: row.project_id,
+      activityCategory: row.activity_category ?? "unknown",
+      activityConfidence: row.activity_confidence ?? 0,
+      factIds: safeParseArray<string>(row.fact_ids_json),
+      observationIds: safeParseArray<string>(row.observation_ids_json),
+    }));
   }
 
   /**
@@ -222,7 +291,6 @@ export class SceneRepository {
    */
   rewriteEntityNameBatch(fromName: string, toName: string): number {
     if (fromName === toName) return 0;
-    // 找出包含 fromName 的所有 scene，逐个读 entityNames 数组，替换后写回
     const candidates = this.listByEntityNameExact(fromName, { limit: 1000 });
     if (candidates.length === 0) return 0;
     const updateStmt = this.db.prepare(
@@ -249,9 +317,6 @@ export class SceneRepository {
 
   /**
    * 查询今日 scene
-   *
-   * 注意：使用本地日期与时区偏移构造起始时间，避免 UTC 与本地时区差异
-   * 导致跨日边界时（如 UTC+8 凌晨 0:00-8:00）误把今天当成昨天。
    */
   listToday(): Scene[] {
     const from = getLocalTodayStartIso();
@@ -260,10 +325,6 @@ export class SceneRepository {
 
   /**
    * 关键词搜索（SQL LIKE）
-   * - 搜索 title 和 summary 字段（OR 语义）
-   * - 仅未删除
-   * - SQLite LIKE 对 ASCII 默认大小写不敏感
-   * - 用于 memory:search IPC（避免全量加载后在 JS 端过滤）
    */
   searchByKeyword(keyword: string, limit: number = 100): Scene[] {
     const likePattern = `%${keyword}%`;
@@ -363,14 +424,6 @@ export class SceneRepository {
     return result.changes > 0;
   }
 
-  /**
-   * 003 新增：按 observation_ids 批量 soft delete
-   * UPDATE scenes SET deleted_at=now WHERE observation_ids_json 包含任一 observationId
-   * 仅 soft delete 未删除的 scenes
-   *
-   * @param observationIds 关联的 observation id 列表
-   * @returns 被 soft delete 的 scenes 列表（用于后续标记 reports stale）
-   */
   softDeleteByObservationIds(observationIds: string[]): Scene[] {
     if (observationIds.length === 0) return [];
     const now = new Date().toISOString();
@@ -396,9 +449,6 @@ export class SceneRepository {
     return toDelete;
   }
 
-  /**
-   * 恢复 soft delete
-   */
   restore(id: string): boolean {
     const result = this.db
       .prepare("UPDATE scenes SET deleted_at = NULL, updated_at = ? WHERE id = ?")
@@ -406,17 +456,11 @@ export class SceneRepository {
     return result.changes > 0;
   }
 
-  /**
-   * 物理删除
-   */
   deleteById(id: string): boolean {
     const result = this.db.prepare("DELETE FROM scenes WHERE id = ?").run(id);
     return result.changes > 0;
   }
 
-  /**
-   * 统计未删除总数
-   */
   count(): number {
     const row = this.db
       .prepare("SELECT COUNT(*) as cnt FROM scenes WHERE deleted_at IS NULL")
@@ -428,10 +472,6 @@ export class SceneRepository {
 export function createSceneRepository(db: DB): SceneRepository {
   return new SceneRepository(db);
 }
-
-// ============================================================================
-// 内部辅助函数
-// ============================================================================
 
 function mapRow(row: SceneRow): Scene {
   return {

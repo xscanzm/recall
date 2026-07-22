@@ -76,4 +76,68 @@ describe("BatchProcessor", () => {
     expect(recoverRunningBatches).toHaveBeenCalledOnce();
     expect("recoverFailedBatches" in repo).toBe(false);
   });
+
+  it("idempotently waits for active work and does not claim new batches after stop", async () => {
+    vi.spyOn(CaptureBatcher, "restoreCompressedImages").mockResolvedValue(true);
+    vi.spyOn(CaptureBatcher, "cleanupCompressedImages").mockImplementation(() => undefined);
+    const secondBundle = { ...bundle, batchId: "batch-2" };
+    let firstStatus = "pending";
+    let secondStatus = "pending";
+    let allowSecond = false;
+    const repo = {
+      recoverRunningBatches: vi.fn(() => 0),
+      listProcessableBatches: vi.fn(() => {
+        if (firstStatus === "pending") {
+          return [{ batchId: bundle.batchId, bundle, status: firstStatus, attempts: 0, lastError: null, stages: {}, checkpoint: {} }];
+        }
+        if (allowSecond && secondStatus === "pending") {
+          return [{ batchId: secondBundle.batchId, bundle: secondBundle, status: secondStatus, attempts: 0, lastError: null, stages: {}, checkpoint: {} }];
+        }
+        return [];
+      }),
+      markRunning: vi.fn((batchId: string) => {
+        if (batchId === bundle.batchId) firstStatus = "running";
+        if (batchId === secondBundle.batchId) secondStatus = "running";
+      }),
+      updateBatchBundle: vi.fn(),
+      markSucceeded: vi.fn((batchId: string) => {
+        if (batchId === bundle.batchId) firstStatus = "succeeded";
+        if (batchId === secondBundle.batchId) secondStatus = "succeeded";
+      }),
+      markFailed: vi.fn(),
+      markStageRunning: vi.fn(),
+      markStageSucceeded: vi.fn(),
+      markStageFailed: vi.fn(),
+    };
+    let finishPipeline: ((value: unknown) => void) | undefined;
+    const process = vi.fn(() => new Promise((resolve) => { finishPipeline = resolve; }));
+    const processor = new BatchProcessor(repo as never, { processBatchCaptureBundle: process } as never);
+    processor.start();
+    await vi.waitFor(() => expect(process).toHaveBeenCalledOnce());
+
+    const firstDrain = processor.stopAndDrainActive();
+    const secondDrain = processor.stopAndDrainActive();
+    expect(secondDrain).toBe(firstDrain);
+    allowSecond = true;
+    let drained = false;
+    void firstDrain.then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    finishPipeline?.({
+      steps: {
+        observerExtractor: true,
+        normalizer: { failed: 0 },
+        episodes: true,
+        atoms: true,
+        linkerSceneJudge: true,
+      },
+      errors: [],
+    });
+    await firstDrain;
+
+    expect(repo.markSucceeded).toHaveBeenCalledWith(bundle.batchId);
+    expect(process).toHaveBeenCalledOnce();
+    expect(secondStatus).toBe("pending");
+  });
 });

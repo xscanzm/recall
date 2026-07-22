@@ -117,6 +117,21 @@ export class ObservationRepository {
   }
 
   /**
+   * 按时间范围查询（仅返回 id 和 captured_at，专供 Today 页面轻量查询）
+   */
+  listTimeRangeMinimal(from: string, to: string): Array<{ id: string; capturedAt: string }> {
+    const rows = this.db
+      .prepare(
+        "SELECT id, captured_at FROM observations WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at ASC"
+      )
+      .all(from, to) as Array<{ id: string; captured_at: string }>;
+    return rows.map((row) => ({
+      id: row.id,
+      capturedAt: row.captured_at,
+    }));
+  }
+
+  /**
    * 按时间范围查询（含分页）
    */
   listByCapturedAt(opts: {

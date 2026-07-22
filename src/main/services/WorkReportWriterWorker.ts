@@ -265,6 +265,7 @@ export class WorkReportWriterWorker {
     //     队列类型使用 "reporter"（enqueueMultimodalJob 限定的枚举值）
     const result = await this.modelJobQueue.enqueueMultimodalJob<WorkReportOutput>({
       type: "reporter",
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<WorkReportOutput>(
           {

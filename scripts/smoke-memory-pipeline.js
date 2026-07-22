@@ -1,11 +1,12 @@
 /* eslint-disable no-console */
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
 
 const rootDir = path.resolve(__dirname, "..");
-const outputDir = path.join(rootDir, "scripts", "output");
-const dbPath = path.join(outputDir, "smoke-memory-pipeline.db");
+let outputDir;
+let dbPath;
 
 function requireDist(modulePath) {
   return require(path.join(rootDir, "dist", "main", modulePath));
@@ -260,6 +261,8 @@ class StaticModelJobQueue {
 
 async function main() {
   assertLinkerSceneJudgeDefaults();
+  outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-memory-smoke-"));
+  dbPath = path.join(outputDir, "smoke-memory-pipeline.db");
   resetSmokeDb();
   const db = new Database(dbPath);
   try {
@@ -405,6 +408,7 @@ async function main() {
     }, null, 2));
   } finally {
     db.close();
+    fs.rmSync(outputDir, { recursive: true, force: true });
   }
 }
 

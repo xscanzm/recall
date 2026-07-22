@@ -15,6 +15,54 @@ afterEach(() => {
 });
 
 describe("CaptureBatcher OCR and compression", () => {
+  it("drains every queued frame and stops accepting new captures", async () => {
+    const batchSizes: number[] = [];
+    const repository = {
+      listPendingCaptures: () => [],
+      enqueueCapture: () => true,
+      createBatch: (batch: BatchCaptureBundle) => {
+        batchSizes.push(batch.frames.length);
+        return true;
+      },
+    };
+    const batcher = new CaptureBatcher({
+      repository: repository as never,
+      ocrFrameProcessor: {
+        prepareBatch: async (frames) => ({
+          results: frames.map((_, index) => ({
+            frameIndex: index + 1,
+            text: "",
+            lines: [],
+            blocks: [],
+          })),
+          commit: () => undefined,
+        }),
+      },
+    });
+    const makeFrame = (index: number): CaptureBundle => ({
+      captureId: `capture-${index}`,
+      capturedAt: new Date(index * 1000).toISOString(),
+      timezone: "UTC",
+      appName: "Recall Test",
+      windowTitle: "Drain Test",
+      captureReason: "manual_capture",
+      activitySignals: {
+        keyboardActive: false,
+        mouseActive: false,
+        idleSeconds: 0,
+        activeWindowStableSeconds: 60,
+      },
+      imagePaths: [],
+      retentionPolicy: "today",
+    });
+
+    for (let index = 0; index < 7; index += 1) batcher.add(makeFrame(index));
+    await batcher.drain();
+
+    expect(batchSizes).toEqual([6, 1]);
+    expect(batcher.add(makeFrame(8))).toBe(false);
+  });
+
   it("recognizes the original image before persisting an optimized JPEG", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-capture-batcher-"));
     tempDirs.push(tempDir);

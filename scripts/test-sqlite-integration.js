@@ -12,6 +12,7 @@ const { SceneRepository } = require("../dist/main/db/repositories/SceneRepositor
 const { MemoryEdgeRepository } = require("../dist/main/db/repositories/MemoryEdgeRepository");
 const { CorrectionLifecycleRepository } = require("../dist/main/db/repositories/CorrectionLifecycleRepository");
 const { TimelineBlockRepository } = require("../dist/main/db/repositories/TimelineBlockRepository");
+const { ModelJobRepository } = require("../dist/main/db/repositories/ModelJobRepository");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "recall-sqlite-"));
 const migrationsDir = path.join(__dirname, "..", "src", "main", "db", "migrations");
@@ -77,6 +78,94 @@ async function main() {
   try {
     migrate(db);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM _migrations").get().count, migrations().length);
+
+    const modelJobs = new ModelJobRepository(db);
+    const succeededJob = modelJobs.create({ id: "model-job-succeeded", type: "integration", inputJson: "{}" });
+    modelJobs.markRunning(succeededJob.id);
+    modelJobs.markSucceeded(
+      succeededJob.id,
+      JSON.stringify({ result: "ok" }),
+      2,
+      undefined,
+      undefined,
+      {
+        promptTokens: 120,
+        completionTokens: 45,
+        cachedPromptTokens: 80,
+        requestCount: 3,
+        latencyMs: 950,
+      },
+    );
+    assert.deepEqual(
+      {
+        status: modelJobs.getById(succeededJob.id).status,
+        promptTokens: modelJobs.getById(succeededJob.id).promptTokens,
+        completionTokens: modelJobs.getById(succeededJob.id).completionTokens,
+        cachedPromptTokens: modelJobs.getById(succeededJob.id).cachedPromptTokens,
+        requestCount: modelJobs.getById(succeededJob.id).requestCount,
+        latencyMs: modelJobs.getById(succeededJob.id).latencyMs,
+      },
+      {
+        status: "succeeded",
+        promptTokens: 120,
+        completionTokens: 45,
+        cachedPromptTokens: 80,
+        requestCount: 3,
+        latencyMs: 950,
+      },
+      "successful model jobs persist usage and request metrics",
+    );
+
+    modelJobs.appendDebugEvents(succeededJob.id, [{ layer: "L0", action: "skip", reason: "integration-one" }]);
+    modelJobs.appendDebugEvents(succeededJob.id, [{ layer: "L1", action: "dedup", reason: "integration-two" }]);
+    assert.deepEqual(
+      JSON.parse(modelJobs.getById(succeededJob.id).debugEventsJson).map((event) => event.reason),
+      ["integration-one", "integration-two"],
+      "debug events append without replacing prior events",
+    );
+
+    const failedJob = modelJobs.create({ id: "model-job-failed", type: "integration", inputJson: "{}" });
+    modelJobs.markFailed(
+      failedJob.id,
+      "rate_limited",
+      "integration failure",
+      1,
+      null,
+      undefined,
+      undefined,
+      {
+        promptTokens: 12,
+        completionTokens: null,
+        cachedPromptTokens: null,
+        latencyMs: 300,
+      },
+    );
+    const failedMetrics = db.prepare(
+      `SELECT prompt_tokens, completion_tokens, cached_prompt_tokens, request_count, latency_ms
+       FROM model_jobs WHERE id = ?`,
+    ).get(failedJob.id);
+    assert.deepEqual(
+      failedMetrics,
+      {
+        prompt_tokens: 12,
+        completion_tokens: null,
+        cached_prompt_tokens: null,
+        request_count: null,
+        latency_ms: 300,
+      },
+      "failed model jobs preserve nullable metrics and keep unknown request counts null",
+    );
+
+    const updatedJob = modelJobs.update(failedJob.id, {
+      errorMessage: "updated integration failure",
+      attempts: 2,
+    });
+    assert.equal(updatedJob.errorMessage, "updated integration failure");
+    assert.equal(updatedJob.attempts, 2);
+    assert.equal(updatedJob.requestCount, null, "ordinary updates preserve nullable metrics");
+    assert.equal(modelJobs.delete(failedJob.id), true);
+    assert.equal(modelJobs.getById(failedJob.id), null);
+    assert.equal(modelJobs.delete(failedJob.id), false, "deleting a missing model job reports false");
 
     const timelineRepo = new TimelineBlockRepository(db);
     timelineRepo.insertMany("2026-07-11", [timelineBlock("frozen", ["o-frozen"]), timelineBlock("mutable", [], ["scene-stable"])]);
@@ -289,7 +378,7 @@ async function main() {
     ocrMigrationDb.close();
   }
 
-  console.log("SQLite integration passed: migrations/failure preservation, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
+  console.log("SQLite integration passed: migrations/failure preservation, model job metrics/debug lifecycle, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

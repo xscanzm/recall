@@ -36,14 +36,18 @@ import * as path from "node:path";
 import type { ModelConfig } from "../../shared/types";
 import type { SettingsService } from "./SettingsService";
 import type { SecretService } from "./SecretService";
-import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
-import type { ModelJobErrorCode } from "../db/repositories/ModelJobRepository";
+import type {
+  ModelJobErrorCode,
+  ModelJobMetrics,
+  ModelJobRepository,
+} from "../db/repositories/ModelJobRepository";
 import {
   COMMON_SYSTEM_PROMPT,
   JSON_REPAIR_PROMPT_TEMPLATE,
 } from "../models/prompts";
 import { zodToDescription } from "./zodToDescription";
 import { logger } from "./Logger";
+import { parseRetryAfterMs } from "./ModelJobQueue";
 
 /**
  * 模型种类
@@ -138,7 +142,20 @@ export interface ModelCallResult<T> {
   /** 尝试次数 */
   attempts?: number;
   /** usage 信息 */
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: ModelUsage;
+  /** Actual HTTP calls made by this gateway invocation, including compatibility fallbacks and repair. */
+  requestCount?: number;
+  /** Provider-directed delay for a rate-limited response. */
+  retryAfterMs?: number | null;
+  /** Stable key used by ModelJobQueue to isolate endpoint cooldowns. */
+  rateLimitKey?: string;
+  latencyMs?: number;
+}
+
+export interface ModelUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  cachedPromptTokens?: number;
 }
 
 /**
@@ -171,6 +188,7 @@ interface ChatCompletionResponse {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
   error?: {
     code?: string | number;
@@ -187,6 +205,7 @@ interface ChatCompletionStreamChunk {
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
+    prompt_tokens_details?: { cached_tokens?: number };
   };
   error?: { message?: string };
 }
@@ -195,10 +214,12 @@ interface ModelHttpResult {
   ok: boolean;
   content?: string;
   finishReason?: string;
-  usage?: { promptTokens: number; completionTokens: number };
+  usage?: ModelUsage;
   errorCode?: ModelJobErrorCode;
   errorMessage?: string;
   receivedContent?: boolean;
+  requestCount: number;
+  retryAfterMs?: number | null;
 }
 
 /**
@@ -221,6 +242,8 @@ export interface ModelGatewayDeps {
   modelJobRepo: ModelJobRepository;
   /** 超时（毫秒），默认 60000 */
   timeoutMs?: number;
+  /** Test seam for a fully offline OpenAI-compatible transport. */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -244,12 +267,14 @@ export class ModelGateway {
   private readonly secretService: SecretService;
   private readonly modelJobRepo: ModelJobRepository;
   private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
 
   constructor(deps: ModelGatewayDeps) {
     this.settingsService = deps.settingsService;
     this.secretService = deps.secretService;
     this.modelJobRepo = deps.modelJobRepo;
     this.timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.fetchImpl = deps.fetchImpl ?? fetch;
   }
 
   /**
@@ -267,6 +292,8 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: "callVision 只接受 kind=vision 的调用",
+        requestCount: 0,
+        rateLimitKey: input.configId,
       };
     }
     if (!input.imagePaths || input.imagePaths.length === 0) {
@@ -274,6 +301,8 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: "vision 调用必须提供至少一张图片",
+        requestCount: 0,
+        rateLimitKey: input.configId,
       };
     }
     return this.callInternal<T>(input, schema);
@@ -294,6 +323,8 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: "callLanguage 只接受 kind=language 的调用",
+        requestCount: 0,
+        rateLimitKey: input.configId,
       };
     }
     return this.callInternal<T>(input, schema);
@@ -318,6 +349,8 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: "callMultimodal 只接受 kind=multimodal 的调用",
+        requestCount: 0,
+        rateLimitKey: input.configId,
       };
     }
     return this.callInternal<T>(input, schema);
@@ -385,6 +418,8 @@ export class ModelGateway {
     input: ModelCallInput,
     schema: ZodSchemaLike<T>
   ): Promise<ModelCallResult<T>> {
+    const startedAt = Date.now();
+    const rateLimitKey = input.configId;
     // 1. 读取 model_config
     const config = this.settingsService.getModelConfigById(input.configId);
     if (!config) {
@@ -392,6 +427,9 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: `未找到模型配置: ${input.configId}`,
+        requestCount: 0,
+        rateLimitKey,
+        latencyMs: Date.now() - startedAt,
       };
     }
     if (config.kind !== input.kind) {
@@ -399,6 +437,9 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: `模型配置 kind 不匹配: 期望 ${input.kind}，实际 ${config.kind}`,
+        requestCount: 0,
+        rateLimitKey,
+        latencyMs: Date.now() - startedAt,
       };
     }
     if (!config.enabled) {
@@ -406,6 +447,9 @@ export class ModelGateway {
         ok: false,
         errorCode: "unknown_error",
         errorMessage: `模型配置已禁用: ${input.configId}`,
+        requestCount: 0,
+        rateLimitKey,
+        latencyMs: Date.now() - startedAt,
       };
     }
 
@@ -416,6 +460,9 @@ export class ModelGateway {
         ok: false,
         errorCode: "auth_error",
         errorMessage: `未找到 API Key（configId=${input.configId}）`,
+        requestCount: 0,
+        rateLimitKey,
+        latencyMs: Date.now() - startedAt,
       };
     }
 
@@ -446,7 +493,11 @@ export class ModelGateway {
         job.id,
         "input_too_large",
         errorMessage,
-        0
+        0,
+        null,
+        undefined,
+        undefined,
+        { requestCount: 0, latencyMs: Date.now() - startedAt }
       );
       return {
         ok: false,
@@ -455,6 +506,9 @@ export class ModelGateway {
         jobId: job.id,
         modelJobId: job.id,
         attempts: 0,
+        requestCount: 0,
+        rateLimitKey,
+        latencyMs: Date.now() - startedAt,
       };
     }
 
@@ -495,13 +549,17 @@ export class ModelGateway {
     let lastErrorMessage: string | undefined;
     let rawOutput = "";
     let hasRawOutput = false;
-    let usage: { promptTokens: number; completionTokens: number } | undefined;
+    let usage: ModelUsage | undefined;
+    let requestCount = 0;
+    let retryAfterMs: number | null | undefined;
 
     // 6. 第一次调用
     attempts++;
     const firstResult = input.streaming
       ? await this.sendStreamingRequestWithFallback(url, apiKey, requestBody, input.timeoutMs)
       : await this.sendRequest(url, apiKey, requestBody, input.timeoutMs);
+    requestCount += firstResult.requestCount;
+    retryAfterMs = firstResult.retryAfterMs;
     if (firstResult.ok) {
       rawOutput = firstResult.content ?? "";
       hasRawOutput = true;
@@ -519,7 +577,15 @@ export class ModelGateway {
           // 8. zod schema 校验
           const schemaResult = schema.safeParse(parseResult.data);
           if (schemaResult.success) {
-            this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
+            const latencyMs = Date.now() - startedAt;
+            this.modelJobRepo.markSucceeded(
+              job.id,
+              rawOutput,
+              attempts,
+              rawInputJsonForDebug,
+              undefined,
+              toModelJobMetrics(usage, requestCount, latencyMs)
+            );
             return {
               ok: true,
               data: schemaResult.data,
@@ -527,6 +593,10 @@ export class ModelGateway {
               modelJobId: job.id,
               attempts,
               usage,
+              requestCount,
+              retryAfterMs,
+              rateLimitKey,
+              latencyMs,
             };
           }
           lastErrorCode = "schema_invalid";
@@ -558,14 +628,24 @@ export class ModelGateway {
           input.timeoutMs,
           input.streaming ?? false
         );
+        requestCount += repairResult.requestCount;
+        retryAfterMs = repairResult.retryAfterMs ?? retryAfterMs;
+        usage = mergeUsage(usage, repairResult.usage);
         if (repairResult.ok) {
           rawOutput = repairResult.content ?? "";
-          usage = repairResult.usage ?? usage;
           const parseResult2 = tryParseJson(rawOutput);
           if (parseResult2.ok) {
             const schemaResult2 = schema.safeParse(parseResult2.data);
             if (schemaResult2.success) {
-              this.modelJobRepo.markSucceeded(job.id, rawOutput, attempts, rawInputJsonForDebug);
+              const latencyMs = Date.now() - startedAt;
+              this.modelJobRepo.markSucceeded(
+                job.id,
+                rawOutput,
+                attempts,
+                rawInputJsonForDebug,
+                undefined,
+                toModelJobMetrics(usage, requestCount, latencyMs)
+              );
               return {
                 ok: true,
                 data: schemaResult2.data,
@@ -573,6 +653,10 @@ export class ModelGateway {
                 modelJobId: job.id,
                 attempts,
                 usage,
+                requestCount,
+                retryAfterMs,
+                rateLimitKey,
+                latencyMs,
               };
             }
             lastErrorCode = "schema_invalid";
@@ -592,13 +676,16 @@ export class ModelGateway {
     }
 
     // 10. 仍失败：记录 model_job.status=failed，不写入正式表
+    const latencyMs = Date.now() - startedAt;
     this.modelJobRepo.markFailed(
       job.id,
       lastErrorCode ?? "unknown_error",
       lastErrorMessage ?? "未知错误",
       attempts,
       hasRawOutput ? rawOutput : null,
-      rawInputJsonForDebug
+      rawInputJsonForDebug,
+      undefined,
+      toModelJobMetrics(usage, requestCount, latencyMs)
     );
 
     return {
@@ -609,6 +696,10 @@ export class ModelGateway {
       modelJobId: job.id,
       attempts,
       usage,
+      requestCount,
+      retryAfterMs,
+      rateLimitKey,
+      latencyMs,
     };
   }
 
@@ -627,13 +718,7 @@ export class ModelGateway {
     extraOptions: Record<string, unknown>,
     timeoutMs?: number,
     streaming = false
-  ): Promise<{
-    ok: boolean;
-    content?: string;
-    usage?: { promptTokens: number; completionTokens: number };
-    errorCode?: ModelJobErrorCode;
-    errorMessage?: string;
-  }> {
+  ): Promise<ModelHttpResult> {
     const schemaDescription = buildSchemaDescription(_schema);
     const repairPrompt = JSON_REPAIR_PROMPT_TEMPLATE.replace(
       "{{schema_description}}",
@@ -668,23 +753,13 @@ export class ModelGateway {
       && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= maxTokens)
     ) {
       return {
+        ...result,
         ok: false,
         errorCode: "output_truncated",
         errorMessage: `repair 输出达到 max_tokens=${maxTokens}，JSON 仍被截断`,
       };
     }
-    if (result.ok) {
-      return {
-        ok: true,
-        content: result.content,
-        usage: result.usage,
-      };
-    }
-    return {
-      ok: false,
-      errorCode: result.errorCode,
-      errorMessage: result.errorMessage,
-    };
+    return result;
   }
 
   private async sendStreamingRequestWithFallback(
@@ -702,12 +777,13 @@ export class ModelGateway {
     delete withoutStreamOptions.stream_options;
     const basicStream = await this.sendStreamingRequest(url, apiKey, withoutStreamOptions, firstResponseTimeoutMs);
     if (basicStream.ok || basicStream.receivedContent || !isStreamCompatibilityError(basicStream)) {
-      return basicStream;
+      return addRequestCount(basicStream, withUsage.requestCount);
     }
 
     const nonStreamingBody = { ...withoutStreamOptions };
     delete nonStreamingBody.stream;
-    return this.sendRequest(url, apiKey, nonStreamingBody, firstResponseTimeoutMs);
+    const nonStreaming = await this.sendRequest(url, apiKey, nonStreamingBody, firstResponseTimeoutMs);
+    return addRequestCount(nonStreaming, withUsage.requestCount + basicStream.requestCount);
   }
 
   private async sendStreamingRequest(
@@ -727,7 +803,7 @@ export class ModelGateway {
     );
     let receivedContent = false;
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         method: "POST",
         headers: buildHeaders(apiKey),
         body: JSON.stringify(requestBody),
@@ -738,7 +814,13 @@ export class ModelGateway {
       if (!response.ok) {
         const errInfo = await extractErrorBody(response);
         const mapped = mapHttpErrorToCode(response.status, errInfo);
-        return { ...mapped, ok: false, receivedContent: false };
+        return {
+          ...mapped,
+          ok: false,
+          receivedContent: false,
+          requestCount: 1,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
+        };
       }
       if (!response.body) {
         return {
@@ -746,6 +828,7 @@ export class ModelGateway {
           errorCode: "response_invalid",
           errorMessage: "流式响应缺少 body",
           receivedContent: false,
+          requestCount: 1,
         };
       }
 
@@ -754,7 +837,7 @@ export class ModelGateway {
       let buffer = "";
       let content = "";
       let finishReason: string | undefined;
-      let usage: { promptTokens: number; completionTokens: number } | undefined;
+      let usage: ModelUsage | undefined;
       let streamEnded = false;
       let sawDoneMarker = false;
 
@@ -793,6 +876,7 @@ export class ModelGateway {
                 errorMessage: `SSE 数据不是有效 JSON: ${sanitizeErrorMessage(errorMessage(error))}`,
                 receivedContent,
                 content,
+                requestCount: 1,
               };
             }
             if (chunk.error) {
@@ -802,6 +886,7 @@ export class ModelGateway {
                 errorMessage: sanitizeErrorMessage(chunk.error.message),
                 receivedContent,
                 content,
+                requestCount: 1,
               };
             }
             const choice = chunk.choices?.[0];
@@ -813,8 +898,11 @@ export class ModelGateway {
             if (choice?.finish_reason) finishReason = choice.finish_reason;
             if (chunk.usage) {
               usage = {
-                promptTokens: chunk.usage.prompt_tokens ?? usage?.promptTokens ?? 0,
-                completionTokens: chunk.usage.completion_tokens ?? usage?.completionTokens ?? 0,
+                promptTokens: chunk.usage.prompt_tokens ?? usage?.promptTokens,
+                completionTokens: chunk.usage.completion_tokens ?? usage?.completionTokens,
+                cachedPromptTokens:
+                  chunk.usage.prompt_tokens_details?.cached_tokens
+                  ?? usage?.cachedPromptTokens,
               };
             }
           }
@@ -829,22 +917,23 @@ export class ModelGateway {
           receivedContent,
           content,
           usage,
+          requestCount: 1,
         };
       }
-      return { ok: true, content, finishReason, usage, receivedContent };
+      return { ok: true, content, finishReason, usage, receivedContent, requestCount: 1 };
     } catch (error) {
       const reason = controller.signal.reason;
       const reasonMessage = reason instanceof Error ? reason.message : "";
       if (reasonMessage === "stream_first_response_timeout") {
-        return { ok: false, errorCode: "timeout", errorMessage: "等待流式首响应超时", receivedContent };
+        return { ok: false, errorCode: "timeout", errorMessage: "等待流式首响应超时", receivedContent, requestCount: 1 };
       }
       if (reasonMessage === "stream_total_timeout") {
-        return { ok: false, errorCode: "timeout", errorMessage: "流式生成超过 10 分钟总时限", receivedContent };
+        return { ok: false, errorCode: "timeout", errorMessage: "流式生成超过 10 分钟总时限", receivedContent, requestCount: 1 };
       }
       if (reasonMessage === "stream_idle_timeout") {
-        return { ok: false, errorCode: "timeout", errorMessage: "流式响应连续 60 秒无新数据", receivedContent };
+        return { ok: false, errorCode: "timeout", errorMessage: "流式响应连续 60 秒无新数据", receivedContent, requestCount: 1 };
       }
-      return { ...mapFetchError(error), receivedContent };
+      return { ...mapFetchError(error), receivedContent, requestCount: 1 };
     } finally {
       clearTimeout(firstResponseTimer);
       clearTimeout(totalTimer);
@@ -859,14 +948,7 @@ export class ModelGateway {
     apiKey: string,
     requestBody: Record<string, unknown>,
     timeoutMsOverride?: number
-  ): Promise<{
-    ok: boolean;
-    content?: string;
-    finishReason?: string;
-    usage?: { promptTokens: number; completionTokens: number };
-    errorCode?: ModelJobErrorCode;
-    errorMessage?: string;
-  }> {
+  ): Promise<ModelHttpResult> {
     try {
       const response = await this.fetchWithTimeout(url, {
         method: "POST",
@@ -881,6 +963,8 @@ export class ModelGateway {
           ok: false,
           errorCode: mapped.errorCode,
           errorMessage: mapped.errorMessage,
+          requestCount: 1,
+          retryAfterMs: parseRetryAfterMs(response.headers.get("retry-after")),
         };
       }
 
@@ -892,6 +976,7 @@ export class ModelGateway {
           ok: false,
           errorCode: "response_invalid",
           errorMessage: `HTTP 200 响应不是有效 JSON: ${sanitizeErrorMessage(errorMessage(error))}`,
+          requestCount: 1,
         };
       }
       if (data.error) {
@@ -899,6 +984,7 @@ export class ModelGateway {
           ok: false,
           errorCode: "response_invalid",
           errorMessage: sanitizeErrorMessage(data.error.message),
+          requestCount: 1,
         };
       }
       if (!data.choices || data.choices.length === 0) {
@@ -906,17 +992,19 @@ export class ModelGateway {
           ok: false,
           errorCode: "response_invalid",
           errorMessage: "响应缺少 choices 字段",
+          requestCount: 1,
         };
       }
       const choice = data.choices[0];
       const content = choice?.message?.content ?? "";
-      const usage = {
-        promptTokens: data.usage?.prompt_tokens ?? 0,
-        completionTokens: data.usage?.completion_tokens ?? 0,
-      };
-      return { ok: true, content, finishReason: choice?.finish_reason, usage };
+      const usage = data.usage ? {
+        promptTokens: data.usage.prompt_tokens,
+        completionTokens: data.usage.completion_tokens,
+        cachedPromptTokens: data.usage.prompt_tokens_details?.cached_tokens,
+      } : undefined;
+      return { ok: true, content, finishReason: choice?.finish_reason, usage, requestCount: 1 };
     } catch (err) {
-      return mapFetchError(err);
+      return { ...mapFetchError(err), requestCount: 1 };
     }
   }
 
@@ -931,7 +1019,7 @@ export class ModelGateway {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), overrideMs ?? this.timeoutMs);
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         ...init,
         signal: controller.signal,
       });
@@ -945,6 +1033,38 @@ export class ModelGateway {
 // ============================================================================
 // 工具函数
 // ============================================================================
+
+function mergeUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
+  if (!current) return next;
+  if (!next) return current;
+  return {
+    promptTokens: sumOptional(current.promptTokens, next.promptTokens),
+    completionTokens: sumOptional(current.completionTokens, next.completionTokens),
+    cachedPromptTokens: sumOptional(current.cachedPromptTokens, next.cachedPromptTokens),
+  };
+}
+
+function sumOptional(left: number | undefined, right: number | undefined): number | undefined {
+  return left === undefined && right === undefined ? undefined : (left ?? 0) + (right ?? 0);
+}
+
+function toModelJobMetrics(
+  usage: ModelUsage | undefined,
+  requestCount: number,
+  latencyMs: number
+): ModelJobMetrics {
+  return {
+    promptTokens: usage?.promptTokens ?? null,
+    completionTokens: usage?.completionTokens ?? null,
+    cachedPromptTokens: usage?.cachedPromptTokens ?? null,
+    requestCount,
+    latencyMs,
+  };
+}
+
+function addRequestCount(result: ModelHttpResult, previousRequestCount: number): ModelHttpResult {
+  return { ...result, requestCount: previousRequestCount + result.requestCount };
+}
 
 /**
  * 规范化 endpoint：

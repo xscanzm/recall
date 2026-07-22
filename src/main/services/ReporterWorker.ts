@@ -310,6 +310,7 @@ export class ReporterWorker {
     // 6. 提交 LLM 任务
     const result = await this.modelJobQueue.enqueueMultimodalJob<DailyReportOutput>({
       type: "reporter",
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<DailyReportOutput>(
           {
@@ -457,6 +458,7 @@ export class ReporterWorker {
     // 8. 提交 LLM 任务
     const result = await this.modelJobQueue.enqueueMultimodalJob<WeeklyReportOutput>({
       type: "reporter",
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<WeeklyReportOutput>(
           {
@@ -597,6 +599,7 @@ export class ReporterWorker {
 
     const result = await this.modelJobQueue.enqueueMultimodalJob<MonthlyReportOutput>({
       type: "reporter",
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<MonthlyReportOutput>(
           {

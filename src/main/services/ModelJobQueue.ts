@@ -82,6 +82,11 @@ export interface JobResult<T = unknown> {
   jobId?: string;
   /** 队列逻辑任务的总尝试次数 */
   attempts?: number;
+  /** Actual HTTP calls consumed by this executor invocation. */
+  requestCount?: number;
+  retryAfterMs?: number | null;
+  rateLimitKey?: string;
+  latencyMs?: number;
 }
 
 /**
@@ -110,31 +115,50 @@ const RETRYABLE_ERROR_CODES = new Set([
  * spec.md 要求"失败任务重试最多 2 次"，即总尝试 3 次
  */
 const MAX_ATTEMPTS = 3;
+const MAX_RETRY_AFTER_MS = 5 * 60_000;
+
+export function parseRetryAfterMs(headerValue?: string | null): number | null {
+  if (!headerValue) return null;
+  const trimmed = headerValue.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(MAX_RETRY_AFTER_MS, Math.round(seconds * 1000));
+  }
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    const diff = dateMs - Date.now();
+    return diff > 0 ? Math.min(MAX_RETRY_AFTER_MS, Math.round(diff)) : 0;
+  }
+  return null;
+}
 
 /**
- * 计算重试退避时间（毫秒）
- *
- * - rate_limited：长退避（10s / 30s / 60s）
- *   多模态模型限流窗口通常需要 10s+ 才能恢复，1s/2s/4s 太短会再次触发 429
- * - 其他可重试错误（timeout/network_error/invalid_json/schema_invalid）：短退避（1s / 2s / 4s）
- * - unknown_error：短退避（1s / 2s / 4s）
- *
- * @param errorCode 错误码
- * @param attempts 当前尝试次数（从 1 开始）
+ * 带有 Full Jitter 的指数退避时间计算（毫秒）
  */
-function computeBackoffMs(errorCode: string | undefined, attempts: number): number {
+export function computeBackoffWithJitter(
+  errorCode: string | undefined,
+  attempts: number,
+  retryAfterMs?: number | null
+): number {
+  if (typeof retryAfterMs === "number" && retryAfterMs > 0) {
+    return retryAfterMs;
+  }
+  let baseMs = 1000;
+  let maxMs = 4000;
   if (errorCode === "rate_limited") {
-    // 限流长退避：10s / 30s / 60s
-    const longBackoffs = [10000, 30000, 60000];
-    return longBackoffs[Math.min(attempts - 1, longBackoffs.length - 1)] ?? 60000;
+    baseMs = 10000;
+    maxMs = 60000;
+  } else if (errorCode === "network_error") {
+    baseMs = 5000;
+    maxMs = 30000;
   }
-  if (errorCode === "network_error") {
-    const networkBackoffs = [5000, 15000, 30000];
-    return networkBackoffs[Math.min(attempts - 1, networkBackoffs.length - 1)] ?? 30000;
-  }
-  // 解析和 schema 错误使用短退避
-  return Math.min(1000 * Math.pow(2, attempts - 1), 4000);
+  const calculatedMax = Math.min(maxMs, baseMs * Math.pow(2, Math.max(0, attempts - 1)));
+  // Full Jitter 随机在 [0, calculatedMax] 之间选择
+  return Math.floor(Math.random() * calculatedMax);
 }
+
+/** 单任务最大累计 HTTP 请求次数预算上限 */
+export const MAX_TOTAL_REQUEST_BUDGET = 6;
 
 /**
  * 多模态任务并发上限
@@ -168,6 +192,10 @@ interface QueueEntry<T = unknown> {
   priority: number;
   /** 去重键：相同 key 的 pending/running 任务复用同一个 Promise */
   dedupeKey?: string;
+  rateLimitKey?: string;
+  notBefore: number;
+  requestCount: number;
+  lastResult?: JobResult<T>;
 }
 
 /**
@@ -198,13 +226,40 @@ export class ModelJobQueue {
   private readonly multimodalQueue: QueueEntry[] = [];
   private runningCount = 0;
   private isPaused = false;
+  private isStopping = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly drainWaiters = new Set<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   /** 已提交的 captureId:type 集合（用于去重） */
   private readonly submittedCaptureIds = new Set<string>();
   /** dedupe key -> 正在等待或执行的 Promise */
   private readonly pendingByDedupeKey = new Map<string, Promise<JobResult<unknown>>>();
+  /** endpoint/configId -> cooldown 到期时间戳 */
+  private readonly endpointCooldownUntil = new Map<string, number>();
 
   constructor(deps: { modelJobRepo?: ModelJobRepository } = {}) {
     this.modelJobRepo = deps.modelJobRepo ?? null;
+  }
+
+  setEndpointCooldown(endpointOrConfigId: string, durationMs: number): void {
+    if (!endpointOrConfigId) return;
+    const until = Date.now() + Math.max(0, Math.min(MAX_RETRY_AFTER_MS, durationMs));
+    this.endpointCooldownUntil.set(endpointOrConfigId, until);
+    this.scheduleWakeup();
+  }
+
+  isEndpointInCooldown(endpointOrConfigId: string): boolean {
+    if (!endpointOrConfigId) return false;
+    const until = this.endpointCooldownUntil.get(endpointOrConfigId);
+    if (!until) return false;
+    if (Date.now() >= until) {
+      this.endpointCooldownUntil.delete(endpointOrConfigId);
+      return false;
+    }
+    return true;
   }
 
   /**
@@ -223,14 +278,16 @@ export class ModelJobQueue {
     captureId?: string;
     priority?: number;
     dedupeKey?: string;
+    rateLimitKey?: string;
     executor: () => Promise<JobResult<T>>;
   }): Promise<JobResult<T>> {
     // 暂停状态检查
-    if (this.isPaused) {
+    if (this.isStopping || this.isPaused) {
       return {
         ok: false,
-        errorCode: "paused",
-        errorMessage: "队列已暂停，不再接受新任务",
+        errorCode: this.isStopping ? "stopped" : "paused",
+        errorMessage: this.isStopping ? "队列正在停止，不再接受新任务" : "队列已暂停，不再接受新任务",
+        requestCount: 0,
       };
     }
 
@@ -260,6 +317,7 @@ export class ModelJobQueue {
       captureId: input.captureId,
       priority: input.priority,
       dedupeKey: input.dedupeKey,
+      rateLimitKey: input.rateLimitKey,
       executor: input.executor,
     });
 
@@ -284,20 +342,6 @@ export class ModelJobQueue {
     captureId: string;
     executor: () => Promise<JobResult<T>>;
   }): Promise<JobResult<T>> {
-    // 旧视觉任务的 captureId 去重语义：同一 captureId 不重复提交
-    // 转换为新语义：observer:captureId
-    const dedupeKey = `observer:${input.captureId}`;
-    if (this.submittedCaptureIds.has(dedupeKey)) {
-      return {
-        ok: false,
-        errorCode: "duplicate",
-        errorMessage: `captureId ${input.captureId} 已提交，不重复处理`,
-      };
-    }
-    // 不在这里 add，让 enqueueMultimodalJob 统一处理
-    // 但 enqueueMultimodalJob 用 type:captureId 格式，这里需特殊处理
-    this.submittedCaptureIds.add(dedupeKey);
-
     return this.enqueueMultimodalJob<T>({
       type: input.type,
       captureId: input.captureId,
@@ -321,6 +365,7 @@ export class ModelJobQueue {
     captureId?: string;
     priority?: number;
     dedupeKey?: string;
+    rateLimitKey?: string;
     executor: () => Promise<JobResult<T>>;
   }): Promise<JobResult<T>> {
     return this.enqueueMultimodalJob<T>({
@@ -328,6 +373,7 @@ export class ModelJobQueue {
       captureId: input.captureId,
       priority: input.priority,
       dedupeKey: input.dedupeKey,
+      rateLimitKey: input.rateLimitKey,
       executor: input.executor,
     });
   }
@@ -345,6 +391,7 @@ export class ModelJobQueue {
    * 恢复队列
    */
   resume(): void {
+    if (this.isStopping) return;
     this.isPaused = false;
     // 恢复后触发调度
     this.scheduleMultimodal();
@@ -366,6 +413,40 @@ export class ModelJobQueue {
       running: this.runningCount,
       paused: this.isPaused,
     };
+  }
+
+  /** Stop accepting work, cancel queued retries, and wait for active executors to finish. */
+  async stopAndDrainActive(timeoutMs: number = 30_000): Promise<void> {
+    this.isStopping = true;
+    this.isPaused = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+
+    while (this.multimodalQueue.length > 0) {
+      const entry = this.multimodalQueue.shift()!;
+      entry.resolve(withQueueMetadata({
+        ...(entry.lastResult ?? {}),
+        ok: false,
+        errorCode: "stopped",
+        errorMessage: "应用退出，尚未执行的模型任务已取消",
+      }, entry.attempts, entry.requestCount));
+      this.cleanupEntry(entry);
+    }
+
+    if (this.runningCount === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.drainWaiters.delete(waiter);
+          reject(new Error(`ModelJobQueue drain timed out after ${timeoutMs}ms (${this.runningCount} active)`));
+        }, Math.max(1, timeoutMs)),
+      };
+      this.drainWaiters.add(waiter);
+    });
   }
 
   /**
@@ -399,6 +480,7 @@ export class ModelJobQueue {
     captureId?: string;
     priority?: number;
     dedupeKey?: string;
+    rateLimitKey?: string;
     executor: () => Promise<JobResult<T>>;
   }): Promise<JobResult<T>> {
     return new Promise<JobResult<T>>((resolve, reject) => {
@@ -413,6 +495,9 @@ export class ModelJobQueue {
         createdAt: Date.now(),
         priority: entry.priority ?? 2,
         dedupeKey: entry.dedupeKey,
+        rateLimitKey: entry.rateLimitKey,
+        notBefore: 0,
+        requestCount: 0,
       };
 
       this.multimodalQueue.push(queueEntry as QueueEntry<unknown>);
@@ -429,21 +514,28 @@ export class ModelJobQueue {
     // 暂停时不调度新任务
     if (this.isPaused) return;
     while (this.runningCount < MULTIMODAL_CONCURRENCY && this.multimodalQueue.length > 0) {
-      const entry = this.shiftNextEntry();
+      const entry = this.shiftNextReadyEntry();
       if (!entry) break;
       this.runningCount++;
-      void this.runEntry(entry);
+      void this.runEntryAttempt(entry);
     }
+    if (this.multimodalQueue.length > 0) this.scheduleWakeup();
   }
 
   /**
    * 从队列中取下一项：优先级小的先执行，同优先级保持 FIFO。
    */
-  private shiftNextEntry(): QueueEntry | null {
+  private shiftNextReadyEntry(): QueueEntry | null {
     if (this.multimodalQueue.length === 0) return null;
-    let bestIndex = 0;
-    for (let i = 1; i < this.multimodalQueue.length; i++) {
+    const now = Date.now();
+    let bestIndex = -1;
+    for (let i = 0; i < this.multimodalQueue.length; i++) {
       const candidate = this.multimodalQueue[i];
+      if (this.getEligibleAt(candidate) > now) continue;
+      if (bestIndex < 0) {
+        bestIndex = i;
+        continue;
+      }
       const best = this.multimodalQueue[bestIndex];
       if (
         candidate.priority < best.priority ||
@@ -452,6 +544,7 @@ export class ModelJobQueue {
         bestIndex = i;
       }
     }
+    if (bestIndex < 0) return null;
     const [entry] = this.multimodalQueue.splice(bestIndex, 1);
     return entry;
   }
@@ -459,82 +552,95 @@ export class ModelJobQueue {
   /**
    * 执行单个任务条目（含重试逻辑）
    */
-  private async runEntry(entry: QueueEntry): Promise<void> {
+  private async runEntryAttempt(entry: QueueEntry): Promise<void> {
+    let requeued = false;
     try {
-      let lastResult: JobResult | null = null;
-
-      // 重试循环
-      while (entry.attempts < MAX_ATTEMPTS) {
-        entry.attempts++;
-        try {
-          const result = await entry.executor();
-          lastResult = result;
-
-          if (result.ok) {
-            entry.resolve(withQueueMetadata(result, entry.attempts));
-            return;
-          }
-
-          // 失败：检查是否可重试
-          const errorCode = result.errorCode;
-          if (!errorCode || !RETRYABLE_ERROR_CODES.has(errorCode)) {
-            // 不可重试，直接返回失败
-            entry.resolve(withQueueMetadata(result, entry.attempts));
-            return;
-          }
-
-          // 可重试：检查是否还有重试机会
-          if (entry.attempts >= MAX_ATTEMPTS) {
-            // 已达最大尝试次数，返回失败
-            entry.resolve(withQueueMetadata(result, entry.attempts));
-            return;
-          }
-
-          // 等待重试退避
-          // - rate_limited 单独走更长退避（10s/30s/60s），给限流窗口足够恢复时间
-          // - 其他错误走短退避（1s/2s/4s）
-          const backoffMs = computeBackoffMs(errorCode, entry.attempts);
-          await sleep(backoffMs);
-        } catch (err) {
-          // executor 抛出异常
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          lastResult = {
-            ok: false,
-            errorCode: "unknown_error",
-            errorMessage,
-            attempts: entry.attempts,
-          };
-
-          entry.resolve(lastResult);
-          return;
-        }
-      }
-
-      // 兜底：所有尝试都失败
-      if (lastResult) {
-        entry.resolve(lastResult as JobResult<unknown>);
-      } else {
-        entry.resolve({
+      entry.attempts++;
+      let result: JobResult;
+      try {
+        result = await entry.executor();
+      } catch (err) {
+        result = {
           ok: false,
           errorCode: "unknown_error",
-          errorMessage: "任务执行失败且无结果",
-          attempts: entry.attempts,
-        });
+          errorMessage: err instanceof Error ? err.message : String(err),
+          requestCount: 0,
+        };
       }
+
+      entry.requestCount += normalizeRequestCount(result.requestCount);
+      entry.rateLimitKey = result.rateLimitKey ?? entry.rateLimitKey;
+      entry.lastResult = result;
+
+      const retryable = Boolean(result.errorCode && RETRYABLE_ERROR_CODES.has(result.errorCode));
+      const budgetExhausted = entry.requestCount >= MAX_TOTAL_REQUEST_BUDGET;
+      if (result.ok || !retryable || entry.attempts >= MAX_ATTEMPTS || budgetExhausted || this.isStopping) {
+        const finalResult = budgetExhausted && !result.ok
+          ? {
+              ...result,
+              errorMessage: `${result.errorMessage ?? "模型请求失败"}；已达到单任务 HTTP 请求预算 ${MAX_TOTAL_REQUEST_BUDGET}`,
+            }
+          : result;
+        entry.resolve(withQueueMetadata(finalResult, entry.attempts, entry.requestCount));
+        return;
+      }
+
+      const backoffMs = computeBackoffWithJitter(
+        result.errorCode,
+        entry.attempts,
+        result.retryAfterMs
+      );
+      entry.notBefore = Date.now() + backoffMs;
+      if (result.errorCode === "rate_limited" && entry.rateLimitKey) {
+        this.setEndpointCooldown(entry.rateLimitKey, backoffMs);
+      }
+      this.multimodalQueue.push(entry);
+      requeued = true;
     } catch (err) {
       // 不应到达此处
       const errorMessage = err instanceof Error ? err.message : String(err);
       entry.reject(new Error(errorMessage));
     } finally {
-      // 释放并发槽位
       this.runningCount--;
-      // 清理 captureId 记录（允许同一 capture 重新提交）
-      if (entry.captureId) {
-        this.forgetCaptureId(entry.captureId);
-      }
-      // 触发下一次调度
+      if (!requeued) this.cleanupEntry(entry);
+      this.notifyDrainIfIdle();
       this.scheduleMultimodal();
     }
+  }
+
+  private getEligibleAt(entry: QueueEntry): number {
+    if (!entry.rateLimitKey) return entry.notBefore;
+    const cooldownUntil = this.endpointCooldownUntil.get(entry.rateLimitKey) ?? 0;
+    if (cooldownUntil <= Date.now()) {
+      this.endpointCooldownUntil.delete(entry.rateLimitKey);
+      return entry.notBefore;
+    }
+    return Math.max(entry.notBefore, cooldownUntil);
+  }
+
+  private scheduleWakeup(): void {
+    if (this.isPaused || this.isStopping || this.multimodalQueue.length === 0) return;
+    const earliest = Math.min(...this.multimodalQueue.map((entry) => this.getEligibleAt(entry)));
+    const delay = Math.max(0, earliest - Date.now());
+    if (delay === 0) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.scheduleMultimodal();
+    }, delay);
+  }
+
+  private cleanupEntry(entry: QueueEntry): void {
+    if (entry.captureId) this.forgetCaptureId(entry.captureId);
+  }
+
+  private notifyDrainIfIdle(): void {
+    if (this.runningCount !== 0 || this.multimodalQueue.length !== 0) return;
+    for (const waiter of this.drainWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.drainWaiters.clear();
   }
 }
 
@@ -546,16 +652,19 @@ function generateJobId(): string {
   return `qj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function withQueueMetadata<T>(result: JobResult<T>, attempts: number): JobResult<T> {
+function withQueueMetadata<T>(result: JobResult<T>, attempts: number, requestCount: number): JobResult<T> {
   return {
     ...result,
     modelJobId: result.modelJobId ?? result.jobId,
     attempts,
+    requestCount,
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function normalizeRequestCount(value: number | undefined): number {
+  if (value === undefined) return 1;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
 }
 
 /**

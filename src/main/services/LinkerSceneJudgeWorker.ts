@@ -342,6 +342,7 @@ export class LinkerSceneJudgeWorker {
     const result = await this.modelJobQueue.enqueueMultimodalJob<LinkerSceneJudgeOutput>({
       type: "linker_scene_judge",
       captureId,
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<LinkerSceneJudgeOutput>(
           {

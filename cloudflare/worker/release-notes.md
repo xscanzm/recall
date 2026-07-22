@@ -1,3 +1,81 @@
+## v0.4.4 — 模型调用稳健性 + 优雅关闭 + 性能与去重优化
+
+本次版本聚焦底层稳定性与性能：让多模态调用在面对限流/网络错误时按 provider 的 Retry-After 头与 endpoint 级冷却做精细化重试；新增统一 shutdownRuntime 编排，应用退出前依次排空 capture / batch / model 队列；Today 活动概览移除 1000 条上限并修复跨日边界；Observer 帧近似去重复用前一帧结果节省模型调用；同时把臃肿的 handlers.ts 与 ReportsPage.tsx 做模块化拆分，并接入离线测试与 CI 自动发布。
+
+### 新增功能
+
+#### 1. 模型调用稳健性（ModelGateway + ModelJobQueue）
+
+让多模态调用在面对 429/网络错误时按 provider 的 `Retry-After` 头与 endpoint 级冷却做精细化重试，并将每次调用的 token 用量、缓存命中、HTTP 请求次数、端到端延迟持久化到 `model_jobs` 表：
+
+- `ModelGateway` 新增 `ModelUsage` 类型，解析 `prompt_tokens_details.cached_tokens`；返回结果带 `requestCount / retryAfterMs / rateLimitKey / latencyMs`
+- `ModelJobQueue` 引入 `parseRetryAfterMs`（兼容秒数与 HTTP-date）、`computeBackoffWithJitter`（Full Jitter 指数退避）、`MAX_TOTAL_REQUEST_BUDGET = 6`（单任务 HTTP 请求预算硬上限）
+- 按 `rateLimitKey`（即 `multimodalModelConfigId`）维护 `endpointCooldownUntil` Map，命中冷却的 endpoint 不会被重新调度，避免雪崩
+- `shiftNextReadyEntry` + `scheduleWakeup`：基于 `notBefore` 时间戳挑选可执行任务，并用 `setTimeout` 唤醒
+- migration 025：`model_jobs` 表新增 `prompt_tokens / completion_tokens / cached_prompt_tokens / request_count / latency_ms` 5 列，`markSucceeded/markFailed` 写入
+
+#### 2. 应用优雅关闭（shutdownRuntime）
+
+用统一的 `shutdownRuntime()` 替代 `before-quit` 中分散的清理逻辑，按「best-effort → critical」两层顺序排空队列，避免半成品数据落盘和 SQLite 提前关闭：
+
+- 新增 `src/main/services/shutdownRuntime.ts`：`runBestEffort`（容忍失败，仅记录日志）处理 7 个调度器/服务停止；`runCritical`（错误收集到 `criticalErrors`）处理 captureService.drain / captureBatcher.drain / batchProcessor.stopAndDrainActive / modelJobQueue.stopAndDrainActive
+- `modelJobQueue.stopAndDrainActive` 默认 11 分钟超时（覆盖 ModelGateway 流式 10 分钟硬上限）
+- critical 步骤失败时抛 `AggregateError`，**不关闭 SQLite 直接 `app.exit(1)`**，防止后台进程还在写库时关库
+- `BatchProcessor.checkpoint()` 被移除，替换为 `stopAndDrainActive()`：先停止接受新批，再等待 `processPromise` 或 `activeBatches` 全部 settle
+
+### 改进
+
+#### 3. Today 活动概览性能优化
+
+通过新增 minimal 字段查询方法 + 在 JS 端用 Map/Set 索引替代 `array.filter`，把 Today 概览的数据装载从「全量取 + 内存过滤」改成「按需取 + 索引查找」：
+
+- `SceneRepository.listByStartAtMinimal`：仅 SELECT 10 个必要字段，**无 `LIMIT 1000`**
+- `ObservationRepository.listTimeRangeMinimal`：仅返回 `id` + `captured_at`
+- `MemoryObjectRepository.listProjectsByIdsMinimal`：按 episode/fact 实际引用的 projectId 精确查，不再 `listProjects({ limit: 1000 })` 全量拉
+- `FactRepository.listBySourceObservationIds`：新增按 observation 关联的事实查询
+- `TodayActivityStats`：构造 `intervalsById / factsByEpisodeId / factsByObservationId` 三个 Map；`mergeActivityWindows` 用 `ActivityWindowAccumulator` 持有 `Set`，把 `uniqueStrings` 改为 `appendUnique` 原地追加
+- **边界修复**：`SceneRepository.list` 中 `start_at <= ?` → `start_at < ?`，避免跨日重叠
+
+#### 4. Observer 帧近似去重
+
+当某帧 OCR delta 为空、app/window 标题相同、屏幕 dHash 汉明距离 ≤ 2 时，将其视为前一帧的近似重复，复用源帧的 observer 输出，跳过一次多模态调用：
+
+- `approximateDuplicateSource` 仅在 `ocr.mode === "delta"` 且 `delta.addedBlocks/changedBlocks/removedBlocks` 均为空时触发
+- `PRESERVE_FRAME_REASONS` 白名单（`manual_capture / scene_boundary / project_switch / window_focus_changed / window_title_changed / daily_preflight`）即使满足条件也保留独立调用
+- `hammingDistance` 按 hex 字符逐位异或并统计位数为 1 的位数，复杂度 O(n)
+- 与既有的 `exact_reuse` OCR 模式协同：exact 优先，approximate 作为兜底
+
+#### 5. IPC handlers 与 Reports 页面模块化拆分
+
+将臃肿的 `handlers.ts` 与 `ReportsPage.tsx` 按业务域拆分到子模块，IPC channel 名与 UI 行为完全不变：
+
+- `handlers.ts` 把 `reports:list/get/getImage/getEvidenceByIds/generate/update/delete` 整段迁出到 `reportsHandlers.ts`
+- `timelineHandlers.ts` 新增 `personalReview:generate/get` 与 `unfinishedThreads:list/updateStatus`（status 限定 `open/done/snoozed/ignored`）
+- `activityHandlers.ts` 将取数逻辑提取为导出函数 `loadDayActivityOverview`，便于复用与单测
+- 渲染端拆出 3 个子模块：`ReportViews`（信息图、列表、段落展示）、`SourcePanel`（来源证据浮层）、`reportFormatting`（labels、日期工具、文本编译、段落解析）
+
+#### 6. 离线测试基础设施 + CI/发布流程完善
+
+- 新增 `offlineFixtureTransport.ts`：OpenAI 兼容的离线测试 transport，让 ModelGateway 测试不再依赖真实网络；支持 `httpStatus / delayMs / shouldTruncate / shouldCorruptJson / cachedPromptTokens` 等异常分支
+- 6 个测试文件大幅扩充：ModelGateway / ModelJobQueue / TodayActivityStats / ObserverBatchFrames / BatchProcessor / CaptureBatcher
+- 新增 `scripts/generate-manifest.js`：严格校验 semver 合法性、版本一致、tag 匹配、SHA256 64 位 hex、publishedAt UTC ISO-8601 规范化
+- `.github/workflows/release.yml` 接入 manifest 自动生成、R2 上传与部署后验证（请求 `/api/latest` 比对版本号）
+- 安装包瘦身：`files` 排除 `__tests__ / *.test.* / *.map / *.ts / *.tsx`，renderer sourcemap 仅在 `RECALL_RENDERER_SOURCEMAP=1` 时生成
+
+### 数据库 Migration
+
+- **migration 025**：`model_jobs` 表新增 `prompt_tokens / completion_tokens / cached_prompt_tokens / request_count / latency_ms` 5 列（均为可空 INTEGER，对历史数据无破坏性影响，应用启动时执行）
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增/扩充单元测试：ModelGateway（限流/退避/metrics）、ModelJobQueue（请求预算/endpoint 冷却/调度唤醒）、TodayActivityStats（窗口合并）、ObserverBatchFrames（dHash 去重）、BatchProcessor（stopAndDrainActive）、CaptureBatcher（drain）、FactRepository、MemoryObjectRepository、activityHandlers、reportsHandlers、reportFormatting、offlineFixtureTransport、generate-manifest
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.4.3 — 自动日报显示修复 + 日报时间调整
 
 本次版本修复一个影响报告可见性的重要问题：定时生成的「自动日报」之前在工作日报 Tab 完全显示不出来。同时调整日报默认触发时间为 17:30，并让数据窗口与配置时间联动；附带上线官网运营数据采集与公测用户社群引导。

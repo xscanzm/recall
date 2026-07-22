@@ -265,6 +265,7 @@ export class ObserverExtractorWorker {
     const result = await this.modelJobQueue.enqueueMultimodalJob<ObserverExtractorOutput>({
       type: "observer_extractor",
       captureId: captureBundle.captureId,
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<ObserverExtractorOutput>(
           {
@@ -449,6 +450,7 @@ export class ObserverExtractorWorker {
       {
         type: "observer_extractor_batch",
         captureId: batchBundle.batchId,
+        rateLimitKey: multimodalModelConfigId,
         executor: async () => {
           return this.modelGateway.callMultimodal<BatchObserverExtractorOutput>(
             {
@@ -577,6 +579,7 @@ export class ObserverExtractorWorker {
       {
         type: "observer_batch",
         captureId: batchBundle.batchId,
+        rateLimitKey: multimodalModelConfigId,
         executor: async () => {
           return this.modelGateway.callMultimodal<BatchObserverOutput>(
             {

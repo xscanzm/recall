@@ -42,7 +42,7 @@ import { ActivityService } from "./services/ActivityService";
 import { CaptureService } from "./services/CaptureService";
 import { PrivacyGuard } from "./services/PrivacyGuard";
 import { ScreenshotCache } from "./services/ScreenshotCache";
-import { getModelJobQueue } from "./services/ModelJobQueue";
+import { getModelJobQueue, type ModelJobQueue } from "./services/ModelJobQueue";
 import { ObserverExtractorWorker } from "./services/ObserverExtractorWorker";
 import { ObservationNormalizer } from "./services/ObservationNormalizer";
 import { LinkerSceneJudgeWorker } from "./services/LinkerSceneJudgeWorker";
@@ -69,6 +69,7 @@ import { trayService } from "./services/TrayService";
 import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./services/ScreenshotCacheScheduler";
 import { UpdateService } from "./services/UpdateService";
 import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
+import { shutdownRuntime } from "./services/shutdownRuntime";
 import { formatLocalDateKey } from "./utils/dateKey";
 import type { Report } from "./models/types";
 
@@ -154,6 +155,7 @@ let sceneScheduler: SceneScheduler | null = null;
 // 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
 let captureBatcher: CaptureBatcher | null = null;
 let batchProcessor: BatchProcessor | null = null;
+let modelJobQueueForShutdown: ModelJobQueue | null = null;
 // Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
 let timelineBuilderTimer: NodeJS.Timeout | null = null;
 
@@ -553,6 +555,7 @@ app.whenReady().then(async () => {
 
   // 2. ModelJobQueue 单例（多模态统一并发 3）
   const modelJobQueue = getModelJobQueue(modelJobRepo);
+  modelJobQueueForShutdown = modelJobQueue;
 
   // 3. 创建 2 个合并 Worker + ObservationNormalizer
   const observerExtractorWorker = new ObserverExtractorWorker({
@@ -981,37 +984,30 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   shutdownStarted = true;
   logger.info({ message: "Recall app quitting" });
-  // 停止截图缓存定时清理
-  stopScreenshotCacheScheduler();
-  // 版本更新：停止调度器 + 清理半成品下载
-  stopUpdateCheckerScheduler();
-  updateService?.cleanupIncompleteDownloads();
-  // Phase 2 B2：停止 TimelineBuilder 自动调度
-  if (timelineBuilderTimer) {
-    clearInterval(timelineBuilderTimer);
-    timelineBuilderTimer = null;
-  }
-  void (async () => {
-    try {
-      activityService?.stop();
-      captureService?.stop();
-      endOfDayReviewService?.stop();
-      sceneScheduler?.stop();
-      await captureService?.drain();
-      if (captureBatcher) {
-        await captureBatcher.drain();
-      }
-    } catch (error) {
-      logger.error({
-        status: "failed",
-        errorCode: "shutdown_cleanup_failed",
-        message: `shutdown cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    } finally {
-      batchProcessor?.checkpoint();
-      trayService.destroy();
-      closeDatabase();
-      app.exit(0);
-    }
-  })();
+  void shutdownRuntime({
+    reportScheduler,
+    timelineBuilderTimer,
+    stopScreenshotCacheScheduler,
+    stopUpdateCheckerScheduler,
+    updateService,
+    activityService,
+    captureService,
+    endOfDayReviewService,
+    sceneScheduler,
+    captureBatcher,
+    batchProcessor,
+    modelJobQueue: modelJobQueueForShutdown,
+    trayService,
+    closeDatabase,
+  }).then(() => {
+    app.exit(0);
+  }).catch((error) => {
+    logger.error({
+      status: "failed",
+      errorCode: "shutdown_failed",
+      message: `Recall shutdown did not drain cleanly: ${error instanceof Error ? error.message : String(error)}`,
+    });
+    // Do not explicitly close SQLite when background work may still be active.
+    app.exit(1);
+  });
 });

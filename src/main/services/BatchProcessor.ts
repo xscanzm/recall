@@ -30,17 +30,28 @@ export class BatchProcessor {
   }
 
   notify(): void {
-    if (this.processPromise) return;
+    if (this.stopping || this.processPromise) return;
     this.processPromise = this.processAvailable().finally(() => {
       this.processPromise = null;
     });
   }
 
-  checkpoint(): void {
+  private drainPromise: Promise<void> | null = null;
+
+  /** Stop accepting new batches and wait for every claimed batch to settle. */
+  stopAndDrainActive(): Promise<void> {
     this.stopping = true;
-    for (const batchId of this.activeBatches.keys()) {
-      this.repository.checkpointRunning(batchId);
+    if (this.drainPromise) {
+      return this.drainPromise;
     }
+    this.drainPromise = (async () => {
+      if (this.processPromise) {
+        await this.processPromise;
+      } else if (this.activeBatches.size > 0) {
+        await Promise.allSettled([...this.activeBatches.values()]);
+      }
+    })();
+    return this.drainPromise;
   }
 
   async drain(): Promise<void> {
@@ -90,7 +101,6 @@ export class BatchProcessor {
         markSucceeded: (stage, checkpoint) => this.repository.markStageSucceeded(record.batchId, stage, checkpoint),
         markFailed: (stage, error) => this.repository.markStageFailed(record.batchId, stage, error),
       });
-      if (this.stopping) return;
       const normalized = result.steps.normalizer;
       const complete = result.steps.observerExtractor && normalized.failed === 0 &&
         result.steps.episodes && result.steps.atoms && result.steps.linkerSceneJudge;
@@ -101,7 +111,6 @@ export class BatchProcessor {
       CaptureBatcher.cleanupCompressedImages(record.bundle.compressedImagePaths);
       await this.onSucceeded?.(result, record.bundle);
     } catch (error) {
-      if (this.stopping) return;
       const message = error instanceof Error ? error.message : String(error);
       const retry = record.attempts + 1 < MAX_ATTEMPTS;
       this.repository.markFailed(record.batchId, message, retry);

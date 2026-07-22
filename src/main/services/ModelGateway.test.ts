@@ -80,13 +80,18 @@ describe("ModelGateway response diagnostics", () => {
       ok: false,
       errorCode: "input_too_large",
       attempts: 0,
+      requestCount: 0,
     });
     expect(fetch).not.toHaveBeenCalled();
     expect(setup.markFailed).toHaveBeenCalledWith(
       "job-1",
       "input_too_large",
       expect.stringContaining("已在提交前拦截"),
-      0
+      0,
+      null,
+      undefined,
+      undefined,
+      expect.objectContaining({ requestCount: 0 })
     );
   });
 
@@ -199,7 +204,13 @@ describe("ModelGateway response diagnostics", () => {
       expect.stringContaining("max_tokens=8192"),
       1,
       "{\"blocks\":[",
-      undefined
+      undefined,
+      undefined,
+      expect.objectContaining({
+        promptTokens: 1000,
+        completionTokens: 8192,
+        requestCount: 1,
+      })
     );
   });
 
@@ -213,6 +224,33 @@ describe("ModelGateway response diagnostics", () => {
 
     expect(result).toMatchObject({ ok: false, errorCode: "network_error", modelJobId: "job-1" });
     expect(result.errorMessage).toContain("HTTP 504");
+  });
+
+  it("propagates Retry-After, rate-limit key, and zero-safe request metrics", async () => {
+    const setup = makeGateway(Response.json(
+      { error: { message: "slow down" } },
+      { status: 429, headers: { "Retry-After": "7" } }
+    ));
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "rate_limited",
+      retryAfterMs: 7000,
+      rateLimitKey: "model",
+      requestCount: 1,
+    });
+    expect(setup.markFailed).toHaveBeenCalledWith(
+      "job-1",
+      "rate_limited",
+      expect.any(String),
+      1,
+      null,
+      undefined,
+      undefined,
+      expect.objectContaining({ requestCount: 1 })
+    );
   });
 
   it("classifies a non-JSON HTTP 200 envelope as response_invalid", async () => {
@@ -240,6 +278,7 @@ describe("ModelGateway response diagnostics", () => {
       ok: true,
       data: { ok: true },
       usage: { promptTokens: 500_000, completionTokens: 12 },
+      requestCount: 1,
     });
     const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
     expect(request).toMatchObject({ stream: true, stream_options: { include_usage: true } });
@@ -254,6 +293,7 @@ describe("ModelGateway response diagnostics", () => {
     const result = await setup.gateway.callMultimodal(input(true), schema);
 
     expect(result.ok).toBe(true);
+    expect(result.requestCount).toBe(2);
     expect(fetch).toHaveBeenCalledTimes(2);
     const secondRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
     expect(secondRequest.stream).toBe(true);
@@ -270,6 +310,7 @@ describe("ModelGateway response diagnostics", () => {
     const result = await setup.gateway.callMultimodal(input(true), schema);
 
     expect(result.ok).toBe(true);
+    expect(result.requestCount).toBe(3);
     expect(fetch).toHaveBeenCalledTimes(3);
     const finalRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[2][1].body);
     expect(finalRequest.stream).toBeUndefined();
@@ -290,12 +331,35 @@ describe("ModelGateway response diagnostics", () => {
   it("returns both job id fields on success", async () => {
     const setup = makeGateway(Response.json({
       choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
-      usage: { prompt_tokens: 12, completion_tokens: 5 },
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 5,
+        prompt_tokens_details: { cached_tokens: 8 },
+      },
     }));
 
     const result = await setup.gateway.callMultimodal(input(), schema);
 
-    expect(result).toMatchObject({ ok: true, jobId: "job-1", modelJobId: "job-1" });
+    expect(result).toMatchObject({
+      ok: true,
+      jobId: "job-1",
+      modelJobId: "job-1",
+      requestCount: 1,
+      usage: { promptTokens: 12, completionTokens: 5, cachedPromptTokens: 8 },
+    });
     expect(setup.markSucceeded).toHaveBeenCalledOnce();
+    expect(setup.markSucceeded).toHaveBeenCalledWith(
+      "job-1",
+      "{\"ok\":true}",
+      1,
+      undefined,
+      undefined,
+      expect.objectContaining({
+        promptTokens: 12,
+        completionTokens: 5,
+        cachedPromptTokens: 8,
+        requestCount: 1,
+      })
+    );
   });
 });

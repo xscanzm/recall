@@ -31,3 +31,14 @@ for (const [src, dst] of targets) {
     console.warn(`[copy-assets] source not found, skipped: ${path.relative(root, src)}`);
   }
 }
+
+const requiredOutputs = [
+  path.join(root, "dist", "main", "app.js"),
+  path.join(root, "dist", "shared", "types.js"),
+];
+
+for (const output of requiredOutputs) {
+  if (!fs.existsSync(output)) {
+    throw new Error(`[copy-assets] required build output is missing: ${path.relative(root, output)}`);
+  }
+}

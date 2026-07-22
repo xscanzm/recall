@@ -304,6 +304,7 @@ export class TimelineBuilderWorker {
       type: "timeline_builder",
       priority: isInitialBuild ? 1 : 3,
       dedupeKey: `timeline_builder:${dateKey}`,
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => this.modelGateway.callMultimodal<TimelineBuilderOutput>(
         {
           kind: "multimodal",

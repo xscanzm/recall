@@ -48,7 +48,57 @@ describe("ObserverBatchFrames", () => {
 
     expect(plan.submittedFrames.map((frame) => frame.originalFrameIndex)).toEqual([1]);
   });
+
+  it("omits a near-identical in-window frame only when OCR confirms no text changes", () => {
+    const bundle = batch([
+      { mode: "full" },
+      { mode: "delta", deltaFromFrameIndex: 1 },
+    ]);
+    bundle.ocrResults![0].screenSignature = signature("0000000000000000");
+    bundle.ocrResults![1].screenSignature = signature("0000000000000003");
+    bundle.ocrResults![1].delta = {
+      unchangedBlockIds: ["same"],
+      addedBlocks: [],
+      changedBlocks: [],
+      removedBlocks: [],
+    };
+
+    const plan = buildObserverBatchFramePlan(bundle);
+
+    expect(plan.submittedFrames.map((frame) => frame.originalFrameIndex)).toEqual([0]);
+    expect(plan.duplicateSourceByOriginalFrameIndex.get(1)).toBe(0);
+  });
+
+  it("preserves boundary frames and visually different frames", () => {
+    const manual = batch([
+      { mode: "full" },
+      { mode: "delta", deltaFromFrameIndex: 1 },
+    ]);
+    manual.frames[1].captureReason = "manual_capture";
+    manual.ocrResults![0].screenSignature = signature("0000000000000000");
+    manual.ocrResults![1].screenSignature = signature("0000000000000001");
+    manual.ocrResults![1].delta = emptyDelta();
+
+    const changed = batch([
+      { mode: "full" },
+      { mode: "delta", deltaFromFrameIndex: 1 },
+    ]);
+    changed.ocrResults![0].screenSignature = signature("0000000000000000");
+    changed.ocrResults![1].screenSignature = signature("000000000000000f");
+    changed.ocrResults![1].delta = emptyDelta();
+
+    expect(buildObserverBatchFramePlan(manual).submittedFrames).toHaveLength(2);
+    expect(buildObserverBatchFramePlan(changed).submittedFrames).toHaveLength(2);
+  });
 });
+
+function signature(dHash: string) {
+  return { pixelHash: dHash, dHash, width: 100, height: 100 };
+}
+
+function emptyDelta() {
+  return { unchangedBlockIds: [], addedBlocks: [], changedBlocks: [], removedBlocks: [] };
+}
 
 function batch(
   modes: Array<{ mode: "full" | "exact_reuse" | "delta"; reuseFromFrameIndex?: number; deltaFromFrameIndex?: number; reusedFromCaptureId?: string }>

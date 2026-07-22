@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "sourceMap": false,
+    "removeComments": true,
+    "incremental": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo.prod"
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    "release",
+    "src/**/*.test.ts",
+    "src/**/__tests__/**",
+    "scripts/**"
+  ]
+}

@@ -229,6 +229,24 @@ export class MemoryObjectRepository {
     return rows.map(mapProjectRow);
   }
 
+  /**
+   * 按 ID 列表精简查询项目名（专供 Today 概览使用）
+   */
+  listProjectsByIdsMinimal(ids: string[]): Array<{ id: string; name: string }> {
+    if (ids.length === 0) return [];
+    const uniqueIds = [...new Set(ids)];
+    const projects = new Map<string, { id: string; name: string }>();
+    for (let index = 0; index < uniqueIds.length; index += 500) {
+      const chunk = uniqueIds.slice(index, index + 500);
+      const placeholders = chunk.map(() => "?").join(",");
+      const rows = this.db
+        .prepare(`SELECT id, name FROM projects WHERE id IN (${placeholders})`)
+        .all(...chunk) as Array<{ id: string; name: string }>;
+      for (const row of rows) projects.set(row.id, row);
+    }
+    return uniqueIds.flatMap((id) => projects.get(id) ?? []);
+  }
+
   updateProject(id: string, patch: Partial<Omit<Project, "id" | "createdAt" | "updatedAt">>): Project | null {
     const sets: string[] = [];
     const params: unknown[] = [];

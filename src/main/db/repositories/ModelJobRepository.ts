@@ -39,6 +39,14 @@ export type ModelJobErrorCode =
   | "safety_blocked"
   | "unknown_error";
 
+export interface ModelJobMetrics {
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  cachedPromptTokens?: number | null;
+  requestCount?: number | null;
+  latencyMs?: number | null;
+}
+
 interface ModelJobRow {
   id: string;
   type: string;
@@ -52,6 +60,11 @@ interface ModelJobRow {
   updated_at: string;
   raw_input_json: string | null;
   debug_events_json: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  cached_prompt_tokens?: number | null;
+  request_count?: number | null;
+  latency_ms?: number | null;
 }
 
 /**
@@ -72,6 +85,11 @@ export interface ModelJob {
   rawInputJson: string | null;
   /** 调试模式：各层丢弃/跳过事件 JSON 数组（仅 debug.enabled=true 时写入） */
   debugEventsJson: string | null;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  cachedPromptTokens?: number | null;
+  requestCount?: number | null;
+  latencyMs?: number | null;
 }
 
 /**
@@ -136,31 +154,41 @@ export class ModelJobRepository {
 
   /**
    * 标记为 succeeded
-   * @param rawInputJson 调试模式可选：完整 prompt 文本上下文
-   * @param debugEventsJson 调试模式可选：丢弃/跳过事件 JSON 数组
    */
   markSucceeded(
     id: string,
     outputJson: string,
     attempts: number,
     rawInputJson?: string,
-    debugEventsJson?: string
+    debugEventsJson?: string,
+    metrics?: ModelJobMetrics
   ): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE model_jobs
          SET status = 'succeeded', output_json = ?, error_code = NULL, error_message = NULL, attempts = ?, updated_at = ?,
-             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json)
+             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json),
+             prompt_tokens = ?, completion_tokens = ?, cached_prompt_tokens = ?, request_count = ?, latency_ms = ?
          WHERE id = ?`
       )
-      .run(outputJson, attempts, now, rawInputJson ?? null, debugEventsJson ?? null, id);
+      .run(
+        outputJson,
+        attempts,
+        now,
+        rawInputJson ?? null,
+        debugEventsJson ?? null,
+        metrics?.promptTokens ?? null,
+        metrics?.completionTokens ?? null,
+        metrics?.cachedPromptTokens ?? null,
+        metrics?.requestCount ?? null,
+        metrics?.latencyMs ?? null,
+        id
+      );
   }
 
   /**
    * 标记为 failed
-   * @param rawInputJson 调试模式可选：完整 prompt 文本上下文
-   * @param debugEventsJson 调试模式可选：丢弃/跳过事件 JSON 数组
    */
   markFailed(
     id: string,
@@ -169,17 +197,33 @@ export class ModelJobRepository {
     attempts: number,
     outputJson: string | null = null,
     rawInputJson?: string,
-    debugEventsJson?: string
+    debugEventsJson?: string,
+    metrics?: ModelJobMetrics
   ): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE model_jobs
          SET status = 'failed', error_code = ?, error_message = ?, output_json = ?, attempts = ?, updated_at = ?,
-             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json)
+             raw_input_json = COALESCE(?, raw_input_json), debug_events_json = COALESCE(?, debug_events_json),
+             prompt_tokens = ?, completion_tokens = ?, cached_prompt_tokens = ?, request_count = ?, latency_ms = ?
          WHERE id = ?`
       )
-      .run(errorCode, errorMessage, outputJson, attempts, now, rawInputJson ?? null, debugEventsJson ?? null, id);
+      .run(
+        errorCode,
+        errorMessage,
+        outputJson,
+        attempts,
+        now,
+        rawInputJson ?? null,
+        debugEventsJson ?? null,
+        metrics?.promptTokens ?? null,
+        metrics?.completionTokens ?? null,
+        metrics?.cachedPromptTokens ?? null,
+        metrics?.requestCount ?? null,
+        metrics?.latencyMs ?? null,
+        id
+      );
   }
 
   /**
@@ -194,30 +238,19 @@ export class ModelJobRepository {
     return rows.map(mapModelJobRow);
   }
 
-  /**
-   * 追加调试事件到 debug_events_json（读-改-写模式）
-   *
-   * 用于 Worker 流式处理过程中分批追加丢弃/跳过事件。
-   * 单次 pipeline 内无并发写入同一 jobId（MemoryPipeline 串行处理，安全）。
-   */
+  /** Append structured debug events without discarding events already stored for the job. */
   appendDebugEvents(jobId: string, events: DebugEvent[]): void {
     if (events.length === 0) return;
     const existing = this.getById(jobId);
-    const existingEvents: DebugEvent[] = existing?.debugEventsJson
+    const existingEvents = existing?.debugEventsJson
       ? safeParseDebugEvents(existing.debugEventsJson)
       : [];
-    const merged = [...existingEvents, ...events];
     const now = new Date().toISOString();
     this.db
-      .prepare(
-        `UPDATE model_jobs SET debug_events_json = ?, updated_at = ? WHERE id = ?`
-      )
-      .run(JSON.stringify(merged), now, jobId);
+      .prepare("UPDATE model_jobs SET debug_events_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify([...existingEvents, ...events]), now, jobId);
   }
 
-  /**
-   * 通用更新
-   */
   update(id: string, patch: UpdateModelJobInput): ModelJob | null {
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -228,29 +261,17 @@ export class ModelJobRepository {
     if (patch.attempts !== undefined) { sets.push("attempts = ?"); params.push(patch.attempts); }
     if (sets.length === 0) return this.getById(id);
     sets.push("updated_at = ?");
-    params.push(new Date().toISOString());
-    params.push(id);
+    params.push(new Date().toISOString(), id);
     this.db.prepare(`UPDATE model_jobs SET ${sets.join(", ")} WHERE id = ?`).run(...params);
     return this.getById(id);
   }
 
-  /**
-   * 删除
-   */
   delete(id: string): boolean {
-    const result = this.db.prepare("DELETE FROM model_jobs WHERE id = ?").run(id);
-    return result.changes > 0;
+    return this.db.prepare("DELETE FROM model_jobs WHERE id = ?").run(id).changes > 0;
   }
 
   /**
    * 启动时清理：把所有 status='running' 的卡死任务标记为 failed
-   *
-   * 应用异常退出时，正在执行的任务会停留在 running 状态。
-   * 重启后这些任务永远不会被推进，占用 model_jobs 表且无法追溯。
-   * 本方法在 app.whenReady 后调用一次，把这些任务标记为 failed，
-   * errorCode=unknown_error，errorMessage="应用重启时清理未完成任务"。
-   *
-   * @returns 清理的任务数量
    */
   markStaleRunningJobs(): number {
     const now = new Date().toISOString();
@@ -272,10 +293,6 @@ export function createModelJobRepository(db: DB): ModelJobRepository {
   return new ModelJobRepository(db);
 }
 
-// ============================================================================
-// 内部辅助函数
-// ============================================================================
-
 function mapModelJobRow(row: ModelJobRow): ModelJob {
   return {
     id: row.id,
@@ -290,12 +307,14 @@ function mapModelJobRow(row: ModelJobRow): ModelJob {
     updatedAt: row.updated_at,
     rawInputJson: row.raw_input_json,
     debugEventsJson: row.debug_events_json,
+    promptTokens: row.prompt_tokens ?? null,
+    completionTokens: row.completion_tokens ?? null,
+    cachedPromptTokens: row.cached_prompt_tokens ?? null,
+    requestCount: row.request_count ?? null,
+    latencyMs: row.latency_ms ?? null,
   };
 }
 
-/**
- * 安全解析 debug_events_json（损坏时返回空数组，不抛错）
- */
 function safeParseDebugEvents(json: string): DebugEvent[] {
   try {
     const parsed = JSON.parse(json);

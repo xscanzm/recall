@@ -122,13 +122,13 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.4.3</p>
+            <p className="eyebrow"><span /> Windows 公开测试版 · 0.4.4</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
             <div className="hero-actions"><DownloadLink /><a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a></div>
             <CommunityQr hero />
-            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 92 MB <span /> 首批用户可申请公测 API Key</p>
+            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 90 MB <span /> 首批用户可申请公测 API Key</p>
           </div>
           <AppPreview />
         </section>
@@ -203,7 +203,7 @@ function App() {
         <section className="before-section" id="before">
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 92 MB，版本 0.4.3。</small></p>
+            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 90 MB，版本 0.4.4。</small></p>
             <p><span>02</span><b>需要自备模型服务</b><small>首次使用需填写兼容模型的 Endpoint、模型名和 API Key。</small></p>
             <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
           </div>
@@ -216,7 +216,7 @@ function App() {
               <p>一天会过去。</p>
               <h2>但你走过的路，<br />可以留下回声。</h2>
               <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-              <small>Windows x64 · v0.4.3 · 首批 100 名入群申请用户可获公测 API Key</small>
+              <small>Windows x64 · v0.4.4 · 首批 100 名入群申请用户可获公测 API Key</small>
             </div>
             <CommunityQr />
           </div>

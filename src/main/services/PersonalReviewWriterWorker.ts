@@ -201,6 +201,7 @@ export class PersonalReviewWriterWorker {
     // ModelGateway 默认超时 120,000ms（DEFAULT_TIMEOUT_MS），满足复盘生成的耗时需求
     const result = await this.modelJobQueue.enqueueMultimodalJob<PersonalReviewOutput>({
       type: "reporter",
+      rateLimitKey: multimodalModelConfigId,
       executor: async () => {
         return this.modelGateway.callMultimodal<PersonalReviewOutput>(
           {

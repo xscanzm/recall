@@ -152,4 +152,73 @@ describe("Today activity overview", () => {
     expect(overview.observedEndAt).toBeNull();
     expect(overview.windows).toEqual([]);
   });
+
+  it("joins facts from fact, episode, and observation links without duplicates", () => {
+    const overview = buildTodayActivityOverview(
+      [{ id: "obs-1", capturedAt: "2026-07-17T09:00:00+08:00" }],
+      [episode({ observationIds: ["obs-1"], factIds: ["fact-direct"] })],
+      [
+        {
+          id: "fact-direct", content: "direct", projectId: null, projectHint: null,
+          sourceObservationIds: ["obs-1"], sourceEpisodeIds: ["episode-1"],
+        },
+        {
+          id: "fact-episode", content: "episode", projectId: null, projectHint: null,
+          sourceObservationIds: [], sourceEpisodeIds: ["episode-1"],
+        },
+        {
+          id: "fact-observation", content: "observation", projectId: null, projectHint: null,
+          sourceObservationIds: ["obs-1"], sourceEpisodeIds: [],
+        },
+      ],
+      [],
+      { ...options, coverageEnd: new Date("2026-07-17T09:01:00+08:00") }
+    );
+
+    expect(overview.episodes[0].topicTexts).toEqual(["direct", "episode", "observation"]);
+  });
+
+  it("handles more than 1500 Episodes without truncating merged output", () => {
+    const episodeCount = 1501;
+    const testEpisodes = Array.from({ length: episodeCount }, (_, i) => ({
+      id: `ep-${i}`,
+      title: `Episode ${i}`,
+      summary: `Summary ${i}`,
+      startAt: new Date(1784280000000 + i * 1000).toISOString(),
+      endAt: new Date(1784280000000 + (i + 1) * 1000).toISOString(),
+      projectId: "project-1",
+      factIds: [`fact-${i % 10}`],
+      observationIds: [`obs-${i}`],
+      activityCategory: "coding" as const,
+      activityConfidence: 0.9,
+    }));
+
+    const testObs = Array.from({ length: episodeCount }, (_, i) => ({
+      id: `obs-${i}`,
+      capturedAt: new Date(1784280000000 + i * 1000).toISOString(),
+    }));
+
+    const testFacts = Array.from({ length: 10 }, (_, i) => ({
+      id: `fact-${i}`,
+      content: `Repeated Fact Content ${i}`,
+      projectId: "project-1",
+      projectHint: null,
+      privateRisk: null,
+      sourceObservationIds: [`obs-${i}`],
+      sourceEpisodeIds: [`ep-${i}`],
+    }));
+
+    const overview = buildTodayActivityOverview(
+      testObs,
+      testEpisodes,
+      testFacts,
+      [{ id: "project-1", name: "Big Project" }],
+      { coverageEnd: new Date(1784280000000 + episodeCount * 1000), maxGapSeconds: 180 }
+    );
+    expect(overview.episodes).toHaveLength(episodeCount);
+    expect(overview.windows).toHaveLength(1);
+    expect(overview.windows[0].sourceEpisodeIds).toHaveLength(episodeCount);
+    expect(overview.windows[0].sourceEpisodeIds.at(-1)).toBe(`ep-${episodeCount - 1}`);
+    expect(overview.windows[0].topicTexts).toHaveLength(10);
+  });
 });
