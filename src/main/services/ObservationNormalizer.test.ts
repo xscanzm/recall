@@ -21,6 +21,9 @@ describe("ObservationNormalizer local OCR evidence", () => {
         text: "原始 OCR 全文",
         lines: ["原始 OCR 全文"],
         language: "zh-Hans-CN",
+        engine: "rapidocr",
+        model: "PP-OCRv6-small",
+        engineVersion: "3.9.2",
         mode: "delta",
         deltaFromFrameIndex: 1,
         blocks: [{
@@ -44,7 +47,10 @@ describe("ObservationNormalizer local OCR evidence", () => {
     const visibleContent = create.mock.calls[0][0].visibleContent;
     expect(visibleContent[0].fullText).toBe("模型校正后的完整文字");
     expect(visibleContent[0].ocrEvidence).toMatchObject({
-      source: "windows_ocr_original_image",
+      source: "rapidocr_original_image",
+      engine: "rapidocr",
+      model: "PP-OCRv6-small",
+      engineVersion: "3.9.2",
       text: "原始 OCR 全文",
       mode: "delta",
     });

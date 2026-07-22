@@ -29,6 +29,7 @@ export type ModelJobStatus =
 export type ModelJobErrorCode =
   | "timeout"
   | "network_error"
+  | "upstream_timeout"
   | "auth_error"
   | "rate_limited"
   | "invalid_json"

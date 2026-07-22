@@ -11,6 +11,7 @@ export interface ShutdownDependencies {
   endOfDayReviewService?: { stop: () => void } | null;
   sceneScheduler?: { stop: () => void } | null;
   captureBatcher?: { drain: () => Promise<void> } | null;
+  ocrService?: { stop: () => Promise<void> | void } | null;
   batchProcessor?: { stopAndDrainActive: () => Promise<void> } | null;
   modelJobQueue?: { stopAndDrainActive: (timeoutMs?: number) => Promise<void> } | null;
   trayService?: { destroy: () => void } | null;
@@ -52,6 +53,7 @@ async function performShutdown(
   await runCritical("stopCaptureService", () => deps.captureService?.stop(), criticalErrors);
   await runCritical("drainCaptureService", () => deps.captureService?.drain(), criticalErrors);
   await runCritical("drainCaptureBatcher", () => deps.captureBatcher?.drain(), criticalErrors);
+  await runCritical("stopOcrService", () => deps.ocrService?.stop(), criticalErrors);
   await runCritical("drainBatchProcessor", () => deps.batchProcessor?.stopAndDrainActive(), criticalErrors);
   await runCritical(
     "drainModelJobQueue",

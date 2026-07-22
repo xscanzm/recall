@@ -14,17 +14,26 @@ import {
   type DailyModelStats,
   type ModelInstallationStats,
 } from "./stats";
+import {
+  cleanupExpiredDefaultMultimodalJobs,
+  consumeDefaultMultimodalJobs,
+  getDefaultMultimodalJob,
+  submitDefaultMultimodalJob,
+  type ModelClientMetadata,
+} from "./modelAsyncJobs";
 
 /** CORS 允许的方法 */
 const CORS_ALLOWED_METHODS = "GET, POST, OPTIONS";
 /** CORS 允许的请求头 */
-const CORS_ALLOWED_HEADERS = "Authorization, Content-Type, X-Client-Version, X-Recall-Installation-Id, X-Recall-Task-Type, X-Recall-Client-Version";
+const CORS_ALLOWED_HEADERS = "Authorization, Content-Type, X-Client-Version, X-Recall-Installation-Id, X-Recall-Task-Type, X-Recall-Client-Version, X-Recall-Idempotency-Key";
 const WEBSITE_ORIGIN = "https://recall.ppclaw.online";
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CHINA_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
 const MODEL_PROXY_MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MODEL_TASK_TYPE_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,79}$/i;
 const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MODEL_IDEMPOTENCY_KEY_PATTERN = /^[a-z0-9][a-z0-9:._-]{0,159}$/i;
+const ASYNC_MODEL_JOB_ID_PATTERN = /^mmj_[0-9a-f-]{36}$/i;
 
 /**
  * 给响应附加 CORS 头
@@ -245,7 +254,13 @@ function renderModelTaskRows(values: Record<string, number>): string {
 
 function renderInstallationRows(values: ModelInstallationStats[]): string {
   if (values.length === 0) return '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
-  return values.slice(0, 100).map((item) => `<tr><td><code>${escapeHtml(item.installationHash.slice(0, 12))}</code></td><td>${escapeHtml(item.clientVersion)}</td><td>${item.totalCalls}</td><td>${item.failures}</td><td>${escapeHtml(item.lastSeenAt.slice(0, 16).replace("T", " "))}</td></tr>`).join("");
+  return values.slice(0, 100).map((item) => {
+    const lastSeenAt = new Date(item.lastSeenAt);
+    const chinaTime = Number.isNaN(lastSeenAt.getTime())
+      ? item.lastSeenAt
+      : new Date(lastSeenAt.getTime() + CHINA_TIME_OFFSET_MS).toISOString().slice(0, 16).replace("T", " ");
+    return `<tr><td><code>${escapeHtml(item.installationHash.slice(0, 12))}</code></td><td>${escapeHtml(item.clientVersion)}</td><td>${item.totalCalls}</td><td>${item.failures}</td><td>${escapeHtml(chinaTime)}</td></tr>`;
+  }).join("");
 }
 
 function renderModelTrendChart(days: DailyModelStats[]): string {
@@ -290,7 +305,10 @@ function statsPageResponse(
   const visibleModelDays = fillModelDateRange(modelHistory, modelStartDate, endDate);
   const modelStats = aggregateModelStats(visibleModelDays);
   const visibleInstallations = installationStats.filter((item) => {
-    const date = item.lastSeenAt.slice(0, 10);
+    const timestamp = new Date(item.lastSeenAt).getTime();
+    const date = Number.isNaN(timestamp)
+      ? ""
+      : new Date(timestamp + CHINA_TIME_OFFSET_MS).toISOString().slice(0, 10);
     return date >= modelStartDate && date <= endDate;
   });
 
@@ -509,6 +527,16 @@ function proxyResponse(upstream: Response): Response {
   }));
 }
 
+function readModelClientMetadata(request: Request): ModelClientMetadata | null {
+  const installationId = request.headers.get("X-Recall-Installation-Id")?.trim() ?? "";
+  const taskType = request.headers.get("X-Recall-Task-Type")?.trim() ?? "";
+  const clientVersion = (request.headers.get("X-Recall-Client-Version")?.trim() || "unknown").slice(0, 40);
+  if (!INSTALLATION_ID_PATTERN.test(installationId) || !MODEL_TASK_TYPE_PATTERN.test(taskType)) {
+    return null;
+  }
+  return { installationId, taskType, clientVersion };
+}
+
 async function handleDefaultModelProxy(
   request: Request,
   env: Env,
@@ -518,12 +546,11 @@ async function handleDefaultModelProxy(
   if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
     return jsonResponse({ error: "capability-disabled" }, 503);
   }
-  const installationId = request.headers.get("X-Recall-Installation-Id")?.trim() ?? "";
-  const taskType = request.headers.get("X-Recall-Task-Type")?.trim() ?? "";
-  const clientVersion = (request.headers.get("X-Recall-Client-Version")?.trim() || "unknown").slice(0, 40);
-  if (!INSTALLATION_ID_PATTERN.test(installationId) || !MODEL_TASK_TYPE_PATTERN.test(taskType)) {
+  const metadata = readModelClientMetadata(request);
+  if (!metadata) {
     return jsonResponse({ error: "invalid-client-metadata" }, 400);
   }
+  const { installationId, taskType, clientVersion } = metadata;
 
   const apiUrl = (kind === "language" ? env.DEFAULT_LANGUAGE_API_URL : env.DEFAULT_MULTIMODAL_API_URL)?.trim()
     || "https://api.ppclaw.online";
@@ -545,13 +572,15 @@ async function handleDefaultModelProxy(
   const record = (status: "success" | "failure") => {
     const secret = env.MODEL_STATS_HASH_SECRET?.trim();
     if (!secret) return;
-    ctx.waitUntil(recordDefaultModelCall(env.STATS, secret, {
+    ctx.waitUntil(recordDefaultModelCall(env.MODEL_STATS, secret, {
       date: currentDateKey(),
       installationId,
       kind,
       taskType,
       status,
       clientVersion,
+    }).catch((error) => {
+      console.error("default model statistics write failed", error instanceof Error ? error.message : String(error));
     }));
   };
 
@@ -571,6 +600,43 @@ async function handleDefaultModelProxy(
     record("failure");
     return jsonResponse({ error: "upstream-unreachable" }, 502);
   }
+}
+
+async function handleDefaultMultimodalJobSubmit(request: Request, env: Env): Promise<Response> {
+  if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
+    return jsonResponse({ error: "capability-disabled" }, 503);
+  }
+  const metadata = readModelClientMetadata(request);
+  if (!metadata) return jsonResponse({ error: "invalid-client-metadata" }, 400);
+  const idempotencyKey = request.headers.get("X-Recall-Idempotency-Key")?.trim() ?? "";
+  if (!MODEL_IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
+    return jsonResponse({ error: "invalid-idempotency-key" }, 400);
+  }
+  const model = env.DEFAULT_MULTIMODAL_MODEL?.trim() || "sensenova-6.7-flash-lite";
+  let parsed: unknown;
+  try {
+    parsed = await readJsonBodyBounded(request, MODEL_PROXY_MAX_BODY_BYTES);
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "invalid-request" }, 400);
+  }
+  const body = sanitizeModelProxyBody(parsed, model);
+  if (!body) return jsonResponse({ error: "invalid-request" }, 400);
+  const result = await submitDefaultMultimodalJob(env, metadata, idempotencyKey, body);
+  return jsonResponse(result.body, result.status);
+}
+
+async function handleDefaultMultimodalJobStatus(
+  request: Request,
+  env: Env,
+  jobId: string
+): Promise<Response> {
+  const metadata = readModelClientMetadata(request);
+  if (!metadata) return jsonResponse({ error: "invalid-client-metadata" }, 400);
+  if (!ASYNC_MODEL_JOB_ID_PATTERN.test(jobId)) {
+    return jsonResponse({ error: "job-not-found" }, 404);
+  }
+  const result = await getDefaultMultimodalJob(env, metadata, jobId);
+  return jsonResponse(result.body, result.status);
 }
 
 const DEFAULT_INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generations";
@@ -721,6 +787,18 @@ export default {
         if (method !== "POST") return jsonResponse({ error: "method-not-allowed" }, 405);
         return handleDefaultModelProxy(request, env, ctx, "multimodal");
       }
+      if (path === "/api/model/multimodal/jobs") {
+        if (method !== "POST") return jsonResponse({ error: "method-not-allowed" }, 405);
+        return handleDefaultMultimodalJobSubmit(request, env);
+      }
+      if (path.startsWith("/api/model/multimodal/jobs/")) {
+        if (method !== "GET") return jsonResponse({ error: "method-not-allowed" }, 405);
+        return handleDefaultMultimodalJobStatus(
+          request,
+          env,
+          path.slice("/api/model/multimodal/jobs/".length)
+        );
+      }
 
       // ─── POST /api/infographic/generate ────────────────
       // 只代理固定的信息图模型；上游密钥永不返回给客户端。
@@ -831,8 +909,8 @@ export default {
         const range = selectedRange(url.searchParams.get("range"));
         const [distributionHistory, modelHistory, installationStats] = await Promise.all([
           getDistributionStatsHistory(env.STATS),
-          getDefaultModelStatsHistory(env.STATS),
-          getDefaultModelInstallationStats(env.STATS),
+          getDefaultModelStatsHistory(env.MODEL_STATS),
+          getDefaultModelInstallationStats(env.MODEL_STATS),
         ]);
         return statsPageResponse(distributionHistory, modelHistory, installationStats, endDate, range);
       }
@@ -936,4 +1014,19 @@ export default {
       );
     }
   },
-};
+
+  async queue(
+    batch: MessageBatch<DefaultMultimodalQueueMessage>,
+    env: Env
+  ): Promise<void> {
+    await consumeDefaultMultimodalJobs(batch, env);
+  },
+
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    ctx.waitUntil(cleanupExpiredDefaultMultimodalJobs(env));
+  },
+} satisfies ExportedHandler<Env, DefaultMultimodalQueueMessage>;

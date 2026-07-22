@@ -89,18 +89,11 @@ function AppPreview() {
 
 function CommunityQr({ hero = false }: { hero?: boolean }) {
   return (
-    <aside className={`community-qr ${hero ? "community-qr--hero" : ""}`} aria-label="Recall 公测用户沟通群">
-      <img src="/recall-early-user-wechat-qr.jpg" alt="回声 Recall 公测用户沟通群微信二维码" />
+    <aside className={`community-qr ${hero ? "community-qr--hero" : ""}`} aria-label="Recall 用户群交流">
+      <img src="/recall-early-user-wechat-qr.jpg" alt="回声 Recall 用户群微信二维码" />
       <div className="community-qr__copy">
-        <p className="community-qr__eyebrow">{hero ? "首批公测支持" : "公测用户沟通群"}</p>
-        {hero ? (
-          <>
-            <strong>前 100 名入群并完成申请的用户，我们将提供 API Key，并承担公测期间的模型调用费用。</strong>
-            <p className="community-qr__hint">微信扫码加入群聊，向群内管理员申请。</p>
-          </>
-        ) : (
-          <p className="community-qr__hint">微信扫码加入群聊<br />首批 100 名申请用户，公测期 API 调用费用由我们承担</p>
-        )}
+        <p className="community-qr__eyebrow">用户群交流</p>
+        <p className="community-qr__hint">微信扫码加入用户群<br />问题、想法和需求，欢迎在 GitHub 或用户群反馈</p>
       </div>
     </aside>
   );
@@ -122,13 +115,13 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.4.5</p>
+            <p className="eyebrow"><span /> Windows 公开测试版 · 0.5.0</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
             <div className="hero-actions"><DownloadLink /><a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a></div>
             <CommunityQr hero />
-            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 90 MB <span /> 首批用户可申请公测 API Key</p>
+            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 177 MB <span /> 默认模型服务已配置</p>
           </div>
           <AppPreview />
         </section>
@@ -194,7 +187,7 @@ function App() {
           <div className="privacy-title"><p className="kicker">安静地工作，也清楚地交代边界</p><h2>记住你，<br />不等于占有你的记忆。</h2></div>
           <div className="privacy-grid">
             <article><LockKeyhole /><h3>长期记忆留在本地</h3><p>截图和结构化记忆保存在你的电脑中。Recall 不运营屏幕历史云端，也不收集遥测数据。</p></article>
-            <article><KeyRound /><h3>模型由你选择</h3><p>你需要配置自己的兼容模型 Endpoint 与 API Key。模型请求会直接发送给你选择的服务商，不经过 Recall 服务器。</p></article>
+            <article><KeyRound /><h3>模型由你选择</h3><p>开箱即可使用 Recall 提供的默认模型服务，也可以配置自己的兼容模型 Endpoint 与 API Key。使用自配模型时，请求会直接发送给你选择的服务商。</p></article>
             <article><CirclePause /><h3>随时暂停，随时忘记</h3><p>你可以暂停观察、跳过敏感应用，调整截图保留时间，也可以删除、纠正或导出自己的数据。</p></article>
           </div>
           <a className="source-link" href={SOURCE_URL} target="_blank" rel="noreferrer"><Code2 size={18} /> 源码公开，可自行审阅 <ArrowRight size={16} /></a>
@@ -203,7 +196,7 @@ function App() {
         <section className="before-section" id="before">
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 90 MB，版本 0.4.5。</small></p>
+            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 177 MB，版本 0.5.0。</small></p>
             <p><span>02</span><b>自带默认模型服务</b><small>开箱即用，首次启动可接受 Recall 代理的默认模型服务；也可在设置中切换为自配模型。</small></p>
             <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
           </div>
@@ -216,7 +209,7 @@ function App() {
               <p>一天会过去。</p>
               <h2>但你走过的路，<br />可以留下回声。</h2>
               <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-              <small>Windows x64 · v0.4.5 · 首批 100 名入群申请用户可获公测 API Key</small>
+              <small>Windows x64 · v0.5.0 · 默认模型服务已配置</small>
             </div>
             <CommunityQr />
           </div>

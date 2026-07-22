@@ -6,16 +6,13 @@ import type {
   OcrTextBlock,
   OcrWordResult,
 } from "../models/types";
+import type { OcrBatchResult } from "./OcrService";
 import { logger } from "./Logger";
 
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_STDOUT_BYTES = 16 * 1024 * 1024;
 
-export interface WindowsOcrBatchResult {
-  available: boolean;
-  frames: BatchFrameOcrResult[];
-  errorCode?: string;
-}
+export type WindowsOcrBatchResult = OcrBatchResult;
 
 export interface WindowsOcrServiceConfig {
   platform?: NodeJS.Platform;
@@ -94,6 +91,7 @@ function parseOcrResponse(raw: string, frameCount: number): WindowsOcrBatchResul
           : [],
         blocks: parseBlocks(value.blocks),
         language: typeof value.language === "string" ? value.language : language,
+        engine: "windows_ocr",
         errorCode: typeof value.errorCode === "string" ? value.errorCode : undefined,
       });
     }
@@ -184,7 +182,7 @@ function emptyFrame(
   language?: string,
   errorCode?: string
 ): BatchFrameOcrResult {
-  return { frameIndex, text: "", lines: [], language, errorCode };
+  return { frameIndex, text: "", lines: [], language, engine: "windows_ocr", errorCode };
 }
 
 function runWindowsPowerShell(imagePaths: string[], timeoutMs: number): Promise<string> {

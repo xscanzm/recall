@@ -1,5 +1,8 @@
 # 依赖
 node_modules/
+resources/ocr/rapidocr-worker.exe
+resources/ocr/rapidocr-worker/
+resources/ocr/__pycache__/
 .pnp/
 .pnp.js
 
@@ -56,6 +59,7 @@ scripts/check-runtime.js
 scripts/find-sqlite.js
 scripts/inspect-db.js
 scripts/verify-*.js
+!scripts/verify-rapidocr-worker.js
 scripts/explore-dbs.js
 scripts/output/
 test-results/

@@ -4,7 +4,7 @@
 // 职责：
 // - 收集 CaptureService 发出的 capture-bundle，攒满 6 帧后合并提交
 // - 未满 6 帧时，5 分钟超时兜底也提交（避免长时间等待）
-// - 先对每张原始 PNG 做 Windows OCR，再生成 resize 800px + JPEG q=45 临时文件
+// - 先对每张原始 PNG 做本地 OCR，再生成 resize 800px + JPEG q=45 临时文件
 // - flush 时构造 BatchCaptureBundle，emit "batch-ready" 事件
 // - 暂停/退出时主动 flush，避免丢攽批
 //
@@ -21,6 +21,7 @@ import type { CaptureInboxRepository } from "../db/repositories/CaptureInboxRepo
 import { logger } from "./Logger";
 import { WindowsOcrService } from "./WindowsOcrService";
 import { OcrFrameProcessor, type PreparedOcrBatch } from "./OcrFrameProcessor";
+import type { OcrBatchService } from "./OcrService";
 
 /**
  * 攒批参数
@@ -36,7 +37,7 @@ const JPEG_CHROMA_SUBSAMPLING = "4:2:0";
  */
 export interface CaptureBatcherConfig {
   repository: CaptureInboxRepository;
-  ocrService?: Pick<WindowsOcrService, "recognizeImages">;
+  ocrService?: OcrBatchService;
   ocrFrameProcessor?: Pick<OcrFrameProcessor, "prepareBatch">;
   /**
    * 压缩图临时目录。默认用 os.tmpdir()/recall-batch
@@ -123,7 +124,7 @@ export class CaptureBatcher extends EventEmitter {
   /**
    * 冲刷当前攽批，构造 BatchCaptureBundle 并 emit "batch-ready"
    * - 清除超时定时器
-   * - 使用未压缩原图做 Windows OCR，再生成 JPEG q=45 临时文件
+   * - 使用未压缩原图做本地 OCR，再生成 JPEG q=45 临时文件
    * - 即使未满 6 帧也会提交（用于暂停/退出/long_session 触发）
    * - 队列为空时无操作
    *
@@ -216,6 +217,14 @@ export class CaptureBatcher extends EventEmitter {
     this.accepting = true;
   }
 
+  /** Original screenshots still needed by queued or in-flight OCR work. */
+  getPendingImagePaths(): string[] {
+    return this.repository.listPendingCaptures().flatMap((frame) => [
+      frame.stitchedImagePath,
+      ...frame.imagePaths,
+    ]).filter((filePath): filePath is string => !!filePath);
+  }
+
   async drain(): Promise<void> {
     this.stopAccepting();
     while (this.flushPromise || this.queue.length > 0) {
@@ -229,10 +238,10 @@ export class CaptureBatcher extends EventEmitter {
       return await this.ocrFrameProcessor.prepareBatch(frames);
     } catch (error) {
       logger.warn({
-        jobType: "windows_ocr",
+        jobType: "local_ocr",
         status: "failed",
-        errorCode: "windows_ocr_unhandled_error",
-        message: `Windows OCR integration failed: ${error instanceof Error ? error.name : "unknown_error"}`,
+        errorCode: "local_ocr_unhandled_error",
+        message: `Local OCR integration failed: ${error instanceof Error ? error.name : "unknown_error"}`,
       });
       return {
         results: frames.map((_, index) => ({
@@ -240,7 +249,7 @@ export class CaptureBatcher extends EventEmitter {
           text: "",
           lines: [],
           blocks: [],
-          errorCode: "windows_ocr_unhandled_error",
+          errorCode: "local_ocr_unhandled_error",
         })),
         commit: () => undefined,
       };

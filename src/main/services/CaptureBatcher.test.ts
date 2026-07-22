@@ -15,6 +15,43 @@ afterEach(() => {
 });
 
 describe("CaptureBatcher OCR and compression", () => {
+  it("exposes pending original paths so cache cleanup cannot race OCR", () => {
+    const pending = {
+      captureId: "capture-protected",
+      capturedAt: new Date(0).toISOString(),
+      timezone: "UTC",
+      appName: "Recall Test",
+      windowTitle: "Protected",
+      captureReason: "manual_capture" as const,
+      activitySignals: {
+        keyboardActive: false,
+        mouseActive: false,
+        idleSeconds: 0,
+        activeWindowStableSeconds: 60,
+      },
+      imagePaths: ["C:\\cache\\capture.png"],
+      stitchedImagePath: "C:\\cache\\stitched.png",
+      retentionPolicy: "delete_immediately" as const,
+    };
+    let pendingReads = 0;
+    const batcher = new CaptureBatcher({
+      repository: {
+        listPendingCaptures: () => pendingReads++ === 0 ? [] : [pending],
+        enqueueCapture: () => true,
+        createBatch: () => true,
+      } as never,
+      ocrFrameProcessor: {
+        prepareBatch: async () => ({ results: [], commit: () => undefined }),
+      },
+    });
+
+    expect(batcher.getPendingImagePaths()).toEqual([
+      "C:\\cache\\stitched.png",
+      "C:\\cache\\capture.png",
+    ]);
+    batcher.stop();
+  });
+
   it("drains every queued frame and stops accepting new captures", async () => {
     const batchSizes: number[] = [];
     const repository = {
@@ -190,7 +227,7 @@ describe("CaptureBatcher OCR and compression", () => {
     expect(bundle.ocrResults?.[0]).toMatchObject({
       frameIndex: 1,
       text: "",
-      errorCode: "windows_ocr_unhandled_error",
+      errorCode: "local_ocr_unhandled_error",
     });
     expect(fs.existsSync(bundle.compressedImagePaths[0])).toBe(true);
   });

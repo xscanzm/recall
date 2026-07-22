@@ -173,6 +173,26 @@ describe("ModelJobQueue retry metadata & Rate Limit governance", () => {
     });
   });
 
+  it("does not retry 520/524 upstream timeouts", async () => {
+    const queue = new ModelJobQueue();
+    const executor = vi.fn(async () => ({
+      ok: false,
+      errorCode: "upstream_timeout",
+      errorMessage: "HTTP 524",
+      requestCount: 1,
+    }));
+
+    const result = await queue.enqueueMultimodalJob({ type: "observer_batch", executor });
+
+    expect(executor).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "upstream_timeout",
+      attempts: 1,
+      requestCount: 1,
+    });
+  });
+
   it("retries network failures using fake timers", async () => {
     vi.useFakeTimers();
     const queue = new ModelJobQueue();

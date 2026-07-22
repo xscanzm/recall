@@ -198,9 +198,7 @@ export interface ModelInstallationStats {
   clientVersion: string;
 }
 
-const MODEL_STATS_PREFIX = "model:v1";
-
-async function hmacInstallationId(value: string, secret: string): Promise<string> {
+export async function hmacInstallationId(value: string, secret: string): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
@@ -215,13 +213,8 @@ async function hmacInstallationId(value: string, secret: string): Promise<string
     .join("");
 }
 
-async function increment(stats: KVNamespace, key: string): Promise<void> {
-  const current = Number.parseInt((await stats.get(key)) ?? "0", 10) || 0;
-  await stats.put(key, String(current + 1));
-}
-
 export async function recordDefaultModelCall(
-  stats: KVNamespace,
+  stats: D1Database,
   hashSecret: string,
   input: {
     date: string;
@@ -233,40 +226,82 @@ export async function recordDefaultModelCall(
   }
 ): Promise<void> {
   const installationHash = await hmacInstallationId(input.installationId, hashSecret);
-  const dailyPrefix = `${MODEL_STATS_PREFIX}:daily:${input.date}`;
-  const encodedTask = encodeURIComponent(input.taskType);
-  await Promise.all([
-    increment(stats, `${dailyPrefix}:total`),
-    increment(stats, `${dailyPrefix}:status:${input.status}`),
-    increment(stats, `${dailyPrefix}:kind:${input.kind}`),
-    increment(stats, `${dailyPrefix}:task:${encodedTask}`),
-    stats.put(`${dailyPrefix}:installation:${installationHash}`, "1"),
-  ]);
-
-  const deviceKey = `${MODEL_STATS_PREFIX}:installation:${installationHash}`;
-  const now = new Date().toISOString();
-  let previous: ModelInstallationStats | null = null;
-  try {
-    previous = await stats.get<ModelInstallationStats>(deviceKey, "json");
-  } catch {
-    previous = null;
-  }
-  const next: ModelInstallationStats = {
+  await recordDefaultModelCallByHash(stats, {
+    date: input.date,
     installationHash,
-    totalCalls: (previous?.totalCalls ?? 0) + 1,
-    successes: (previous?.successes ?? 0) + (input.status === "success" ? 1 : 0),
-    failures: (previous?.failures ?? 0) + (input.status === "failure" ? 1 : 0),
-    languageCalls: (previous?.languageCalls ?? 0) + (input.kind === "language" ? 1 : 0),
-    multimodalCalls: (previous?.multimodalCalls ?? 0) + (input.kind === "multimodal" ? 1 : 0),
-    callsByTask: {
-      ...(previous?.callsByTask ?? {}),
-      [input.taskType]: (previous?.callsByTask?.[input.taskType] ?? 0) + 1,
-    },
-    firstSeenAt: previous?.firstSeenAt ?? now,
-    lastSeenAt: now,
+    kind: input.kind,
+    taskType: input.taskType,
+    status: input.status,
     clientVersion: input.clientVersion,
-  };
-  await stats.put(deviceKey, JSON.stringify(next));
+  });
+}
+
+export async function recordDefaultModelCallByHash(
+  stats: D1Database,
+  input: {
+    date: string;
+    installationHash: string;
+    kind: DefaultModelKind;
+    taskType: string;
+    status: DefaultModelCallStatus;
+    clientVersion: string;
+  }
+): Promise<void> {
+  await stats.batch(buildDefaultModelCallStatements(stats, input));
+}
+
+export function buildDefaultModelCallStatements(
+  stats: D1Database,
+  input: {
+    date: string;
+    installationHash: string;
+    kind: DefaultModelKind;
+    taskType: string;
+    status: DefaultModelCallStatus;
+    clientVersion: string;
+  }
+): D1PreparedStatement[] {
+  const now = new Date().toISOString();
+  const success = input.status === "success" ? 1 : 0;
+  const failure = input.status === "failure" ? 1 : 0;
+  const language = input.kind === "language" ? 1 : 0;
+  const multimodal = input.kind === "multimodal" ? 1 : 0;
+  return [
+    stats.prepare(
+      `INSERT INTO model_daily_stats (date, total_calls, successes, failures, language_calls, multimodal_calls)
+       VALUES (?, 1, ?, ?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET
+         total_calls = total_calls + 1,
+         successes = successes + excluded.successes,
+         failures = failures + excluded.failures,
+         language_calls = language_calls + excluded.language_calls,
+         multimodal_calls = multimodal_calls + excluded.multimodal_calls`
+    ).bind(input.date, success, failure, language, multimodal),
+    stats.prepare(
+      `INSERT INTO model_daily_tasks (date, task, calls) VALUES (?, ?, 1)
+       ON CONFLICT(date, task) DO UPDATE SET calls = calls + 1`
+    ).bind(input.date, input.taskType),
+    stats.prepare(
+      `INSERT OR IGNORE INTO model_daily_installations (date, installation_hash) VALUES (?, ?)`
+    ).bind(input.date, input.installationHash),
+    stats.prepare(
+      `INSERT INTO model_installations
+         (installation_hash, total_calls, successes, failures, language_calls, multimodal_calls, first_seen_at, last_seen_at, client_version)
+       VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(installation_hash) DO UPDATE SET
+         total_calls = total_calls + 1,
+         successes = successes + excluded.successes,
+         failures = failures + excluded.failures,
+         language_calls = language_calls + excluded.language_calls,
+         multimodal_calls = multimodal_calls + excluded.multimodal_calls,
+         last_seen_at = excluded.last_seen_at,
+         client_version = excluded.client_version`
+    ).bind(input.installationHash, success, failure, language, multimodal, now, now, input.clientVersion),
+    stats.prepare(
+      `INSERT INTO model_installation_tasks (installation_hash, task, calls) VALUES (?, ?, 1)
+       ON CONFLICT(installation_hash, task) DO UPDATE SET calls = calls + 1`
+    ).bind(input.installationHash, input.taskType),
+  ];
 }
 
 function emptyDailyModelStats(date: string): DailyModelStats {
@@ -282,58 +317,73 @@ function emptyDailyModelStats(date: string): DailyModelStats {
   };
 }
 
-async function listAllKeys(stats: KVNamespace, prefix: string): Promise<KVNamespaceListKey<unknown>[]> {
-  const keys: KVNamespaceListKey<unknown>[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await stats.list({ prefix, cursor });
-    keys.push(...page.keys);
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor);
-  return keys;
-}
-
-export async function getDefaultModelStatsHistory(stats: KVNamespace): Promise<DailyModelStats[]> {
-  const prefix = `${MODEL_STATS_PREFIX}:daily:`;
-  const keys = await listAllKeys(stats, prefix);
-  const days = new Map<string, DailyModelStats>();
-  for (let index = 0; index < keys.length; index += 50) {
-    const batch = keys.slice(index, index + 50);
-    const values = await Promise.all(batch.map(async ({ name }) => ({
-      name,
-      value: name.includes(":installation:")
-        ? 1
-        : Number.parseInt((await stats.get(name)) ?? "0", 10) || 0,
-    })));
-    for (const { name, value } of values) {
-      const suffix = name.slice(prefix.length);
-      const date = suffix.slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-      const metric = suffix.slice(11);
-      const day = days.get(date) ?? emptyDailyModelStats(date);
-      if (metric === "total") day.totalCalls += value;
-      else if (metric === "status:success") day.successes += value;
-      else if (metric === "status:failure") day.failures += value;
-      else if (metric === "kind:language") day.languageCalls += value;
-      else if (metric === "kind:multimodal") day.multimodalCalls += value;
-      else if (metric.startsWith("task:")) {
-        const task = decodeURIComponent(metric.slice("task:".length));
-        day.callsByTask[task] = (day.callsByTask[task] ?? 0) + value;
-      } else if (metric.startsWith("installation:")) {
-        day.installationHashes.push(metric.slice("installation:".length));
-      }
-      days.set(date, day);
-    }
+export async function getDefaultModelStatsHistory(stats: D1Database): Promise<DailyModelStats[]> {
+  const daily = await stats.prepare(
+    `SELECT date, total_calls, successes, failures, language_calls, multimodal_calls
+     FROM model_daily_stats ORDER BY date`
+  ).all<{ date: string; total_calls: number; successes: number; failures: number; language_calls: number; multimodal_calls: number }>();
+  const tasks = await stats.prepare(
+    `SELECT date, task, calls FROM model_daily_tasks ORDER BY date, task`
+  ).all<{ date: string; task: string; calls: number }>();
+  const installations = await stats.prepare(
+    `SELECT date, installation_hash FROM model_daily_installations ORDER BY date, installation_hash`
+  ).all<{ date: string; installation_hash: string }>();
+  const byDate = new Map<string, DailyModelStats>();
+  for (const row of daily.results) {
+    byDate.set(row.date, {
+      date: row.date,
+      totalCalls: row.total_calls,
+      successes: row.successes,
+      failures: row.failures,
+      languageCalls: row.language_calls,
+      multimodalCalls: row.multimodal_calls,
+      callsByTask: {},
+      installationHashes: [],
+    });
   }
-  return [...days.values()].sort((left, right) => left.date.localeCompare(right.date));
+  for (const row of tasks.results) {
+    const day = byDate.get(row.date) ?? emptyDailyModelStats(row.date);
+    day.callsByTask[row.task] = row.calls;
+    byDate.set(row.date, day);
+  }
+  for (const row of installations.results) {
+    const day = byDate.get(row.date) ?? emptyDailyModelStats(row.date);
+    day.installationHashes.push(row.installation_hash);
+    byDate.set(row.date, day);
+  }
+  return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
 export async function getDefaultModelInstallationStats(
-  stats: KVNamespace
+  stats: D1Database
 ): Promise<ModelInstallationStats[]> {
-  const keys = await listAllKeys(stats, `${MODEL_STATS_PREFIX}:installation:`);
-  const values = await Promise.all(keys.map(({ name }) => stats.get<ModelInstallationStats>(name, "json")));
-  return values
-    .filter((value): value is ModelInstallationStats => Boolean(value))
-    .sort((left, right) => right.lastSeenAt.localeCompare(left.lastSeenAt));
+  const installations = await stats.prepare(
+    `SELECT installation_hash, total_calls, successes, failures, language_calls, multimodal_calls,
+            first_seen_at, last_seen_at, client_version
+     FROM model_installations ORDER BY last_seen_at DESC`
+  ).all<{
+    installation_hash: string; total_calls: number; successes: number; failures: number;
+    language_calls: number; multimodal_calls: number; first_seen_at: string; last_seen_at: string; client_version: string;
+  }>();
+  const tasks = await stats.prepare(
+    `SELECT installation_hash, task, calls FROM model_installation_tasks`
+  ).all<{ installation_hash: string; task: string; calls: number }>();
+  const callsByInstallation = new Map<string, Record<string, number>>();
+  for (const row of tasks.results) {
+    const calls = callsByInstallation.get(row.installation_hash) ?? {};
+    calls[row.task] = row.calls;
+    callsByInstallation.set(row.installation_hash, calls);
+  }
+  return installations.results.map((row) => ({
+    installationHash: row.installation_hash,
+    totalCalls: row.total_calls,
+    successes: row.successes,
+    failures: row.failures,
+    languageCalls: row.language_calls,
+    multimodalCalls: row.multimodal_calls,
+    callsByTask: callsByInstallation.get(row.installation_hash) ?? {},
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    clientVersion: row.client_version,
+  }));
 }

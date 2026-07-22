@@ -53,6 +53,7 @@ import type { InstallationIdentityService } from "./InstallationIdentityService"
 import {
   createRecallDefaultModelConfig,
   isRecallDefaultConfigId,
+  RECALL_DEFAULT_MULTIMODAL_CONFIG_ID,
   type ModelTaskKind,
 } from "./ModelTargets";
 
@@ -72,6 +73,9 @@ export type ModelKind = "vision" | "language" | "multimodal";
 export const DEFAULT_TIMEOUT_MS = 120_000;
 const STREAM_IDLE_TIMEOUT_MS = 60_000;
 const STREAM_TOTAL_TIMEOUT_MS = 10 * 60_000;
+const ASYNC_MODEL_MIN_TOTAL_TIMEOUT_MS = 10 * 60_000;
+const ASYNC_MODEL_POLL_REQUEST_TIMEOUT_MS = 30_000;
+const ASYNC_MODEL_DEFAULT_POLL_MS = 2_000;
 
 /**
  * 默认温度
@@ -128,6 +132,8 @@ export interface ModelCallInput {
   timeoutMs?: number;
   /** 使用 OpenAI-compatible SSE 流式响应；适合长输出任务 */
   streaming?: boolean;
+  /** Recall 默认多模态长任务使用异步提交；幂等键必须稳定对应同一逻辑批次。 */
+  background?: { idempotencyKey: string };
   responseFormat?: "json" | "text";
   disableRepair?: boolean;
 }
@@ -254,6 +260,16 @@ export interface ModelGatewayDeps {
   defaultModelConsentService?: DefaultModelConsentService;
   installationIdentityService?: InstallationIdentityService;
   clientVersion?: string;
+}
+
+interface AsyncModelJobEnvelope {
+  jobId?: string;
+  status?: "pending" | "running" | "succeeded" | "failed";
+  retryAfterMs?: number;
+  response?: ChatCompletionResponse;
+  errorCode?: ModelJobErrorCode;
+  errorMessage?: string;
+  error?: string;
 }
 
 /**
@@ -553,6 +569,10 @@ export class ModelGateway {
     // 5. 构造请求
     const endpoint = normalizeEndpoint(config.endpoint);
     const url = `${endpoint}/v1/chat/completions`;
+    const useAsyncDefaultMultimodal = recallDefault
+      && input.configId === RECALL_DEFAULT_MULTIMODAL_CONFIG_ID
+      && Boolean(input.background?.idempotencyKey);
+    const asyncUrl = `${endpoint}/jobs`;
     const temperature = input.temperature ?? numericOption(extraOptions.temperature) ?? DEFAULT_TEMPERATURE;
     const maxTokens = input.maxTokens ?? numericOption(extraOptions.max_tokens) ?? DEFAULT_MAX_TOKENS;
 
@@ -628,9 +648,17 @@ export class ModelGateway {
 
     // 6. 第一次调用
     attempts++;
-    const firstResult = input.streaming
-      ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, input.timeoutMs)
-      : await this.sendRequest(url, requestHeaders, requestBody, input.timeoutMs);
+    const firstResult = useAsyncDefaultMultimodal
+      ? await this.sendAsyncRequestWithPolling(
+          asyncUrl,
+          requestHeaders,
+          requestBody,
+          input.background!.idempotencyKey,
+          input.timeoutMs
+        )
+      : input.streaming
+        ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, input.timeoutMs)
+        : await this.sendRequest(url, requestHeaders, requestBody, input.timeoutMs);
     requestCount += firstResult.requestCount;
     retryAfterMs = firstResult.retryAfterMs;
     if (firstResult.ok) {
@@ -699,7 +727,13 @@ export class ModelGateway {
           maxTokens,
           extraOptions,
           input.timeoutMs,
-          input.streaming ?? false
+          input.streaming ?? false,
+          useAsyncDefaultMultimodal
+            ? {
+                url: asyncUrl,
+                idempotencyKey: `${input.background!.idempotencyKey}:repair`,
+              }
+            : undefined
         );
         requestCount += repairResult.requestCount;
         retryAfterMs = repairResult.retryAfterMs ?? retryAfterMs;
@@ -792,7 +826,8 @@ export class ModelGateway {
     maxTokens: number,
     extraOptions: Record<string, unknown>,
     timeoutMs?: number,
-    streaming = false
+    streaming = false,
+    asyncRequest?: { url: string; idempotencyKey: string }
   ): Promise<ModelHttpResult> {
     const schemaDescription = buildSchemaDescription(_schema);
     const repairPrompt = JSON_REPAIR_PROMPT_TEMPLATE.replace(
@@ -820,9 +855,17 @@ export class ModelGateway {
       requestBody.stream_options = { include_usage: true };
     }
     applyModelCompatibilityOptions(requestBody, config.model, extraOptions);
-    const result = streaming
-      ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, timeoutMs)
-      : await this.sendRequest(url, requestHeaders, requestBody, timeoutMs);
+    const result = asyncRequest
+      ? await this.sendAsyncRequestWithPolling(
+          asyncRequest.url,
+          requestHeaders,
+          requestBody,
+          asyncRequest.idempotencyKey,
+          timeoutMs
+        )
+      : streaming
+        ? await this.sendStreamingRequestWithFallback(url, requestHeaders, requestBody, timeoutMs)
+        : await this.sendRequest(url, requestHeaders, requestBody, timeoutMs);
     if (
       result.ok
       && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= maxTokens)
@@ -835,6 +878,125 @@ export class ModelGateway {
       };
     }
     return result;
+  }
+
+  private async sendAsyncRequestWithPolling(
+    url: string,
+    requestHeaders: Record<string, string>,
+    requestBody: Record<string, unknown>,
+    idempotencyKey: string,
+    requestedTimeoutMs?: number
+  ): Promise<ModelHttpResult> {
+    const deadline = Date.now() + Math.max(
+      requestedTimeoutMs ?? 0,
+      ASYNC_MODEL_MIN_TOTAL_TIMEOUT_MS
+    );
+    let submitted: Response;
+    try {
+      submitted = await this.fetchWithTimeout(url, {
+        method: "POST",
+        headers: {
+          ...requestHeaders,
+          "X-Recall-Idempotency-Key": idempotencyKey,
+        },
+        body: JSON.stringify(requestBody),
+      }, ASYNC_MODEL_POLL_REQUEST_TIMEOUT_MS);
+    } catch (error) {
+      return { ...mapFetchError(error), requestCount: 1 };
+    }
+
+    if (!submitted.ok) {
+      const errInfo = await extractErrorBody(submitted);
+      const mapped = mapHttpErrorToCode(submitted.status, errInfo);
+      return {
+        ok: false,
+        ...mapped,
+        requestCount: 1,
+        retryAfterMs: parseRetryAfterMs(submitted.headers.get("retry-after")),
+      };
+    }
+
+    let envelope: AsyncModelJobEnvelope;
+    try {
+      envelope = await submitted.json() as AsyncModelJobEnvelope;
+    } catch (error) {
+      return {
+        ok: false,
+        errorCode: "response_invalid",
+        errorMessage: `异步提交响应不是有效 JSON: ${sanitizeErrorMessage(errorMessage(error))}`,
+        requestCount: 1,
+      };
+    }
+    if (!envelope.jobId) {
+      return {
+        ok: false,
+        errorCode: "response_invalid",
+        errorMessage: "异步提交响应缺少 jobId",
+        requestCount: 1,
+      };
+    }
+
+    const statusUrl = `${url}/${encodeURIComponent(envelope.jobId)}`;
+    let pollMs = normalizeAsyncPollMs(envelope.retryAfterMs);
+    while (Date.now() < deadline) {
+      await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+      let response: Response;
+      try {
+        response = await this.fetchWithTimeout(statusUrl, {
+          method: "GET",
+          headers: requestHeaders,
+        }, ASYNC_MODEL_POLL_REQUEST_TIMEOUT_MS);
+      } catch {
+        pollMs = Math.min(5_000, Math.max(ASYNC_MODEL_DEFAULT_POLL_MS, pollMs * 1.5));
+        continue;
+      }
+
+      // 已持有远端 jobId，查询失败不会重复生成；短暂代理错误继续查同一个作业。
+      if (response.status === 520 || response.status === 524 || response.status >= 500) {
+        pollMs = Math.min(5_000, Math.max(ASYNC_MODEL_DEFAULT_POLL_MS, pollMs * 1.5));
+        continue;
+      }
+      if (!response.ok) {
+        const errInfo = await extractErrorBody(response);
+        const mapped = mapHttpErrorToCode(response.status, errInfo);
+        return { ok: false, ...mapped, requestCount: 1 };
+      }
+
+      let state: AsyncModelJobEnvelope;
+      try {
+        state = await response.json() as AsyncModelJobEnvelope;
+      } catch {
+        pollMs = Math.min(5_000, Math.max(ASYNC_MODEL_DEFAULT_POLL_MS, pollMs * 1.5));
+        continue;
+      }
+      if (state.status === "succeeded" && state.response) {
+        return completionResponseToHttpResult(state.response, 1);
+      }
+      if (state.status === "failed") {
+        return {
+          ok: false,
+          errorCode: isModelJobErrorCode(state.errorCode) ? state.errorCode : "unknown_error",
+          errorMessage: sanitizeErrorMessage(state.errorMessage ?? "默认多模态异步任务失败"),
+          requestCount: 1,
+        };
+      }
+      if (state.status !== "pending" && state.status !== "running") {
+        return {
+          ok: false,
+          errorCode: "response_invalid",
+          errorMessage: "默认多模态异步任务返回未知状态",
+          requestCount: 1,
+        };
+      }
+      pollMs = normalizeAsyncPollMs(state.retryAfterMs);
+    }
+
+    return {
+      ok: false,
+      errorCode: "upstream_timeout",
+      errorMessage: "默认多模态任务仍在远端执行，已停止本地轮询；为避免重复生成未自动重提",
+      requestCount: 1,
+    };
   }
 
   private async sendStreamingRequestWithFallback(
@@ -1054,30 +1216,7 @@ export class ModelGateway {
           requestCount: 1,
         };
       }
-      if (data.error) {
-        return {
-          ok: false,
-          errorCode: "response_invalid",
-          errorMessage: sanitizeErrorMessage(data.error.message),
-          requestCount: 1,
-        };
-      }
-      if (!data.choices || data.choices.length === 0) {
-        return {
-          ok: false,
-          errorCode: "response_invalid",
-          errorMessage: "响应缺少 choices 字段",
-          requestCount: 1,
-        };
-      }
-      const choice = data.choices[0];
-      const content = choice?.message?.content ?? "";
-      const usage = data.usage ? {
-        promptTokens: data.usage.prompt_tokens,
-        completionTokens: data.usage.completion_tokens,
-        cachedPromptTokens: data.usage.prompt_tokens_details?.cached_tokens,
-      } : undefined;
-      return { ok: true, content, finishReason: choice?.finish_reason, usage, requestCount: 1 };
+      return completionResponseToHttpResult(data, 1);
     } catch (err) {
       return { ...mapFetchError(err), requestCount: 1 };
     }
@@ -1139,6 +1278,69 @@ function toModelJobMetrics(
 
 function addRequestCount(result: ModelHttpResult, previousRequestCount: number): ModelHttpResult {
   return { ...result, requestCount: previousRequestCount + result.requestCount };
+}
+
+function completionResponseToHttpResult(
+  data: ChatCompletionResponse,
+  requestCount: number
+): ModelHttpResult {
+  if (data.error) {
+    return {
+      ok: false,
+      errorCode: "response_invalid",
+      errorMessage: sanitizeErrorMessage(data.error.message),
+      requestCount,
+    };
+  }
+  if (!data.choices || data.choices.length === 0) {
+    return {
+      ok: false,
+      errorCode: "response_invalid",
+      errorMessage: "响应缺少 choices 字段",
+      requestCount,
+    };
+  }
+  const choice = data.choices[0];
+  const usage = data.usage ? {
+    promptTokens: data.usage.prompt_tokens,
+    completionTokens: data.usage.completion_tokens,
+    cachedPromptTokens: data.usage.prompt_tokens_details?.cached_tokens,
+  } : undefined;
+  return {
+    ok: true,
+    content: choice?.message?.content ?? "",
+    finishReason: choice?.finish_reason,
+    usage,
+    requestCount,
+  };
+}
+
+function normalizeAsyncPollMs(value: number | undefined): number {
+  if (!Number.isFinite(value)) return ASYNC_MODEL_DEFAULT_POLL_MS;
+  return Math.min(5_000, Math.max(500, Math.round(value!)));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const MODEL_JOB_ERROR_CODES = new Set<ModelJobErrorCode>([
+  "timeout",
+  "network_error",
+  "upstream_timeout",
+  "auth_error",
+  "rate_limited",
+  "invalid_json",
+  "schema_invalid",
+  "input_too_large",
+  "output_truncated",
+  "response_invalid",
+  "safety_blocked",
+  "unknown_error",
+]);
+
+function isModelJobErrorCode(value: unknown): value is ModelJobErrorCode {
+  return typeof value === "string" && MODEL_JOB_ERROR_CODES.has(value as ModelJobErrorCode);
 }
 
 /**
@@ -1451,6 +1653,12 @@ function mapHttpErrorToCode(
   }
   if (status === 429) {
     return { errorCode: "rate_limited", errorMessage: "请求被限流 (HTTP 429)" };
+  }
+  if (status === 520 || status === 524) {
+    return {
+      errorCode: "upstream_timeout",
+      errorMessage: `上游代理超时 (HTTP ${status})，为避免重复生成未自动重试`,
+    };
   }
   if (status >= 500) {
     return { errorCode: "network_error", errorMessage: `服务端错误 (HTTP ${status}): ${safeMsg}` };

@@ -1,3 +1,75 @@
+## v0.5.0 — RapidOCR 引擎升级 + OCR 准确率大幅提升
+
+本次版本为 OCR 识别架构的重大升级：引入基于 ONNX Runtime + PP-OCRv6 模型的 RapidOCR 作为主 OCR 引擎，打包为常驻 worker 进程（PyInstaller exe），Windows.Media.Ocr 降级为 fallback。RapidOCR 在中文识别、复杂版式、小字密集场景下的准确率显著优于 Windows OCR，且不依赖 Windows 系统语言包。同时 Worker 端新增异步模型任务队列（D1 持久化 + HMAC 安装标识鉴权），为后续复杂模型调用奠定基础。
+
+### 新增功能
+
+#### 1. RapidOCR 主 OCR 引擎（RapidOcrService）
+
+新增基于 RapidOCR（ONNX Runtime + PP-OCRv6_det_small / PP-OCRv6_rec_small / ch_ppocr_mobile_cls）的 OCR 引擎，作为主识别管线，显著提升中文与复杂版式的识别准确率：
+
+- 新增 `src/main/services/RapidOcrService.ts`：常驻 worker 进程管理，通过 JSONL 流式协议与 `rapidocr-worker.exe` 通信；支持初始化超时（120s）、单帧超时（30s）、总预算超时（300s）三级超时控制
+- 新增 `resources/ocr/rapidocr-worker/`：PyInstaller 打包的独立可执行包（含 onnxruntime、numpy、opencv、PP-OCRv6 ONNX 模型），无需用户安装 Python 环境
+- 新增 `resources/ocr/rapidocr_worker.py`：worker 源码，stdin/stdout JSONL 协议，支持 `frame_stream_v1` 流式响应
+- 新增 `scripts/build-rapidocr-worker.ps1`：PyInstaller 一键构建脚本（venv 隔离 + 依赖锁定 + SHA256 校验）
+- 新增 `scripts/verify-rapidocr-worker.js` / `scripts/profile-rapidocr-worker.js`：worker 验证与性能分析工具
+- worker 进程串行处理请求（`requestTail` 队列），避免并发 OCR 导致内存爆炸；每帧独立超时，部分帧失败时回退 fallback
+- `RapidOcrRequestError` 携带 `jobId / frameCount / completedFrameCount / timeoutMs / elapsedMs / partialResult`，便于 DebugPage 诊断
+
+#### 2. OCR 引擎抽象层（OcrService 接口）
+
+新增 `OcrBatchService` / `ManagedOcrBatchService` 接口与 `unavailableOcrBatch` 工具函数，统一 OCR 引擎的调用契约：
+
+- 新增 `src/main/services/OcrService.ts`：接口定义 + 不可用时的占位结果构造
+- `RapidOcrService` 实现 `ManagedOcrBatchService`（含 `stop()`），`WindowsOcrService` 作为 fallback 注入
+- `app.ts` 装配：`ocrService = new RapidOcrService({ fallback: new WindowsOcrService() })`
+- 引擎回退链：RapidOCR 主引擎 → Windows OCR fallback → 不可用时返回 `unavailableOcrBatch`
+
+#### 3. Worker 端异步模型任务队列（modelAsyncJobs）
+
+Cloudflare Worker 端新增异步模型任务处理基础设施，为后续复杂模型调用（如信息图生成、长文本分析）提供持久化任务队列：
+
+- 新增 `cloudflare/worker/src/modelAsyncJobs.ts`：D1 持久化任务表（pending / running / succeeded / failed），HMAC 安装标识鉴权，幂等性 hash 去重
+- 新增 `cloudflare/worker/migrations/0001_model_stats.sql` + `0003_default_multimodal_jobs.sql`：D1 表结构
+- 任务状态机：pending → running → succeeded/failed，支持 attempts 重试与 expires_at 过期清理
+- `delivered_at` 字段标记客户端已拉取结果，支持「至少一次」投递语义
+
+### 改进
+
+#### 4. OCR 证据传输与 prompt 透明化
+
+- `prompts.ts`：OCR 证据段落明确告知模型「source/engine/model 标明实际引擎与模型，RapidOCR 不可用时可能回退到 Windows OCR」，让模型理解引擎差异
+- `BatchOcrEvidence`：OCR 结果按模型可见的连续帧顺序重映射，携带 `engine` 字段标识来源
+- `ObservationNormalizer`：保留 `engine` 字段到 visibleContent，便于后续追溯与 DebugPage 展示
+
+#### 5. 配套基础设施完善
+
+- `ScreenshotCache` + `ScreenshotCacheScheduler`：截图缓存与清理调度适配 OCR 引擎变更
+- `CaptureBatcher`：批次 flush 时调用新的 `ocrService.recognizeImages`，支持引擎回退
+- `OcrFrameProcessor`：帧处理器适配新接口
+- `shutdownRuntime`：新增 `ocrService.stop()` 到优雅关闭序列，确保 worker 进程正确退出
+- `ModelGateway` / `ModelJobQueue`：与 OCR 引擎解耦的小幅调整
+- DebugPage：展示 OCR 引擎与错误码，便于诊断
+
+#### 6. 测试基础设施
+
+- 新增 `RapidOcrService.test.ts`：worker 进程生命周期、超时、回退、串行队列测试
+- 新增 `ScreenshotCacheScheduler.test.ts`
+- `WindowsOcrService.test.ts` / `BatchOcrEvidence.test.ts` / `CaptureBatcher.test.ts` / `ObserverBatchFrames.test.ts` / `ObservationNormalizer.test.ts` / `ModelGateway.test.ts` / `ModelJobQueue.test.ts` / `shutdownRuntime.test.ts` 全部适配新接口
+- 新增 `cloudflare/worker/src/modelAsyncJobs.test.ts`：异步任务状态机与鉴权测试
+- 新增 `resources/ocr/test_rapidocr_worker.py`：worker 端单元测试
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- RapidOCR worker 在 Windows x64 上通过 `verify-rapidocr-worker.js` 验证
+- 全部单元测试通过
+- 本地构建与 NSIS 安装包打包通过（安装包体积因内置 RapidOCR 运行时显著增大）
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.4.5 — 默认模型服务 + 安装身份识别 + 匿名统计
 
 本次版本聚焦开箱即用体验：新用户无需自备 API Key 即可试用 Recall，首次启动时通过同意弹窗授权使用 Recall 代理的默认模型服务（language=deepseek-v4-flash, multimodal=sensenova-6.7-flash-lite）；同时引入持久化安装身份标识，为匿名使用统计奠定基础；Cloudflare Worker 端新增 `/api/model/language` 与 `/api/model/multimodal` 代理路由，并完善统计与测试基础设施。
@@ -62,10 +134,6 @@ Worker 端新增模型代理路由，将客户端请求转发到上游模型服�
 - TypeScript 主进程与渲染进程类型检查通过
 - 新增单元测试：DefaultModelConsentService、InstallationIdentityService、ModelTargets、SettingsService 默认模型配置、Worker 端路由
 - 本地构建与 NSIS 安装包打包通过
-
----
-
-以下为历史版本发布说明：
 
 ## v0.4.4 — 模型调用稳健性 + 优雅关闭 + 性能与去重优化
 

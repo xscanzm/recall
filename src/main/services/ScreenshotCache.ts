@@ -141,9 +141,15 @@ export class ScreenshotCache {
    * 注意：单个 observation 可能有自己的 retentionPolicy（更激进/保守）
    * 这里按全局策略清理；observation 级别的精确清理由 forgetRecent/clearAll 处理
    */
-  async cleanupExpired(globalPolicy: ScreenshotRetentionPolicy): Promise<CleanupResult> {
+  async cleanupExpired(
+    globalPolicy: ScreenshotRetentionPolicy,
+    protectedImagePaths: Iterable<string> = []
+  ): Promise<CleanupResult> {
     let deletedScreenshots = 0;
     let freedBytes = 0;
+    const protectedPaths = new Set(
+      Array.from(protectedImagePaths, normalizeCachePath)
+    );
 
     if (!fs.existsSync(this.cacheRoot)) {
       return { deletedScreenshots, freedBytes };
@@ -156,6 +162,7 @@ export class ScreenshotCache {
       const files = await this.listFiles(dayDir);
       for (const file of files) {
         const fullPath = path.join(dayDir, file);
+        if (protectedPaths.has(normalizeCachePath(fullPath))) continue;
         try {
           const stat = await fsp.stat(fullPath);
           const fileTime = stat.mtimeMs;
@@ -421,6 +428,11 @@ export class ScreenshotCache {
     }
     return { bytes, fileCount };
   }
+}
+
+function normalizeCachePath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 /**

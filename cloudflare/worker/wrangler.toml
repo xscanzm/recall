@@ -30,6 +30,32 @@ bucket_name = "recall-releases"
 binding = "STATS"
 id = "390817d3c39c4fc38e290fea1d9a6739"
 
+[[d1_databases]]
+binding = "MODEL_STATS"
+database_name = "recall-model-stats"
+database_id = "6c476704-1232-48d9-b692-2017e526ba71"
+migrations_dir = "migrations"
+
+# 默认多模态长任务：请求正文临时存入私有 R2，Queue 中只传随机作业 ID。
+[[r2_buckets]]
+binding = "MODEL_JOB_PAYLOADS"
+bucket_name = "recall-model-job-payloads"
+
+[[queues.producers]]
+binding = "DEFAULT_MULTIMODAL_JOBS"
+queue = "recall-default-multimodal-jobs"
+
+[[queues.consumers]]
+queue = "recall-default-multimodal-jobs"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 3
+retry_delay = 30
+max_concurrency = 3
+
+[triggers]
+crons = ["*/15 * * * *"]
+
 # 信息图能力的非敏感默认参数；密钥必须通过 `wrangler secret put INFOGRAPHIC_API_KEY` 注入。
 [vars]
 INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generations"

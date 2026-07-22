@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_MODEL_PROMPT_TEXT_CHARS, ModelGateway } from "./ModelGateway";
-import { RECALL_DEFAULT_LANGUAGE_CONFIG_ID } from "./ModelTargets";
+import {
+  RECALL_DEFAULT_LANGUAGE_CONFIG_ID,
+  RECALL_DEFAULT_MULTIMODAL_CONFIG_ID,
+} from "./ModelTargets";
 
 const schema = {
   safeParse: (input: unknown) => ({ success: true as const, data: input }),
@@ -227,6 +230,22 @@ describe("ModelGateway response diagnostics", () => {
     expect(result.errorMessage).toContain("HTTP 504");
   });
 
+  it("classifies HTTP 520/524 as a non-retryable upstream timeout", async () => {
+    const setup = makeGateway(Response.json(
+      { error: { message: "A timeout occurred" } },
+      { status: 524 }
+    ));
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "upstream_timeout",
+      requestCount: 1,
+    });
+    expect(result.errorMessage).toContain("未自动重试");
+  });
+
   it("propagates Retry-After, rate-limit key, and zero-safe request metrics", async () => {
     const setup = makeGateway(Response.json(
       { error: { message: "slow down" } },
@@ -366,6 +385,76 @@ describe("ModelGateway response diagnostics", () => {
 });
 
 describe("ModelGateway selected targets", () => {
+  it("submits and polls default multimodal batch work without counting polls as model calls", async () => {
+    const remoteJobId = "mmj_123e4567-e89b-42d3-a456-426614174000";
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(Response.json(
+        { jobId: remoteJobId, status: "pending", retryAfterMs: 500 },
+        { status: 202 }
+      ))
+      .mockResolvedValueOnce(Response.json({
+        jobId: remoteJobId,
+        status: "succeeded",
+        response: {
+          choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 100, completion_tokens: 8 },
+        },
+      }));
+    const gateway = new ModelGateway({
+      settingsService: { isVerboseModelIO: vi.fn(() => false) } as never,
+      secretService: { getApiKey: vi.fn() } as never,
+      modelJobRepo: {
+        create: vi.fn(() => ({ id: "job-default-vision" })),
+        markRunning: vi.fn(),
+        markSucceeded: vi.fn(),
+        markFailed: vi.fn(),
+      } as never,
+      defaultModelConsentService: { ensureAccepted: vi.fn(async () => true) } as never,
+      installationIdentityService: { getId: vi.fn(() => "123e4567-e89b-42d3-a456-426614174000") } as never,
+      clientVersion: "0.4.5",
+      fetchImpl,
+    });
+
+    const result = await gateway.callByConfigId({
+      kind: "multimodal",
+      configId: RECALL_DEFAULT_MULTIMODAL_CONFIG_ID,
+      systemPrompt: "",
+      userPrompt: "batch",
+      jobType: "observer_batch",
+      streaming: true,
+      background: { idempotencyKey: "observer_batch:batch-1" },
+    }, schema);
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: { ok: true },
+      requestCount: 1,
+      usage: { promptTokens: 100, completionTokens: 8 },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://recall-update.ppclaw.online/api/model/multimodal/jobs");
+    expect(fetchImpl.mock.calls[1][0]).toBe(`https://recall-update.ppclaw.online/api/model/multimodal/jobs/${remoteJobId}`);
+    expect((fetchImpl.mock.calls[0][1].headers as Record<string, string>)["X-Recall-Idempotency-Key"])
+      .toBe("observer_batch:batch-1");
+  });
+
+  it("keeps a user-configured multimodal batch on the direct streaming endpoint", async () => {
+    const setup = makeGateway(sseResponse([
+      { choices: [{ delta: { content: "{\"ok\":true}" }, finish_reason: "stop" }] },
+    ]));
+
+    const result = await setup.gateway.callMultimodal({
+      ...input(true),
+      background: { idempotencyKey: "observer_batch:batch-1" },
+    }, schema);
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect((fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe("https://example.test/v1/chat/completions");
+    const headers = (fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].headers as Record<string, string>;
+    expect(headers["X-Recall-Idempotency-Key"]).toBeUndefined();
+  });
+
   it("uses the Recall proxy without Authorization and preserves headers for repair", async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }))

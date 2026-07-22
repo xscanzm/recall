@@ -21,14 +21,18 @@ describe("WindowsOcrService", () => {
         frameIndex: 1,
         text: "First frame",
         lines: ["First frame"],
+        blocks: undefined,
         language: "zh-Hans-CN",
+        engine: "windows_ocr",
         errorCode: undefined,
       },
       {
         frameIndex: 2,
         text: "第二帧",
         lines: ["第二帧"],
+        blocks: undefined,
         language: "zh-Hans-CN",
+        engine: "windows_ocr",
         errorCode: undefined,
       },
     ]);

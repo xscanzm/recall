@@ -505,9 +505,14 @@ function attachLocalOcrEvidence(
 ): unknown[] {
   if (!ocrResult) return visibleContent;
   const ocrEvidence = {
-    source: "windows_ocr_original_image" as const,
+    source: ocrResult.engine === "rapidocr"
+      ? "rapidocr_original_image" as const
+      : "windows_ocr_original_image" as const,
     available: !ocrResult.errorCode,
     language: ocrResult.language,
+    engine: ocrResult.engine,
+    model: ocrResult.model,
+    engineVersion: ocrResult.engineVersion,
     text: ocrResult.text,
     lines: ocrResult.lines,
     mode: ocrResult.mode,

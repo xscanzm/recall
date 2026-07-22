@@ -98,6 +98,7 @@ export interface JobResult<T = unknown> {
  * - schema_invalid：偶发性 schema 错误，重试可能成功
  *
  * 不重试的错误码：
+ * - upstream_timeout：520/524 或远端状态未知，重试可能重复生成
  * - auth_error：鉴权失败，重试无用
  * - safety_blocked：安全阻断，不重试
  * - unknown_error：未知错误，不重试避免循环
@@ -460,6 +461,7 @@ export class ModelJobQueue {
     this.submittedCaptureIds.delete(`observer:${captureId}`);
     this.submittedCaptureIds.delete(`observer_batch:${captureId}`);
     this.submittedCaptureIds.delete(`observer_extractor:${captureId}`);
+    this.submittedCaptureIds.delete(`observer_extractor_batch:${captureId}`);
     this.submittedCaptureIds.delete(`linker_scene_judge:${captureId}`);
     // 兼容旧类型
     this.submittedCaptureIds.delete(`extractor:${captureId}`);

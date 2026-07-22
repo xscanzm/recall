@@ -99,7 +99,7 @@ interface OcrFrameEvidence {
  *
  * OCR 证据块格式（来自 BatchOcrEvidence.buildBatchOcrEvidenceJson）：
  *   [
- *     { "frameIndex": 1, "source": "windows_ocr_original_image", "available": true, "language": "zh-Hans-CN", "text": "..." },
+ *     { "frameIndex": 1, "source": "rapidocr_original_image", "available": true, "engine": "rapidocr", "model": "PP-OCRv6-small", "text": "..." },
  *     ...
  *   ]
  *
@@ -596,7 +596,7 @@ export function DebugPage() {
                         <p className="debug-ocr__hint">
                           可能原因：非批次 L0 任务（单帧 observer_extractor 不注入 OCR 块）；
                           或未开启 verboseModelIO（设置 → 调试 → 记录完整模型输入输出）；
-                          或本次任务未触发 Windows OCR。
+                          或本次任务未触发本地 OCR。
                         </p>
                       </div>
                     ) : (

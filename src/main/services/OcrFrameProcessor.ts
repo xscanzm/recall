@@ -9,14 +9,10 @@ import type {
   OcrScreenSignature,
   OcrTextBlock,
 } from "../models/types";
-import type { WindowsOcrBatchResult } from "./WindowsOcrService";
+import type { OcrBatchService } from "./OcrService";
 
 const DEFAULT_MAX_CONTEXTS = 32;
 const REGION_SIGNATURE_WIDTH = 128;
-
-type OcrService = {
-  recognizeImages(imagePaths: string[]): Promise<WindowsOcrBatchResult>;
-};
 
 interface ContextState {
   captureId: string;
@@ -41,10 +37,10 @@ export interface PreparedOcrBatch {
 
 export class OcrFrameProcessor {
   private committedContexts = new Map<string, ContextState>();
-  private readonly ocrService: OcrService;
+  private readonly ocrService: OcrBatchService;
   private readonly maxContexts: number;
 
-  constructor(config: { ocrService: OcrService; maxContexts?: number }) {
+  constructor(config: { ocrService: OcrBatchService; maxContexts?: number }) {
     this.ocrService = config.ocrService;
     this.maxContexts = Math.max(1, config.maxContexts ?? DEFAULT_MAX_CONTEXTS);
   }

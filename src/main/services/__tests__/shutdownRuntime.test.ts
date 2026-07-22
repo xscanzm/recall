@@ -14,6 +14,7 @@ describe("shutdownRuntime", () => {
     const stopCaptureService = step("captureService.stop");
     const drainCaptureService = step("captureService.drain");
     const drainCaptureBatcher = step("captureBatcher.drain");
+    const stopOcrService = step("ocrService.stop");
     const drainBatchProcessor = step("batchProcessor.stopAndDrainActive");
     const drainModelJobQueue = step("modelJobQueue.stopAndDrainActive");
 
@@ -22,6 +23,7 @@ describe("shutdownRuntime", () => {
       activityService: { stop: stopActivityService },
       captureService: { stop: stopCaptureService, drain: drainCaptureService },
       captureBatcher: { drain: drainCaptureBatcher },
+      ocrService: { stop: stopOcrService },
       batchProcessor: { stopAndDrainActive: drainBatchProcessor },
       modelJobQueue: { stopAndDrainActive: drainModelJobQueue },
       trayService: { destroy: () => { callOrder.push("trayService.destroy"); } },
@@ -35,6 +37,7 @@ describe("shutdownRuntime", () => {
       "captureService.stop",
       "captureService.drain",
       "captureBatcher.drain",
+      "ocrService.stop",
       "batchProcessor.stopAndDrainActive",
       "modelJobQueue.stopAndDrainActive",
       "trayService.destroy",

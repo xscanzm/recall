@@ -356,14 +356,20 @@ export interface BatchCaptureBundle {
 export interface BatchFrameOcrResult {
   /** 原始 batch frames 中的 1-based 帧序号 */
   frameIndex: number;
-  /** Windows OCR 返回的完整文本 */
+  /** 本地 OCR 返回的完整文本 */
   text: string;
   /** 按视觉阅读顺序返回的逐行文本 */
   lines: string[];
-  /** Windows OCR 返回的结构化逐行文字块；旧批次可缺失 */
+  /** 本地 OCR 返回的结构化逐行文字块；旧批次可缺失 */
   blocks?: OcrTextBlock[];
-  /** 实际使用的 Windows OCR 语言，如 zh-Hans-CN */
+  /** 实际使用的 OCR 语言，如 ch 或 zh-Hans-CN */
   language?: string;
+  /** 本地 OCR 引擎标识，例如 rapidocr 或 windows_ocr */
+  engine?: string;
+  /** OCR detector/recognizer 模型组合 */
+  model?: string;
+  /** OCR 引擎版本，用于诊断和回归比较 */
+  engineVersion?: string;
   /** 非敏感错误码；单帧失败不阻断批次 */
   errorCode?: string;
   /** 当前原图的稳定签名；用于精确复用和诊断，不作为近似帧跳过条件 */

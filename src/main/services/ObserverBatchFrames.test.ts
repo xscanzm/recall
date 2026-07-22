@@ -49,7 +49,7 @@ describe("ObserverBatchFrames", () => {
     expect(plan.submittedFrames.map((frame) => frame.originalFrameIndex)).toEqual([1]);
   });
 
-  it("omits a near-identical in-window frame only when OCR confirms no text changes", () => {
+  it("submits near-identical frames even when OCR sees no text changes", () => {
     const bundle = batch([
       { mode: "full" },
       { mode: "delta", deltaFromFrameIndex: 1 },
@@ -65,8 +65,8 @@ describe("ObserverBatchFrames", () => {
 
     const plan = buildObserverBatchFramePlan(bundle);
 
-    expect(plan.submittedFrames.map((frame) => frame.originalFrameIndex)).toEqual([0]);
-    expect(plan.duplicateSourceByOriginalFrameIndex.get(1)).toBe(0);
+    expect(plan.submittedFrames.map((frame) => frame.originalFrameIndex)).toEqual([0, 1]);
+    expect(plan.duplicateSourceByOriginalFrameIndex.size).toBe(0);
   });
 
   it("preserves boundary frames and visually different frames", () => {

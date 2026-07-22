@@ -38,6 +38,25 @@ describe("buildBatchOcrEvidenceJson", () => {
     ]);
   });
 
+  it("preserves RapidOCR engine and model metadata", () => {
+    const json = buildBatchOcrEvidenceJson([{
+      frameIndex: 1,
+      text: "中英 mixed",
+      lines: ["中英 mixed"],
+      language: "multi",
+      engine: "rapidocr",
+      model: "PP-OCRv6-small",
+      engineVersion: "3.9.2",
+    }], [0]);
+
+    expect(JSON.parse(json)[0]).toMatchObject({
+      source: "rapidocr_original_image",
+      engine: "rapidocr",
+      model: "PP-OCRv6-small",
+      engineVersion: "3.9.2",
+    });
+  });
+
   it("emits one structured baseline and only block changes for the next frame", () => {
     const stableBlocks = Array.from(
       { length: 20 },

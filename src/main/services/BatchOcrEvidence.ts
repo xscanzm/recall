@@ -2,9 +2,12 @@ import type { BatchFrameOcrResult, OcrTextBlock } from "../models/types";
 
 interface PromptOcrFrame {
   frameIndex: number;
-  source: "windows_ocr_original_image";
+  source: "rapidocr_original_image" | "windows_ocr_original_image";
   available: boolean;
   language?: string;
+  engine?: string;
+  model?: string;
+  engineVersion?: string;
   mode?: "full" | "full_text" | "exact_reuse" | "delta";
   text?: string;
   blocks?: PromptOcrBlock[];
@@ -52,9 +55,12 @@ export function buildBatchOcrEvidenceJson(
     const result = byOriginalFrame.get(originalIndex + 1);
     const base: PromptOcrFrame = {
       frameIndex: modelIndex + 1,
-      source: "windows_ocr_original_image",
+      source: ocrEvidenceSource(result),
       available: !!result && !result.errorCode,
       language: result?.language,
+      engine: result?.engine,
+      model: result?.model,
+      engineVersion: result?.engineVersion,
     };
     if (!result) return { ...base, text: "" };
     if (!result.blocks || !result.mode) {
@@ -133,10 +139,21 @@ export function buildBatchOcrEvidenceJson(
           source: frame.source,
           available: frame.available,
           language: frame.language,
+          engine: frame.engine,
+          model: frame.model,
+          engineVersion: frame.engineVersion,
         }, result)])
       : frame;
   });
   return JSON.stringify(optimizedFrames);
+}
+
+function ocrEvidenceSource(
+  result: BatchFrameOcrResult | undefined
+): PromptOcrFrame["source"] {
+  return result?.engine === "rapidocr"
+    ? "rapidocr_original_image"
+    : "windows_ocr_original_image";
 }
 
 function serializedBytes(value: unknown): number {

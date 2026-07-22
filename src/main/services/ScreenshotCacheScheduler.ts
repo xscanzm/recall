@@ -25,6 +25,8 @@ export interface SchedulerConfig {
   settingsService: SettingsService;
   /** 检查间隔（毫秒），默认 1 小时 */
   intervalMs?: number;
+  /** 原图仍在等待或执行 OCR 时，不允许缓存清理器删除 */
+  getProtectedImagePaths?: () => Iterable<string>;
 }
 
 /**
@@ -74,7 +76,10 @@ async function cleanupOnce(config: SchedulerConfig): Promise<void> {
   try {
     const settings = config.settingsService.getAll();
     const policy = settings.screenshot.retentionPolicy;
-    const result = await config.screenshotCache.cleanupExpired(policy);
+    const result = await config.screenshotCache.cleanupExpired(
+      policy,
+      config.getProtectedImagePaths?.() ?? []
+    );
     if (result.deletedScreenshots > 0) {
       logger.info({
         jobType: "screenshot_cache_cleanup",

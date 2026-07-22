@@ -11,5 +11,14 @@ Copyright (c) 2026 Recall Contributors
 本项目不包含任何后门、远程上传、隐蔽的网络行为。
 所有用户数据（截图、记忆、报告）仅保存在用户本地。
 
+第三方 OCR 组件：
+- RapidOCR 3.9.2，Apache License 2.0
+- ONNX Runtime 1.27.0，MIT License
+- PP-OCRv6 Small detector/recognizer models，Apache License 2.0
+- Python 3.11 runtime，Python Software Foundation License
+- PyInstaller 6.16.0 bootloader，GPL-2.0-or-later with Bootloader Exception
+
+上述组件与模型随本地 OCR worker 离线分发，仅在用户本机执行。
+
 如需将本项目用于生产环境、SaaS 服务或商业再分发，
 请联系 Licensor 获取商业授权。

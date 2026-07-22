@@ -12,17 +12,17 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 ## 直接下载（用户版）
 
 - **官网**：<https://recall.ppclaw.online/>（含产品介绍与演示）
-- **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 90 MB）
+- **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 177 MB）
 - **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-> 下载后可校验完整性：`certutil -hashfile Recall-0.4.5-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
+> 下载后可校验完整性：`certutil -hashfile Recall-0.5.0-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
 
 ---
 
 ## 核心特性
 
 - **安静观察，主动不冒犯**：默认不弹桌面通知，应用内提醒克制呈现。
-- **OCR + 大模型双管线**：Windows.Media.Ocr 读取未压缩原图文字 + 多模态大模型理解压缩图，小字保真度从 26% 提升到 90%+。
+- **OCR + 大模型双管线**：RapidOCR + PP-OCRv6 Small ONNX 读取未压缩原图文字，多模态大模型理解压缩图；大屏小字会自适应分块识别，RapidOCR 不可用时自动回退 Windows OCR。
 - **L0 → L1 → L2 → L3 自动记忆**：观察、抽取、关联、主动性判断、日报由模型自动完成；用户可以编辑、删除、合并、纠错。
 - **今日活动可视化**：注意力甜甜圈、一天节奏路径、关键词云三卡看板，基于 Episode 活动分类（11 类）一眼掌握当天的注意力分布与节奏。
 - **每日工作主线**：今日页按时间轴呈现今天的主线、线索、提醒和复盘。
@@ -39,7 +39,7 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
        ↓
 本地事件触发采集（黑名单与敏感场景自动跳过）
        ↓
-Windows OCR + 多模态大模型双管线理解：L0 Observation
+RapidOCR（PP-OCRv6 Small ONNX）+ 多模态大模型双管线理解：L0 Observation
        ↓
 抽取与关联：L1 Fact · L2 Scene（含活动分类）· L3 Memory Object
        ↓
@@ -52,7 +52,8 @@ Windows OCR + 多模态大模型双管线理解：L0 Observation
 
 ## 版本演进
 
-- **v0.4.5**（最新）：默认模型服务（ModelTargets + DefaultModelConsentService，新用户开箱即用无需自备 API Key）+ 安装身份识别（InstallationIdentityService，持久化 UUID 用于匿名统计）+ Cloudflare Worker 模型代理路由（/api/model/language + /api/model/multimodal）+ 全量 Worker 接入默认模型机制 + UI 适配（Onboarding/SettingsPage/TrustCenterPage）+ 测试基础设施完善
+- **v0.5.0**（最新）：RapidOCR 引擎升级（基于 ONNX Runtime + PP-OCRv6 模型，PyInstaller 打包为常驻 worker 进程，中文与复杂版式识别准确率显著提升，Windows OCR 降级为 fallback）+ OCR 引擎抽象层（OcrBatchService 接口）+ Worker 端异步模型任务队列（D1 持久化 + HMAC 鉴权）+ OCR 证据传输与 prompt 透明化 + 配套基础设施完善（安装包体积因内置 RapidOCR 运行时增大至约 177 MB）
+- **v0.4.5**：默认模型服务（ModelTargets + DefaultModelConsentService，新用户开箱即用无需自备 API Key）+ 安装身份识别（InstallationIdentityService，持久化 UUID 用于匿名统计）+ Cloudflare Worker 模型代理路由（/api/model/language + /api/model/multimodal）+ 全量 Worker 接入默认模型机制 + UI 适配（Onboarding/SettingsPage/TrustCenterPage）+ 测试基础设施完善
 - **v0.4.4**：模型调用稳健性（ModelGateway Retry-After + endpoint 级冷却 + Full Jitter 退避 + 请求预算 + 用量与延迟指标）+ 应用优雅关闭（shutdownRuntime 统一编排，best-effort → critical 两层排空）+ Today 活动概览性能优化（minimal 查询 + Map/Set 索引 + 移除 LIMIT 1000 + 跨日边界修复）+ Observer 帧近似去重（dHash 汉明距离 ≤ 2 复用前一帧）+ IPC handlers 与 Reports 页面模块化拆分 + 离线测试基础设施与 CI/发布流程完善
 - **v0.4.3**：修复自动日报在工作日报页面显示不出来的问题（新增 reportAdapters 适配器层 + store 兜底查询 + ReportsPage UI 适配，自动日报带「自动生成」标签）+ 日报默认时间 19:00→17:30 + ReporterWorker 数据窗口与配置时间联动 + 官网运营数据采集与公测用户社群引导
 - **v0.4.2**：报告信息图生成（16:9 中文信息图，嵌入报告正文上方）+ 月报独立契约（专属 schema/prompt/调度入口，自然月首末日）+ 报告生成通知（桌面卡片弹窗 + 顶栏 Bell 角标 + 未读持久化）+ 调度器始终自动执行（不再受 autoGenerate 门控，周报触发日改为周五）+ 今日活动窗口化与节奏图重构（实际观察时段映射，相邻同类 Episode 自动合并）
@@ -67,7 +68,7 @@ Windows OCR + 多模态大模型双管线理解：L0 Observation
 ## 快速开始（用户视角）
 
 1. 前往 <https://recall.ppclaw.online/> 了解产品，或直接下载最新版：<https://recall-update.ppclaw.online/download/latest>。
-2. 双击安装 `Recall-0.4.5-setup.exe`，桌面会出现 **Recall** 图标。
+2. 双击安装 `Recall-0.5.0-setup.exe`，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
 5. 点击「**开始观察**」。
@@ -83,10 +84,14 @@ git clone https://github.com/xscanzm/recall.git
 cd recall
 npm install
 npm run build           # 编译 main + renderer
-npm run package         # electron-builder NSIS，输出到 release/
+npm run package         # 先构建独立 OCR worker，再输出 NSIS 到 release/
 ```
 
-> 构建产物 `release/Recall-0.4.5-setup.exe` 即对应发布通道的分发物。
+`npm run package` 需要 Windows x64、Python 3.11 和可用网络来安装锁定的 OCR 构建依赖。生成的安装包内含 RapidOCR、ONNX Runtime 和 PP-OCRv6 Small detector/recognizer 模型；终端用户不需要安装 Python，运行时也不会下载 OCR 模型。仅调试 Electron 主进程时，可通过 `RECALL_RAPIDOCR_WORKER_PATH` 指向已构建的 worker；未构建 worker 时开发态会使用 `resources/ocr/rapidocr_worker.py`，并可用 `RECALL_PYTHON_PATH` 指定 Python。
+
+OCR 去重按信息层级处理：整图与分块检测结果先按位置和文字保守合并；仅解码像素完全一致的帧复用 OCR 和视觉观察；近似帧仍执行 OCR 与多模态观察，但 OCR block 变化会压缩为 delta 证据，减少提示词体积而不丢失每帧 L0 `fullText`。
+
+> 构建产物 `release/Recall-0.5.0-setup.exe` 即对应发布通道的分发物。
 
 类型检查：
 

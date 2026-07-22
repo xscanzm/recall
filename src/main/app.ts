@@ -59,6 +59,9 @@ import { InfographicService } from "./services/InfographicService";
 import { EndOfDayReviewService } from "./services/EndOfDayReviewService";
 import { SceneScheduler } from "./services/SceneScheduler";
 import { CaptureBatcher } from "./services/CaptureBatcher";
+import { RapidOcrService } from "./services/RapidOcrService";
+import { WindowsOcrService } from "./services/WindowsOcrService";
+import type { ManagedOcrBatchService } from "./services/OcrService";
 import { BatchProcessor } from "./services/BatchProcessor";
 import { DataLifecycleService } from "./services/DataLifecycleService";
 import { ProjectionInvalidationProcessor } from "./services/ProjectionInvalidationProcessor";
@@ -157,6 +160,7 @@ let updateService: UpdateService | null = null;
 let sceneScheduler: SceneScheduler | null = null;
 // 阶段二：截图攒批合并提交器（12 帧 / 5 分钟超时）
 let captureBatcher: CaptureBatcher | null = null;
+let ocrService: ManagedOcrBatchService | null = null;
 let batchProcessor: BatchProcessor | null = null;
 let modelJobQueueForShutdown: ModelJobQueue | null = null;
 // Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
@@ -537,11 +541,19 @@ app.whenReady().then(async () => {
   // ScreenshotCache：注入 ObservationRepository 用于更新 screenshot_retention
   screenshotCache = new ScreenshotCache();
   screenshotCache.setObservationRepository(obsRepo);
+  const captureInboxRepo = new CaptureInboxRepository(db);
 
   // 应用启动时清理过期截图（按 settings 中的 retention policy）
   try {
     const settings = settingsService.getAll();
-    await screenshotCache.cleanupExpired(settings.screenshot.retentionPolicy);
+    const pendingImagePaths = captureInboxRepo.listPendingCaptures().flatMap((frame) => [
+      frame.stitchedImagePath,
+      ...frame.imagePaths,
+    ]).filter((filePath): filePath is string => !!filePath);
+    await screenshotCache.cleanupExpired(
+      settings.screenshot.retentionPolicy,
+      pendingImagePaths
+    );
   } catch {
     // 清理失败不阻断启动
   }
@@ -776,8 +788,11 @@ app.whenReady().then(async () => {
   //    - CaptureService 的 capture-bundle 交给 batcher 攒批（不再直接调 pipeline）
   //    - 攒满 6 帧或 5 分钟超时后 emit "batch-ready"
   //    - batch-ready 交给 MemoryPipeline.processBatchCaptureBundle 处理
-  const captureInboxRepo = new CaptureInboxRepository(db);
-  captureBatcher = new CaptureBatcher({ repository: captureInboxRepo });
+  ocrService = new RapidOcrService({ fallback: new WindowsOcrService() });
+  captureBatcher = new CaptureBatcher({
+    repository: captureInboxRepo,
+    ocrService,
+  });
   batchProcessor = new BatchProcessor(
     captureInboxRepo,
     memoryPipeline,
@@ -904,6 +919,7 @@ app.whenReady().then(async () => {
   startScreenshotCacheScheduler({
     screenshotCache,
     settingsService,
+    getProtectedImagePaths: () => captureBatcher?.getPendingImagePaths() ?? [],
     intervalMs: 60 * 60 * 1000, // 1 小时
   });
 
@@ -1026,6 +1042,7 @@ app.on("before-quit", (event) => {
     endOfDayReviewService,
     sceneScheduler,
     captureBatcher,
+    ocrService,
     batchProcessor,
     modelJobQueue: modelJobQueueForShutdown,
     trayService,
