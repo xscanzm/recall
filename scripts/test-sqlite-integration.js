@@ -12,6 +12,8 @@ const { SceneRepository } = require("../dist/main/db/repositories/SceneRepositor
 const { MemoryEdgeRepository } = require("../dist/main/db/repositories/MemoryEdgeRepository");
 const { CorrectionLifecycleRepository } = require("../dist/main/db/repositories/CorrectionLifecycleRepository");
 const { TimelineBlockRepository } = require("../dist/main/db/repositories/TimelineBlockRepository");
+const { TimelineGenerationWindowRepository } = require("../dist/main/db/repositories/TimelineGenerationWindowRepository");
+const { MemoryObjectRepository } = require("../dist/main/db/repositories/MemoryObjectRepository");
 const { ModelJobRepository } = require("../dist/main/db/repositories/ModelJobRepository");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "recall-sqlite-"));
@@ -33,9 +35,9 @@ function migrate(db, files = migrations()) {
   }
 }
 
-function capture(id, imagePath = "") {
+function capture(id, imagePath = "", capturedAt = "2026-07-11T10:00:00.000Z") {
   return {
-    captureId: id, capturedAt: "2026-07-11T10:00:00.000Z", timezone: "UTC", appName: "Editor",
+    captureId: id, capturedAt, timezone: "UTC", appName: "Editor",
     windowTitle: "Recall", captureReason: "manual_capture", activitySignals: {
       keyboardActive: true, mouseActive: false, idleSeconds: 0, activeWindowStableSeconds: 30,
     }, imagePaths: imagePath ? [imagePath] : [], retentionPolicy: "today",
@@ -169,6 +171,44 @@ async function main() {
 
     const timelineRepo = new TimelineBlockRepository(db);
     timelineRepo.insertMany("2026-07-11", [timelineBlock("frozen", ["o-frozen"]), timelineBlock("mutable", [], ["scene-stable"])]);
+    timelineRepo.insertMany("2026-07-11", [{
+      ...timelineBlock("partial-card", ["o-partial"]),
+      startAt: "2026-07-11T11:00:00.000Z",
+      endAt: "2026-07-11T11:06:00.000Z",
+      sourceCompleteness: "partial",
+    }]);
+    assert.equal(timelineRepo.findByDateKey("2026-07-11").find((block) => block.id === "partial-card").sourceCompleteness, "partial");
+
+    const timelineWindows = new TimelineGenerationWindowRepository(db);
+    const persistedWindow = timelineWindows.create({
+      dateKey: "2026-07-11",
+      collectionStart: "2026-07-11T11:00:00.000Z",
+      collectionEnd: "2026-07-11T11:10:00.000Z",
+    });
+    timelineWindows.update(persistedWindow.id, {
+      status: "succeeded",
+      actualStart: "2026-07-11T11:00:00.000Z",
+      actualEnd: "2026-07-11T11:06:00.000Z",
+      sourceCompleteness: "partial",
+      timelineBlockId: "partial-card",
+      sourceObservationCount: 2,
+      closeReason: "duration",
+    });
+    assert.deepEqual(
+      {
+        status: timelineWindows.getById(persistedWindow.id).status,
+        actualEnd: timelineWindows.getById(persistedWindow.id).actualEnd,
+        sourceCompleteness: timelineWindows.getById(persistedWindow.id).sourceCompleteness,
+        timelineBlockId: timelineWindows.getById(persistedWindow.id).timelineBlockId,
+      },
+      {
+        status: "succeeded",
+        actualEnd: "2026-07-11T11:06:00.000Z",
+        sourceCompleteness: "partial",
+        timelineBlockId: "partial-card",
+      },
+      "timeline window state and stable card identity persist",
+    );
     db.prepare(`INSERT INTO reports
       (id,type,date_key,title,content_json,source_fact_ids_json,source_scene_ids_json,created_at,updated_at)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -212,9 +252,55 @@ async function main() {
     inbox.markSucceeded("batch-1");
     assert.equal(db.prepare("SELECT status FROM capture_inbox WHERE capture_id = ?").get("cap-1").status, "succeeded");
 
+    const failedCapture = capture("cap-failed", "", "2026-07-11T10:05:00.000Z");
+    inbox.enqueueCapture(failedCapture);
+    inbox.createBatch(batch("batch-failed", [failedCapture]));
+    inbox.markFailed("batch-failed", "OCR exhausted", false);
+    const boundaryCapture = capture("cap-boundary", "", "2026-07-11T10:10:00.000Z");
+    inbox.enqueueCapture(boundaryCapture);
+    const firstWindowWatermark = inbox.getWindowWatermark(
+      "2026-07-11T10:00:00.000Z",
+      "2026-07-11T10:10:00.000Z",
+    );
+    assert.deepEqual(
+      {
+        totalCount: firstWindowWatermark.totalCount,
+        unsettledCount: firstWindowWatermark.unsettledCount,
+        failedCount: firstWindowWatermark.failedCount,
+      },
+      { totalCount: 2, unsettledCount: 0, failedCount: 1 },
+      "event-time watermark treats exhausted failures as terminal partial data",
+    );
+    assert.equal(
+      inbox.getWindowWatermark("2026-07-11T10:10:00.000Z", "2026-07-11T10:20:00.000Z").totalCount,
+      1,
+      "an observation exactly on the boundary belongs only to the next half-open window",
+    );
+
     const now = "2026-07-11T10:00:00.000Z";
     db.prepare("INSERT INTO projects (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
       .run("p1", "Recall project", "SQLite search", "active", "[]", "[]", now, now);
+    const memoryObjects = new MemoryObjectRepository(db);
+    memoryObjects.createProject({
+      id: "candidate-project", name: "Possible project", summary: "Needs review", status: "active",
+      lastActiveAt: now, sourceFactIds: [], sourceSceneIds: [], aliases: ["Project alias"],
+      admissionStatus: "candidate", admissionReason: "project_needs_independent_episode",
+      admissionEvidence: [], admissionDecidedBy: "auto", admissionRuleVersion: 1, admissionReviewedAt: now,
+    });
+    memoryObjects.createPerson({
+      id: "candidate-person", name: "Possible person", role: null, organization: null,
+      summary: "Needs review", relatedProjectIds: [], sourceFactIds: [], relationship: null, aliases: ["Person alias"],
+      admissionStatus: "candidate", admissionReason: "person_without_direct_relationship",
+      admissionEvidence: [], admissionDecidedBy: "auto", admissionRuleVersion: 1, admissionReviewedAt: now,
+    });
+    assert.equal(memoryObjects.listProjects({ includeArchived: true }).some((project) => project.id === "candidate-project"), false);
+    assert.equal(memoryObjects.listPeople({ includeDeleted: true }).some((person) => person.id === "candidate-person"), false);
+    assert.equal(memoryObjects.listProjects({ admissionStatus: "candidate" })[0].id, "candidate-project");
+    assert.equal(memoryObjects.listPeople({ admissionStatus: "candidate" })[0].id, "candidate-person");
+    assert.equal(memoryObjects.findActiveProjectByFuzzyName("Project alias").id, "candidate-project");
+    assert.equal(memoryObjects.findActiveProjectByFuzzyName("Possible"), null, "project substrings never resolve identity");
+    assert.equal(memoryObjects.findPersonByFuzzyName("Person alias").id, "candidate-person");
+    assert.equal(memoryObjects.findPersonByFuzzyName("Possible"), null, "person substrings never resolve identity");
     db.prepare("INSERT INTO facts (id,type,content,project_id,importance,confidence,inferred,source_observation_ids_json,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
       .run("f1", "note", "fix C++ parser edge-case", "p1", 1, 1, 0, "[]", '["fts5"]', now, now);
     db.prepare("INSERT INTO reports (id,type,date_key,title,content_json,source_fact_ids_json,source_scene_ids_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)")
@@ -378,7 +464,50 @@ async function main() {
     ocrMigrationDb.close();
   }
 
-  console.log("SQLite integration passed: migrations/failure preservation, model job metrics/debug lifecycle, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
+  const timelineMigrationPath = path.join(root, "timeline-window-migration.db");
+  const timelineMigrationDb = new Database(timelineMigrationPath);
+  try {
+    const files = migrations();
+    const targetMigration = "026_timeline_generation_windows.sql";
+    const targetIndex = files.indexOf(targetMigration);
+    assert.notEqual(targetIndex, -1, `${targetMigration} is present`);
+    migrate(timelineMigrationDb, files.slice(0, targetIndex));
+    const legacyCapturedAt = "2026-07-11T09:03:00.000Z";
+    const legacyCapture = capture("legacy-capture", "", legacyCapturedAt);
+    timelineMigrationDb.prepare(`INSERT INTO capture_inbox
+      (capture_id, bundle_json, status, batch_id, created_at, updated_at)
+      VALUES (?, ?, 'pending', NULL, ?, ?)`)
+      .run(legacyCapture.captureId, JSON.stringify(legacyCapture), legacyCapturedAt, legacyCapturedAt);
+    timelineMigrationDb.prepare(`INSERT INTO projects
+      (id, name, summary, status, source_fact_ids_json, source_scene_ids_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, '[]', '[]', ?, ?)`)
+      .run("legacy-project", "Legacy project", "Before admission migration", "active", legacyCapturedAt, legacyCapturedAt);
+    timelineMigrationDb.prepare(`INSERT INTO people
+      (id, name, summary, related_project_ids_json, source_fact_ids_json, created_at, updated_at)
+      VALUES (?, ?, ?, '[]', '[]', ?, ?)`)
+      .run("legacy-person", "Legacy person", "Before admission migration", legacyCapturedAt, legacyCapturedAt);
+
+    migrate(timelineMigrationDb);
+    assert.equal(
+      timelineMigrationDb.prepare("SELECT captured_at FROM capture_inbox WHERE capture_id = ?").get("legacy-capture").captured_at,
+      legacyCapturedAt,
+      "captured_at is backfilled from the durable capture bundle",
+    );
+    assert.equal(
+      timelineMigrationDb.prepare("SELECT admission_status FROM projects WHERE id = ?").get("legacy-project").admission_status,
+      "promoted",
+      "legacy projects remain visible until conservative reassessment",
+    );
+    assert.equal(
+      timelineMigrationDb.prepare("SELECT admission_status FROM people WHERE id = ?").get("legacy-person").admission_status,
+      "promoted",
+      "legacy people remain visible until conservative reassessment",
+    );
+  } finally {
+    timelineMigrationDb.close();
+  }
+
+  console.log("SQLite integration passed: timeline windows/watermarks, admission filtering, migrations/failure preservation, model job metrics/debug lifecycle, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

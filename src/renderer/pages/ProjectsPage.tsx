@@ -49,6 +49,16 @@ function isThisWeek(dateStr: string | null): boolean {
   return diff >= 0 && diff <= 7 * oneDay;
 }
 
+function admissionReasonLabel(reason?: string | null): string {
+  const labels: Record<string, string> = {
+    project_without_exact_hint: "缺少明确的项目名称证据",
+    project_needs_independent_episode: "目前只在一次独立活动中出现",
+    source_author_or_list_only: "仅出现在资料名单或示例中",
+    user_reject: "已由你排除",
+  };
+  return reason ? labels[reason] ?? "需要确认是否作为长期项目" : "需要确认是否作为长期项目";
+}
+
 /**
  * 根据项目详情生成项目报告（结构化展示，非 LLM 生成）
  * 报告结构来自 spec 行 2183-2195：
@@ -124,6 +134,11 @@ export function ProjectsPage() {
     targetId: string;
   } | null>(null);
   const [reportExpanded, setReportExpanded] = useState(false);
+  const [supplementalProjects, setSupplementalProjects] = useState<ProjectItem[]>([]);
+  const [supplementalLoading, setSupplementalLoading] = useState(false);
+  const [supplementalError, setSupplementalError] = useState<string | null>(null);
+  const [reviewingProjectId, setReviewingProjectId] = useState<string | null>(null);
+  const [supplementalRevision, setSupplementalRevision] = useState(0);
 
   const selectedProjectThreads = useMemo(() => {
     if (!projectDetail) return [];
@@ -210,34 +225,43 @@ export function ProjectsPage() {
     return stats;
   }, [todayData.tasks, todayData.decisions, todayData.projects]);
 
-  // 归档项目列表（仅当筛选状态包含归档时才加载）
-  const [archivedProjects, setArchivedProjects] = useState<ProjectItem[]>([]);
+  // 待确认和归档对象不进入普通 Today 投影，按当前视图单独读取。
   useEffect(() => {
-    if (projectsFilters.status === "active") return;
+    if (projectsFilters.status === "active") {
+      setSupplementalProjects([]);
+      setSupplementalError(null);
+      return;
+    }
     let cancelled = false;
-    void getIpc().memory.listProjects<ProjectItem>({ includeArchived: true })
+    setSupplementalLoading(true);
+    setSupplementalError(null);
+    const input = projectsFilters.status === "candidate"
+      ? { admissionStatus: "candidate" as const }
+      : { includeArchived: true, includeNonPromoted: true };
+    void getIpc().memory.listProjects<ProjectItem>(input)
       .then((res) => {
         if (cancelled) return;
-        // 仅保留已归档的项目
-        setArchivedProjects(res.projects.filter((p) => p.archivedAt));
+        setSupplementalProjects(projectsFilters.status === "archived"
+          ? res.projects.filter((project) => project.archivedAt || project.admissionStatus === "rejected")
+          : res.projects);
       })
       .catch((err) => {
-        if (!cancelled) console.error("加载归档项目失败:", err);
+        if (cancelled) return;
+        setSupplementalError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setSupplementalLoading(false);
       });
     return () => { cancelled = true; };
-  }, [projectsFilters.status]);
+  }, [projectsFilters.status, supplementalRevision]);
 
   // 客户端过滤 + 排序
   const filteredProjects = useMemo(() => {
     let list: ProjectItem[];
     if (projectsFilters.status === "active") {
       list = todayData.projects.filter((p) => !p.archivedAt);
-    } else if (projectsFilters.status === "archived") {
-      list = archivedProjects;
     } else {
-      // all：合并活跃 + 归档
-      const activeIds = new Set(todayData.projects.map((p) => p.id));
-      list = [...todayData.projects, ...archivedProjects.filter((p) => !activeIds.has(p.id))];
+      list = supplementalProjects;
     }
 
     const kw = projectsFilters.keyword.trim().toLowerCase();
@@ -257,7 +281,24 @@ export function ProjectsPage() {
       return bVal.localeCompare(aVal); // 降序
     });
     return list;
-  }, [todayData.projects, archivedProjects, projectsFilters]);
+  }, [todayData.projects, supplementalProjects, projectsFilters]);
+
+  const handleReviewProject = async (
+    id: string,
+    decision: "promote" | "reject" | "restore"
+  ) => {
+    setReviewingProjectId(id);
+    setSupplementalError(null);
+    try {
+      await getIpc().memory.reviewAdmission({ objectType: "project", id, decision });
+      setSupplementalRevision((revision) => revision + 1);
+      await loadToday();
+    } catch (error) {
+      setSupplementalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewingProjectId(null);
+    }
+  };
 
   const handleOpenDetail = (id: string) => {
     setSelectedProjectId(id);
@@ -699,6 +740,13 @@ export function ProjectsPage() {
         </div>
       )}
 
+      {supplementalError && (
+        <div className="projects-page__error">
+          <span>加载失败：{supplementalError}</span>
+          <button onClick={() => setSupplementalRevision((revision) => revision + 1)}>重试</button>
+        </div>
+      )}
+
       {/* 筛选栏 */}
       <div className="memory-filters">
         <div className="memory-filters__group">
@@ -716,11 +764,13 @@ export function ProjectsPage() {
           <select
             className="memory-filters__select"
             value={projectsFilters.status}
-            onChange={(e) => setProjectsFilters({ status: e.target.value as "all" | "active" | "archived" })}
+            onChange={(e) => setProjectsFilters({
+              status: e.target.value as "active" | "candidate" | "archived",
+            })}
           >
             <option value="active">活跃</option>
+            <option value="candidate">待确认</option>
             <option value="archived">已归档</option>
-            <option value="all">全部</option>
           </select>
         </div>
         <div className="memory-filters__group">
@@ -737,13 +787,20 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      {todayLoading && todayData.projects.length === 0 ? (
+      {(projectsFilters.status === "active" ? todayLoading : supplementalLoading)
+        && filteredProjects.length === 0 ? (
         <p className="state-loading">正在加载项目...</p>
       ) : filteredProjects.length === 0 ? (
         <div className="empty-state">
-          <p>当前没有符合筛选条件的项目。</p>
+          <p>{projectsFilters.status === "candidate"
+            ? "当前没有待确认的项目。"
+            : projectsFilters.status === "archived"
+              ? "当前没有已归档的项目。"
+              : "当前没有符合筛选条件的项目。"}</p>
           <p className="empty-state__hint">
-            调整搜索关键词或筛选条件，或持续观察让 Recall 归纳更多项目。
+            {projectsFilters.status === "active"
+              ? "调整搜索关键词或筛选条件，或持续观察让 Recall 归纳更多项目。"
+              : "这里的对象不会进入日常项目列表，直到你确认或恢复。"}
           </p>
         </div>
       ) : (
@@ -760,11 +817,11 @@ export function ProjectsPage() {
               <div
                 key={project.id}
                 className="project-card"
-                onClick={() => handleOpenDetail(project.id)}
-                role="button"
-                tabIndex={0}
+                onClick={() => projectsFilters.status === "active" && handleOpenDetail(project.id)}
+                role={projectsFilters.status === "active" ? "button" : undefined}
+                tabIndex={projectsFilters.status === "active" ? 0 : undefined}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
+                  if (projectsFilters.status === "active" && (e.key === "Enter" || e.key === " ")) {
                     e.preventDefault();
                     handleOpenDetail(project.id);
                   }
@@ -773,8 +830,16 @@ export function ProjectsPage() {
                 <div className="project-card__header">
                   <h3 className="project-card__name">{project.name}</h3>
                   <div className="project-card__tags">
-                    {today && <span className="project-card__tag project-card__tag--today">今日</span>}
-                    {!today && thisWeek && (
+                    {projectsFilters.status === "candidate" && (
+                      <span className="project-card__tag admission-card__status">待确认</span>
+                    )}
+                    {projectsFilters.status === "archived" && (
+                      <span className="project-card__tag admission-card__status">已归档</span>
+                    )}
+                    {projectsFilters.status === "active" && today && (
+                      <span className="project-card__tag project-card__tag--today">今日</span>
+                    )}
+                    {projectsFilters.status === "active" && !today && thisWeek && (
                       <span className="project-card__tag project-card__tag--week">本周</span>
                     )}
                   </div>
@@ -787,10 +852,19 @@ export function ProjectsPage() {
                 <div className="project-card__summary">
                   {stat.recentSummary || project.summary || "暂无最近进展"}
                 </div>
+                {projectsFilters.status !== "active" && (
+                  <div className="admission-card__reason">
+                    {admissionReasonLabel(project.admissionReason)}
+                  </div>
+                )}
                 <div className="project-card__meta">
-                  <span className="project-card__stat">
-                    待收尾：{stat.openTaskCount} 项
-                  </span>
+                  {projectsFilters.status === "active" ? (
+                    <span className="project-card__stat">待收尾：{stat.openTaskCount} 项</span>
+                  ) : (
+                    <span className="project-card__stat">
+                      相关证据：{project.admissionEvidence?.length ?? project.sourceFactIds.length} 条
+                    </span>
+                  )}
                   <span className="project-card__time">
                     最后活跃：
                     {project.lastActiveAt
@@ -799,7 +873,7 @@ export function ProjectsPage() {
                   </span>
                 </div>
                 <div className="project-card__actions">
-                  <button
+                  {projectsFilters.status === "active" && <><button
                     type="button"
                     className="project-card__action project-card__action--primary"
                     onClick={(e) => {
@@ -843,6 +917,44 @@ export function ProjectsPage() {
                   >
                     归档
                   </button>
+                  </>}
+                  {projectsFilters.status === "candidate" && <>
+                    <button
+                      type="button"
+                      className="project-card__action project-card__action--primary"
+                      disabled={reviewingProjectId === project.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleReviewProject(project.id, "promote");
+                      }}
+                    >
+                      确认为项目
+                    </button>
+                    <button
+                      type="button"
+                      className="project-card__action project-card__action--danger"
+                      disabled={reviewingProjectId === project.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleReviewProject(project.id, "reject");
+                      }}
+                    >
+                      排除
+                    </button>
+                  </>}
+                  {projectsFilters.status === "archived" && (
+                    <button
+                      type="button"
+                      className="project-card__action project-card__action--primary"
+                      disabled={reviewingProjectId === project.id}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleReviewProject(project.id, "restore");
+                      }}
+                    >
+                      恢复项目
+                    </button>
+                  )}
                 </div>
               </div>
             );

@@ -135,6 +135,13 @@ const DEFAULT_CONFIG: Required<ActivityServiceConfig> = {
  * 事件名称
  */
 export const CAPTURE_CANDIDATE_EVENT = "capture-candidate";
+export const IDLE_STATE_CHANGED_EVENT = "idle-state-changed";
+
+export interface IdleStateChangedEvent {
+  from: "active" | "idle";
+  to: "active" | "idle";
+  triggeredAt: string;
+}
 
 /**
  * ActivityService：监听活动窗口，识别 idle/active，发出 capture candidate 事件
@@ -350,8 +357,14 @@ export class ActivityService extends EventEmitter {
     }
 
     // 状态转换
+    const previousState = this.lastIdleState;
     const reason: CaptureTriggerReason = "scene_boundary";
     const window = this.currentWindow;
+    this.emit(IDLE_STATE_CHANGED_EVENT, {
+      from: previousState,
+      to: currentState,
+      triggeredAt: new Date(now).toISOString(),
+    } satisfies IdleStateChangedEvent);
     if (!window) {
       this.lastIdleState = currentState;
       return;

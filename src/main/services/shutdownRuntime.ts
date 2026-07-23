@@ -2,7 +2,10 @@ import { logger } from "./Logger";
 
 export interface ShutdownDependencies {
   reportScheduler?: { stop: () => void } | null;
-  timelineBuilderTimer?: NodeJS.Timeout | null;
+  timelineWindowCoordinator?: {
+    stop: () => void;
+    persistTailForShutdown: () => Promise<void>;
+  } | null;
   stopScreenshotCacheScheduler?: (() => void) | null;
   stopUpdateCheckerScheduler?: (() => void) | null;
   updateService?: { cleanupIncompleteDownloads: () => void } | null;
@@ -39,9 +42,7 @@ async function performShutdown(
   logger.info({ message: "Starting graceful shutdown of Recall runtime" });
 
   await runBestEffort("stopReportScheduler", () => deps.reportScheduler?.stop());
-  await runBestEffort("stopTimelineBuilderTimer", () => {
-    if (deps.timelineBuilderTimer) clearInterval(deps.timelineBuilderTimer);
-  });
+  await runBestEffort("stopTimelineWindowCoordinator", () => deps.timelineWindowCoordinator?.stop());
   await runBestEffort("stopScreenshotCacheScheduler", () => deps.stopScreenshotCacheScheduler?.());
   await runBestEffort("stopUpdateCheckerScheduler", () => deps.stopUpdateCheckerScheduler?.());
   await runBestEffort("cleanupUpdateDownloads", () => deps.updateService?.cleanupIncompleteDownloads());
@@ -53,6 +54,11 @@ async function performShutdown(
   await runCritical("stopCaptureService", () => deps.captureService?.stop(), criticalErrors);
   await runCritical("drainCaptureService", () => deps.captureService?.drain(), criticalErrors);
   await runCritical("drainCaptureBatcher", () => deps.captureBatcher?.drain(), criticalErrors);
+  await runCritical(
+    "persistTimelineTail",
+    () => deps.timelineWindowCoordinator?.persistTailForShutdown(),
+    criticalErrors
+  );
   await runCritical("stopOcrService", () => deps.ocrService?.stop(), criticalErrors);
   await runCritical("drainBatchProcessor", () => deps.batchProcessor?.stopAndDrainActive(), criticalErrors);
   await runCritical(

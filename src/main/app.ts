@@ -35,6 +35,7 @@ import { UnfinishedThreadRepository } from "./db/repositories/UnfinishedThreadRe
 import { createObjectMergeRepository } from "./db/repositories/ObjectMergeRepository";
 import { createMemoryEdgeRepository } from "./db/repositories/MemoryEdgeRepository";
 import { CaptureInboxRepository } from "./db/repositories/CaptureInboxRepository";
+import { TimelineGenerationWindowRepository } from "./db/repositories/TimelineGenerationWindowRepository";
 import { SecretService } from "./services/SecretService";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
@@ -48,10 +49,12 @@ import { getModelJobQueue, type ModelJobQueue } from "./services/ModelJobQueue";
 import { ObserverExtractorWorker } from "./services/ObserverExtractorWorker";
 import { ObservationNormalizer } from "./services/ObservationNormalizer";
 import { LinkerSceneJudgeWorker } from "./services/LinkerSceneJudgeWorker";
+import { MemoryObjectAdmissionService } from "./services/MemoryObjectAdmissionService";
 import { EpisodeFactExtractorWorker } from "./services/EpisodeFactExtractorWorker";
 import { ReporterWorker } from "./services/ReporterWorker";
 import { ReportScheduler } from "./services/ReportScheduler";
 import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
+import { TimelineWindowCoordinator } from "./services/TimelineWindowCoordinator";
 import { TimelineBuildCheckpointRepository } from "./db/repositories/TimelineBuildCheckpointRepository";
 import { PersonalReviewWriterWorker } from "./services/PersonalReviewWriterWorker";
 import { WorkReportWriterWorker } from "./services/WorkReportWriterWorker";
@@ -66,7 +69,11 @@ import { BatchProcessor } from "./services/BatchProcessor";
 import { DataLifecycleService } from "./services/DataLifecycleService";
 import { ProjectionInvalidationProcessor } from "./services/ProjectionInvalidationProcessor";
 import { SceneRelationProjector } from "./services/SceneRelationProjector";
-import { CAPTURE_CANDIDATE_EVENT } from "./services/ActivityService";
+import {
+  CAPTURE_CANDIDATE_EVENT,
+  IDLE_STATE_CHANGED_EVENT,
+  type IdleStateChangedEvent,
+} from "./services/ActivityService";
 import { MemoryPipeline, setMemoryPipeline } from "./services/MemoryPipeline";
 import { logger } from "./services/Logger";
 import { cascadeMarkAfterFactSceneDelete } from "./services/cascadeMark";
@@ -163,8 +170,7 @@ let captureBatcher: CaptureBatcher | null = null;
 let ocrService: ManagedOcrBatchService | null = null;
 let batchProcessor: BatchProcessor | null = null;
 let modelJobQueueForShutdown: ModelJobQueue | null = null;
-// Phase 2：TimelineBuilder 自动调度定时器（每 10 分钟为当天生成最新时间轴）
-let timelineBuilderTimer: NodeJS.Timeout | null = null;
+let timelineWindowCoordinator: TimelineWindowCoordinator | null = null;
 
 function isDev(): boolean {
   return process.env.NODE_ENV === "development" || !!process.env.VITE_DEV_SERVER_URL;
@@ -216,24 +222,53 @@ function startObserving(): void {
  * - 正在进行的截图任务可完成，但不再新增
  * - 更新 AppStatus
  */
-function pauseObserving(): void {
+async function pauseObserving(): Promise<void> {
   if (!activityService || !captureService) return;
 
   captureService.setPaused(true);
   activityService.stop();
   captureService.stop();
   sceneScheduler?.stop();
-  // 暂停前冲刷攒批（提交已积累的截图，避免暂停期间丢失数据）
-  if (captureBatcher) {
-    captureBatcher.flush().catch(() => {
-      // flush 失败不阻断暂停流程
-    });
-  }
+  await timelineWindowCoordinator?.finalizeTail("pause");
 
   setStatus({ observing: false, paused: true, pipelineState: "idle" });
 }
 
-function createMainWindow(): BrowserWindow {
+const STARTUP_PAGE_HTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>回声 Recall</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { display: grid; place-items: center; background: #f7f6f2; color: #17332c; font-family: "Microsoft YaHei UI", sans-serif; }
+    main { display: flex; align-items: center; gap: 18px; }
+    .mark { width: 42px; height: 42px; border: 2px solid #397866; border-radius: 50%; box-sizing: border-box; position: relative; }
+    .mark::after { content: ""; position: absolute; inset: 9px; border: 2px solid #7fa295; border-radius: 50%; }
+    h1 { margin: 0; font-size: 24px; letter-spacing: 0; }
+    p { margin: 5px 0 0; color: #668078; font-size: 14px; letter-spacing: 0; }
+  </style>
+</head>
+<body><main><div class="mark"></div><div><h1>回声 Recall</h1><p>正在启动</p></div></main></body>
+</html>`;
+
+function loadStartupPage(win: BrowserWindow): Promise<void> {
+  return win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(STARTUP_PAGE_HTML)}`);
+}
+
+function loadMainWindowRenderer(win: BrowserWindow): Promise<void> {
+  if (isDev() && process.env.VITE_DEV_SERVER_URL) {
+    if (shouldAutoOpenDevTools()) {
+      win.webContents.openDevTools({ mode: "detach" });
+    }
+    return win.loadURL(process.env.VITE_DEV_SERVER_URL);
+  }
+  const indexHtml = path.join(__dirname, "..", "renderer", "index.html");
+  return win.loadFile(indexHtml);
+}
+
+function createMainWindow(options: { deferRendererLoad?: boolean } = {}): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -275,6 +310,7 @@ function createMainWindow(): BrowserWindow {
   });
 
   win.webContents.on("did-finish-load", () => {
+    if (win.webContents.getURL().startsWith("data:")) return;
     // 给 renderer 一次事件循环完成 IPC 订阅，再补发启动期间的报告事件。
     setTimeout(() => {
       if (mainWindow === win) flushPendingReportGeneratedEvents(win);
@@ -292,6 +328,14 @@ function createMainWindow(): BrowserWindow {
     });
   });
 
+  win.webContents.on("preload-error", (_event, preloadPath, error) => {
+    logger.error({
+      status: "failed",
+      errorCode: "renderer_preload_failed",
+      message: `renderer preload failed: file=${path.basename(preloadPath)}, name=${error.name}, message=${error.message}`,
+    });
+  });
+
   win.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
     logger.error({
@@ -301,17 +345,14 @@ function createMainWindow(): BrowserWindow {
     });
   });
 
-  // 加载 renderer
-  if (isDev() && process.env.VITE_DEV_SERVER_URL) {
-    void win.loadURL(process.env.VITE_DEV_SERVER_URL);
-    // DevTools 默认改为手动打开，避免 Electron/Chromium 协议噪声刷到主进程日志。
-    if (shouldAutoOpenDevTools()) {
-      win.webContents.openDevTools({ mode: "detach" });
-    }
-  } else {
-    // 生产环境加载打包后的 index.html
-    const indexHtml = path.join(__dirname, "..", "renderer", "index.html");
-    void win.loadFile(indexHtml);
+  if (!options.deferRendererLoad) {
+    void loadMainWindowRenderer(win).catch((error) => {
+      logger.error({
+        status: "failed",
+        errorCode: "renderer_load_rejected",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   return win;
@@ -483,9 +524,13 @@ app.whenReady().then(async () => {
     logger.error({
       status: "failed",
       errorCode: "child_process_gone",
-      message: `child process gone: type=${details.type}, reason=${details.reason}, exitCode=${details.exitCode}`,
+      message: `child process gone: type=${details.type}, name=${details.name}, serviceName=${details.serviceName ?? "unknown"}, reason=${details.reason}, exitCode=${details.exitCode}`,
     });
   });
+
+  // 先让窗口完成一次绘制。大库迁移备份和后台修复不能再表现为白屏。
+  mainWindow = createMainWindow({ deferRendererLoad: true });
+  await loadStartupPage(mainWindow);
 
   // 初始化数据库与服务
   const db = getDatabase();
@@ -543,21 +588,6 @@ app.whenReady().then(async () => {
   screenshotCache.setObservationRepository(obsRepo);
   const captureInboxRepo = new CaptureInboxRepository(db);
 
-  // 应用启动时清理过期截图（按 settings 中的 retention policy）
-  try {
-    const settings = settingsService.getAll();
-    const pendingImagePaths = captureInboxRepo.listPendingCaptures().flatMap((frame) => [
-      frame.stitchedImagePath,
-      ...frame.imagePaths,
-    ]).filter((filePath): filePath is string => !!filePath);
-    await screenshotCache.cleanupExpired(
-      settings.screenshot.retentionPolicy,
-      pendingImagePaths
-    );
-  } catch {
-    // 清理失败不阻断启动
-  }
-
   // ActivityService：从 SettingsService 读取观察阈值配置
   const obsSettings = settingsService.getAll().observation;
   activityService = new ActivityService({
@@ -581,9 +611,14 @@ app.whenReady().then(async () => {
   const factRepo = new FactRepository(db);
   const sceneRepo = new SceneRepository(db);
   const memoryObjectRepo = new MemoryObjectRepository(db);
+  const memoryObjectAdmissionService = new MemoryObjectAdmissionService({
+    factRepo,
+    memoryObjectRepo,
+  });
   const proactiveItemRepo = new ProactiveItemRepository(db);
   // Phase 2 新增：TimelineBlock / ReportSelection / UnfinishedThread Repositories
   const timelineBlockRepo = new TimelineBlockRepository(db);
+  const timelineWindowRepo = new TimelineGenerationWindowRepository(db);
   const timelineBuildCheckpointRepo = new TimelineBuildCheckpointRepository(db);
   const reportSelectionRepo = new ReportSelectionRepository(db);
   const unfinishedThreadRepo = new UnfinishedThreadRepository(db);
@@ -621,6 +656,7 @@ app.whenReady().then(async () => {
     unfinishedThreadRepo,
     timelineBlockRepo,
     settingsService,
+    admissionService: memoryObjectAdmissionService,
   });
   const episodeFactExtractorWorker = new EpisodeFactExtractorWorker({
     modelGateway,
@@ -691,13 +727,25 @@ app.whenReady().then(async () => {
     timelineBuildCheckpointRepo,
     settingsService,
   });
+  const timelinePreflight = {
+    preflightReport: async (dateKey: string) => {
+      if (!timelineWindowCoordinator) throw new Error("TimelineWindowCoordinator 未初始化");
+      await timelineWindowCoordinator.preflightReport(dateKey);
+    },
+  };
+  const timelineRebuilder = {
+    rebuildDate: async (dateKey: string) => {
+      if (!timelineWindowCoordinator) throw new Error("TimelineWindowCoordinator 未初始化");
+      await timelineWindowCoordinator.rebuildDate(dateKey);
+    },
+  };
   const projectionInvalidationProcessor = new ProjectionInvalidationProcessor({
     correctionLifecycleRepo,
     factRepo,
     sceneRepo,
     timelineBlockRepo,
     reportRepo,
-    timelineBuilderWorker,
+    timelineRebuilder,
     sceneRelationProjector: new SceneRelationProjector({
       sceneRepo,
       factRepo,
@@ -705,11 +753,10 @@ app.whenReady().then(async () => {
       edgeRepo: memoryEdgeRepo,
     }),
   });
-  void projectionInvalidationProcessor.processPending();
 
   // PersonalReviewWriterWorker：个人复盘撰写员
   // 职责：基于当天 TimelineBlock + UnfinishedThread + decisions 生成个人复盘
-  // Phase 2 B1：注入 timelineBuilderWorker，报告生成前调用 buildTimeline 确保 timeline 最新
+  // 报告读取时间轴前由窗口协调器冲刷、封窗并完成可生成尾窗。
   const personalReviewWriterWorker = new PersonalReviewWriterWorker({
     modelGateway,
     modelJobQueue,
@@ -718,14 +765,14 @@ app.whenReady().then(async () => {
     factRepo,
     reportRepo,
     settingsService,
-    timelineBuilderWorker,
+    timelinePreflight,
     infographicService,
     onReportGenerated: notifyReportGenerated,
   });
 
   // WorkReportWriterWorker：工作日报撰写员
   // 职责：基于用户选中的 TimelineBlock 生成工作日报（严格过滤 privateRisk=high）
-  // Phase 2 B1：注入 timelineBuilderWorker，报告生成前调用 buildTimeline 确保 timeline 最新
+  // 报告读取时间轴前由窗口协调器冲刷、封窗并完成可生成尾窗。
   const workReportWriterWorker = new WorkReportWriterWorker({
     modelGateway,
     modelJobQueue,
@@ -734,42 +781,10 @@ app.whenReady().then(async () => {
     factRepo,
     reportRepo,
     settingsService,
-    timelineBuilderWorker,
+    timelinePreflight,
     infographicService,
     onReportGenerated: notifyReportGenerated,
   });
-
-  // Phase 2 B2：TimelineBuilder 自动调度（每 10 分钟增量落盘当天时间轴）
-  // 2026-07-07 变更：从全量替换改为增量追加，历史 blocks 永不改动
-  // - 失败不阻断应用，仅记录日志（catch 内吞错）
-  // - 在 before-quit 中 clearInterval 避免退出时悬挂引用
-  // - 修复：用本地日期工具（与 TimelineBuilderWorker.getLocalTodayStartIsoFromDateKey 保持一致），
-  //   避免本地 0:00-8:00 期间被 UTC 切日误判为昨天
-  timelineBuilderTimer = setInterval(() => {
-    try {
-      const today = formatLocalDateKey(new Date());
-      void timelineBuilderWorker.buildTimeline(today).then((result) => {
-        if (!result.ok) {
-          logger.warn({
-            jobType: "timeline_builder",
-            status: "failed",
-            errorCode: result.errorCode,
-            message: result.errorMessage ?? "scheduled timeline build failed",
-          });
-        }
-      }).catch((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.warn({
-          jobType: "timeline_builder",
-          status: "failed",
-          errorCode: "unknown_error",
-          message: `scheduled timeline build threw: ${message.slice(0, 160)}`,
-        });
-      });
-    } catch {
-      // 同步异常兜底（理论上不会进入）
-    }
-  }, 10 * 60 * 1000);
 
   // ReportScheduler：定时调度日报/周报/个人复盘生成
   // - personalReviewWriterWorker：用于个人复盘（personal_daily_review）调度
@@ -778,12 +793,10 @@ app.whenReady().then(async () => {
   reportScheduler = new ReportScheduler({
     reporterWorker,
     personalReviewWriterWorker,
-    timelineBuilderWorker,
+    timelinePreflight,
     reportRepo,
     settingsService,
   });
-  reportScheduler.start();
-
   // 5. 创建 CaptureBatcher（L0 微批次：默认攒批 6 帧合并提交）
   //    - CaptureService 的 capture-bundle 交给 batcher 攒批（不再直接调 pipeline）
   //    - 攒满 6 帧或 5 分钟超时后 emit "batch-ready"
@@ -797,39 +810,29 @@ app.whenReady().then(async () => {
     captureInboxRepo,
     memoryPipeline,
     async (_result, batchBundle) => {
-      if (timelineBuilderWorker) {
-        const dateKeys = Array.from(new Set(
-          batchBundle.frames.map((frame) => formatLocalDateKey(new Date(frame.capturedAt)))
-        ));
-        for (const dateKey of dateKeys) {
-          void timelineBuilderWorker.buildTimeline(dateKey).then((result) => {
-            if (!result.ok) {
-              logger.warn({
-                jobType: "timeline_builder",
-                status: "failed",
-                errorCode: result.errorCode,
-                message: result.errorMessage ?? "post-batch timeline build failed",
-              });
-            }
-          }).catch((error) => {
-            logger.warn({
-              jobType: "timeline_builder",
-              status: "failed",
-              errorCode: "unknown_error",
-              message: `post-batch timeline build threw: ${error instanceof Error ? error.message : String(error)}`,
-            });
-          });
-        }
-      }
       const immediatePaths = batchBundle.frames
         .filter((frame) => frame.retentionPolicy === "delete_immediately")
         .flatMap((frame) => [frame.stitchedImagePath, ...frame.imagePaths])
         .filter((filePath): filePath is string => !!filePath);
       await screenshotCache?.deleteFiles(immediatePaths);
-    }
+    },
+    (status, bundle) => timelineWindowCoordinator?.onBatchSettled(status, bundle)
   );
   captureBatcher.on("batch-ready", () => batchProcessor?.notify());
   batchProcessor.start();
+  timelineWindowCoordinator = new TimelineWindowCoordinator({
+    windowRepo: timelineWindowRepo,
+    observationRepo: obsRepo,
+    captureInboxRepo,
+    timelineBuilderWorker,
+    captureService,
+    captureBatcher,
+    batchProcessor,
+    timelineBlockRepo,
+  });
+  timelineWindowCoordinator.start();
+  reportScheduler.start();
+  void projectionInvalidationProcessor.processPending();
 
   const dataLifecycleService = new DataLifecycleService({
     db,
@@ -881,8 +884,6 @@ app.whenReady().then(async () => {
     });
   });
 
-  mainWindow = createMainWindow();
-
   endOfDayReviewService = new EndOfDayReviewService({
     settingsService,
     timelineBlockRepo,
@@ -922,6 +923,13 @@ app.whenReady().then(async () => {
     getProtectedImagePaths: () => captureBatcher?.getPendingImagePaths() ?? [],
     intervalMs: 60 * 60 * 1000, // 1 小时
   });
+  activityService.on(IDLE_STATE_CHANGED_EVENT, (event: IdleStateChangedEvent) => {
+    if (event.from === "active" && event.to === "idle") {
+      void timelineWindowCoordinator?.finalizeTail("idle", {
+        at: new Date(event.triggeredAt),
+      });
+    }
+  });
 
   // 版本更新定时检查（启动后 10s 首检，之后每 4 小时检查一次）
   startUpdateCheckerScheduler({
@@ -956,6 +964,7 @@ app.whenReady().then(async () => {
     factRepo,
     sceneRepo,
     memoryObjectRepo,
+    memoryObjectAdmissionService,
     proactiveItemRepo,
     reportRepo,
     infographicService,
@@ -969,6 +978,7 @@ app.whenReady().then(async () => {
     db,
     // Phase 2 新增：TimelineBuilder / PersonalReviewWriter / WorkReportWriter + 相关 Repos
     timelineBuilderWorker,
+    timelineWindowCoordinator,
     personalReviewWriterWorker,
     workReportWriterWorker,
     timelineBlockRepo,
@@ -987,6 +997,31 @@ app.whenReady().then(async () => {
     endOfDayReviewService,
     updateService,
   });
+
+  // IPC 完整注册后再加载真实 renderer，避免首屏和 handler 注册竞态。
+  await loadMainWindowRenderer(mainWindow);
+
+  const admissionMaintenanceTimer = setTimeout(() => {
+    const startedAt = Date.now();
+    void memoryObjectAdmissionService.reassessHistorical(10, () => !isQuitting)
+      .then((result) => {
+        if (result.reviewed === 0) return;
+        logger.info({
+          jobType: "memory_object_admission",
+          status: "succeeded",
+          durationMs: Date.now() - startedAt,
+          message: `historical admission reassessed: reviewed=${result.reviewed}, promoted=${result.promoted}, candidate=${result.candidate}, rejected=${result.rejected}`,
+        });
+      })
+      .catch((error) => {
+        logger.warn({
+          jobType: "memory_object_admission",
+          status: "failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, 30_000);
+  admissionMaintenanceTimer.unref();
 
   // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
   if (settingsService.getAll().observation.enabled) {
@@ -1033,7 +1068,7 @@ app.on("before-quit", (event) => {
   logger.info({ message: "Recall app quitting" });
   void shutdownRuntime({
     reportScheduler,
-    timelineBuilderTimer,
+    timelineWindowCoordinator,
     stopScreenshotCacheScheduler,
     stopUpdateCheckerScheduler,
     updateService,

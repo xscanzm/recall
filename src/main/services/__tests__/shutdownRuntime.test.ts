@@ -10,6 +10,8 @@ describe("shutdownRuntime", () => {
     const callOrder: string[] = [];
     const step = (name: string) => vi.fn(async () => { callOrder.push(name); });
     const stopReportScheduler = step("reportScheduler.stop");
+    const stopTimelineCoordinator = step("timelineWindowCoordinator.stop");
+    const persistTimelineTail = step("timelineWindowCoordinator.persistTailForShutdown");
     const stopActivityService = step("activityService.stop");
     const stopCaptureService = step("captureService.stop");
     const drainCaptureService = step("captureService.drain");
@@ -20,6 +22,10 @@ describe("shutdownRuntime", () => {
 
     await shutdownRuntime({
       reportScheduler: { stop: stopReportScheduler },
+      timelineWindowCoordinator: {
+        stop: stopTimelineCoordinator,
+        persistTailForShutdown: persistTimelineTail,
+      },
       activityService: { stop: stopActivityService },
       captureService: { stop: stopCaptureService, drain: drainCaptureService },
       captureBatcher: { drain: drainCaptureBatcher },
@@ -33,10 +39,12 @@ describe("shutdownRuntime", () => {
 
     expect(callOrder).toEqual([
       "reportScheduler.stop",
+      "timelineWindowCoordinator.stop",
       "activityService.stop",
       "captureService.stop",
       "captureService.drain",
       "captureBatcher.drain",
+      "timelineWindowCoordinator.persistTailForShutdown",
       "ocrService.stop",
       "batchProcessor.stopAndDrainActive",
       "modelJobQueue.stopAndDrainActive",

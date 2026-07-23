@@ -194,7 +194,7 @@ export class ScreenshotCache {
     // 这里通过 setObservationRepository 注入的 repo 来批量更新
     if (this.observationRepo) {
       try {
-        this.observationRepo.markExpiredScreenshots();
+        await this.observationRepo.markExpiredScreenshots();
       } catch {
         // 不阻断清理流程
       }

@@ -50,6 +50,7 @@ interface TimelineBlockRow {
   // 009 迁移补全字段
   private_risk_reason: string | null;
   confidence: number | null;
+  source_completeness: "complete" | "partial";
   source_scene_ids_json: string;
   source_fact_ids_json: string;
   source_observation_ids_json: string;
@@ -101,10 +102,10 @@ export class TimelineBlockRepository {
         id, date_key, start_at, end_at, title, summary, category,
         project_ids_json, project_names_json, highlights_json,
         generated_tasks_json, generated_decisions_json,
-        reportable, private_risk, private_risk_reason, confidence,
+        reportable, private_risk, private_risk_reason, confidence, source_completeness,
         source_scene_ids_json, source_fact_ids_json, source_observation_ids_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     const txn = this.db.transaction(() => {
@@ -127,6 +128,7 @@ export class TimelineBlockRepository {
           block.privateRisk,
           block.privateRiskReason ?? null,
           block.confidence ?? null,
+          block.sourceCompleteness ?? "complete",
           JSON.stringify(block.sourceSceneIds ?? []),
           JSON.stringify(block.sourceFactIds ?? []),
           JSON.stringify(block.sourceObservationIds ?? []),
@@ -161,10 +163,10 @@ export class TimelineBlockRepository {
         id, date_key, start_at, end_at, title, summary, category,
         project_ids_json, project_names_json, highlights_json,
         generated_tasks_json, generated_decisions_json,
-        reportable, private_risk, private_risk_reason, confidence,
+        reportable, private_risk, private_risk_reason, confidence, source_completeness,
         source_scene_ids_json, source_fact_ids_json, source_observation_ids_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     );
 
     const txn = this.db.transaction(() => {
@@ -188,6 +190,7 @@ export class TimelineBlockRepository {
           block.privateRisk,
           block.privateRiskReason ?? null,
           block.confidence ?? null,
+          block.sourceCompleteness ?? "complete",
           JSON.stringify(block.sourceSceneIds ?? []),
           JSON.stringify(block.sourceFactIds ?? []),
           JSON.stringify(block.sourceObservationIds ?? []),
@@ -244,6 +247,11 @@ export class TimelineBlockRepository {
       const inherited = input.blocks.filter((block) =>
         !protectedBlocks.some((protectedBlock) => sourceOverlap(block, protectedBlock) > 0)
       ).map((block) => {
+        const requested = block.id ? mutable.find((old) => old.id === block.id) : undefined;
+        if (requested && !usedIds.has(requested.id)) {
+          usedIds.add(requested.id);
+          return { ...block, id: requested.id };
+        }
         let best: TimelineBlock | undefined;
         let bestOverlap = 0;
         for (const old of mutable) {
@@ -287,6 +295,17 @@ export class TimelineBlockRepository {
     return row ? this.rowToTimelineBlock(row) : null;
   }
 
+  deleteUnprotectedByDateKey(dateKey: string): number {
+    const protectedIds = this.getProtectedIds(dateKey);
+    if (protectedIds.size === 0) {
+      return this.db.prepare("DELETE FROM timeline_blocks WHERE date_key = ?").run(dateKey).changes;
+    }
+    const ids = [...protectedIds];
+    const placeholders = ids.map(() => "?").join(",");
+    return this.db.prepare(`DELETE FROM timeline_blocks WHERE date_key = ? AND id NOT IN (${placeholders})`)
+      .run(dateKey, ...ids).changes;
+  }
+
   // ============================================================================
   // 内部辅助
   // ============================================================================
@@ -315,6 +334,7 @@ export class TimelineBlockRepository {
       privateRisk: row.private_risk as TimelineBlock["privateRisk"],
       privateRiskReason: row.private_risk_reason ?? undefined,
       confidence: row.confidence ?? undefined,
+      sourceCompleteness: row.source_completeness ?? "complete",
       sourceSceneIds: safeParseArray(row.source_scene_ids_json),
       sourceFactIds: safeParseArray(row.source_fact_ids_json),
       sourceObservationIds: safeParseArray(row.source_observation_ids_json),

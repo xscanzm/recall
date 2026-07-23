@@ -50,6 +50,16 @@ function getUnfinishedPromiseCount(person: PersonItem, tasks: TaskItem[]): numbe
   return getRelatedTasks(person, tasks).filter((t) => t.status !== "done").length;
 }
 
+function admissionReasonLabel(reason?: string | null): string {
+  const labels: Record<string, string> = {
+    person_without_exact_hint: "缺少明确的人物名称证据",
+    person_without_direct_relationship: "尚未发现直接沟通或协作关系",
+    source_author_or_list_only: "仅出现在作者、名单或示例中",
+    user_reject: "已由你排除",
+  };
+  return reason ? labels[reason] ?? "需要确认是否作为长期人物" : "需要确认是否作为长期人物";
+}
+
 interface PersonDetailData {
   person: PersonItem;
   relatedProjects: ProjectItem[];
@@ -86,6 +96,11 @@ export function PeoplePage() {
     summary: "",
   });
   const [editSaving, setEditSaving] = useState(false);
+  const [supplementalPeople, setSupplementalPeople] = useState<PersonItem[]>([]);
+  const [supplementalLoading, setSupplementalLoading] = useState(false);
+  const [supplementalError, setSupplementalError] = useState<string | null>(null);
+  const [reviewingPersonId, setReviewingPersonId] = useState<string | null>(null);
+  const [supplementalRevision, setSupplementalRevision] = useState(0);
 
   // 进入页面时加载今日数据
   useEffect(() => {
@@ -93,6 +108,36 @@ export function PeoplePage() {
       void loadToday();
     }
   }, [isReady, loadToday, todayData.people.length]);
+
+  // 候选和已删除对象不会进入 Today 投影，按当前视图单独读取。
+  useEffect(() => {
+    if (peopleFilters.status === "active") {
+      setSupplementalPeople([]);
+      setSupplementalError(null);
+      return;
+    }
+    let cancelled = false;
+    setSupplementalLoading(true);
+    setSupplementalError(null);
+    const input = peopleFilters.status === "candidate"
+      ? { admissionStatus: "candidate" as const }
+      : { includeDeleted: true, includeNonPromoted: true };
+    void getIpc().memory.listPeople<PersonItem>(input)
+      .then((result) => {
+        if (cancelled) return;
+        setSupplementalPeople(peopleFilters.status === "deleted"
+          ? result.people.filter((person) => person.deletedAt || person.admissionStatus === "rejected")
+          : result.people);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSupplementalError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (!cancelled) setSupplementalLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [peopleFilters.status, supplementalRevision]);
 
   useEffect(() => {
     if (!selectedPersonId) {
@@ -164,7 +209,9 @@ export function PeoplePage() {
 
   // 客户端过滤 + 排序
   const filteredPeople = useMemo(() => {
-    let list = todayData.people.filter((p) => !p.deletedAt);
+    let list = peopleFilters.status === "active"
+      ? todayData.people.filter((p) => !p.deletedAt)
+      : supplementalPeople;
 
     const kw = peopleFilters.keyword.trim().toLowerCase();
     if (kw) {
@@ -176,7 +223,7 @@ export function PeoplePage() {
       );
     }
 
-    if (peopleFilters.projectId) {
+    if (peopleFilters.status === "active" && peopleFilters.projectId) {
       list = list.filter((p) => p.relatedProjectIds.includes(peopleFilters.projectId));
     }
 
@@ -188,7 +235,24 @@ export function PeoplePage() {
       return bVal.localeCompare(aVal); // 降序
     });
     return list;
-  }, [todayData.people, peopleFilters]);
+  }, [todayData.people, supplementalPeople, peopleFilters]);
+
+  const handleReviewPerson = async (
+    id: string,
+    decision: "promote" | "reject" | "restore"
+  ) => {
+    setReviewingPersonId(id);
+    setSupplementalError(null);
+    try {
+      await getIpc().memory.reviewAdmission({ objectType: "person", id, decision });
+      setSupplementalRevision((revision) => revision + 1);
+      await loadToday();
+    } catch (error) {
+      setSupplementalError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReviewingPersonId(null);
+    }
+  };
 
   if (!isReady) {
     return (
@@ -570,6 +634,13 @@ export function PeoplePage() {
         </div>
       )}
 
+      {supplementalError && (
+        <div className="people-page__error">
+          <span>加载失败：{supplementalError}</span>
+          <button onClick={() => setSupplementalRevision((revision) => revision + 1)}>重试</button>
+        </div>
+      )}
+
       {/* 筛选栏 */}
       <div className="memory-filters">
         <div className="memory-filters__group">
@@ -583,11 +654,26 @@ export function PeoplePage() {
           />
         </div>
         <div className="memory-filters__group">
+          <label className="memory-filters__label">状态</label>
+          <select
+            className="memory-filters__select"
+            value={peopleFilters.status}
+            onChange={(e) => setPeopleFilters({
+              status: e.target.value as "active" | "candidate" | "deleted",
+            })}
+          >
+            <option value="active">人物</option>
+            <option value="candidate">待确认</option>
+            <option value="deleted">已删除</option>
+          </select>
+        </div>
+        <div className="memory-filters__group">
           <label className="memory-filters__label">关联项目</label>
           <select
             className="memory-filters__select"
             value={peopleFilters.projectId}
             onChange={(e) => setPeopleFilters({ projectId: e.target.value })}
+            disabled={peopleFilters.status !== "active"}
           >
             <option value="">全部项目</option>
             {todayData.projects.map((p) => (
@@ -609,13 +695,20 @@ export function PeoplePage() {
         </div>
       </div>
 
-      {todayLoading && todayData.people.length === 0 ? (
+      {(peopleFilters.status === "active" ? todayLoading : supplementalLoading)
+        && filteredPeople.length === 0 ? (
         <p className="state-loading">正在加载人物...</p>
       ) : filteredPeople.length === 0 ? (
         <div className="empty-state">
-          <p>当前没有符合筛选条件的人物。</p>
+          <p>{peopleFilters.status === "candidate"
+            ? "当前没有待确认的人物。"
+            : peopleFilters.status === "deleted"
+              ? "当前没有已删除的人物。"
+              : "当前没有符合筛选条件的人物。"}</p>
           <p className="empty-state__hint">
-            调整搜索关键词或筛选条件，或持续观察让 Recall 识别更多人物。
+            {peopleFilters.status === "active"
+              ? "调整搜索关键词或筛选条件，或持续观察让 Recall 识别更多人物。"
+              : "这里的对象不会进入日常人物列表，直到你确认或恢复。"}
           </p>
         </div>
       ) : (
@@ -630,10 +723,10 @@ export function PeoplePage() {
               <div
                 key={person.id}
                 className="person-card"
-                role="button"
-                tabIndex={0}
+                role={peopleFilters.status === "active" ? "button" : undefined}
+                tabIndex={peopleFilters.status === "active" ? 0 : undefined}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
+                  if (peopleFilters.status === "active" && (e.key === "Enter" || e.key === " ")) {
                     e.preventDefault();
                     setSelectedPersonId(person.id);
                   }
@@ -642,16 +735,21 @@ export function PeoplePage() {
                 <div className="person-card__header">
                   <h3 className="person-card__name">{person.name}</h3>
                   <div className="person-card__header-right">
+                    {peopleFilters.status !== "active" && (
+                      <span className="person-card__badge admission-card__status">
+                        {peopleFilters.status === "candidate" ? "待确认" : "已删除"}
+                      </span>
+                    )}
                     {stat.unfinishedCount > 0 && (
                       <span className="person-card__badge">{stat.unfinishedCount} 项待办</span>
                     )}
-                    <details className="person-card__menu">
+                    {peopleFilters.status === "active" && <details className="person-card__menu">
                       <summary aria-label="人物操作" title="人物操作"><MoreHorizontal size={17} /></summary>
                       <div className="person-card__menu-popover">
                         <button type="button" onClick={(e) => { e.stopPropagation(); setMergeFrom({ id: person.id, name: person.name }); }}>合并到...</button>
                         <button type="button" className="is-danger" onClick={(e) => { e.stopPropagation(); handleDeletePerson(person.id); }}>删除</button>
                       </div>
-                    </details>
+                    </details>}
                   </div>
                 </div>
                 {person.aliases && person.aliases.length > 0 && (
@@ -659,7 +757,10 @@ export function PeoplePage() {
                     别名：{person.aliases.join("、")}
                   </div>
                 )}
-                <div className="person-card__body" onClick={() => setSelectedPersonId(person.id)}>
+                <div
+                  className={`person-card__body${peopleFilters.status === "active" ? "" : " person-card__body--static"}`}
+                  onClick={() => peopleFilters.status === "active" && setSelectedPersonId(person.id)}
+                >
                   <div className="person-card__role">
                     {person.relationship
                       || [person.role, person.organization].filter(Boolean).join(" · ")
@@ -680,6 +781,43 @@ export function PeoplePage() {
                     </span>
                   </div>
                 </div>
+                {peopleFilters.status !== "active" && (
+                  <div className="admission-card__reason">
+                    {admissionReasonLabel(person.admissionReason)}
+                  </div>
+                )}
+                {peopleFilters.status === "candidate" && (
+                  <div className="admission-card__actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={reviewingPersonId === person.id}
+                      onClick={() => void handleReviewPerson(person.id, "promote")}
+                    >
+                      确认为人物
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={reviewingPersonId === person.id}
+                      onClick={() => void handleReviewPerson(person.id, "reject")}
+                    >
+                      排除
+                    </button>
+                  </div>
+                )}
+                {peopleFilters.status === "deleted" && (
+                  <div className="admission-card__actions">
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      disabled={reviewingPersonId === person.id}
+                      onClick={() => void handleReviewPerson(person.id, "restore")}
+                    >
+                      恢复人物
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

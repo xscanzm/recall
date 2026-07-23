@@ -6,17 +6,17 @@ import { handleValidated, ipcFail } from "../validated";
 
 export function registerTimelineHandlers(deps: IpcDeps): void {
   handleValidated(ipcMain, "timeline:build", async (_event, dateKey) => {
-    if (!deps.timelineBuilderWorker) ipcFail("not_ready", "TimelineBuilderWorker 未初始化");
+    if (!deps.timelineWindowCoordinator) ipcFail("not_ready", "TimelineWindowCoordinator 未初始化");
     try {
-      const result = await deps.timelineBuilderWorker.buildTimeline(dateKey);
-      return result.ok ? { ok: true, data: result } : { ok: false, error: result.errorMessage ?? "timeline build 失败", code: result.errorCode };
+      await deps.timelineWindowCoordinator.advance();
+      return { ok: true, data: { blocks: deps.timelineBlockRepo?.findByDateKey(dateKey) ?? [] } };
     } catch (error) { return failure(error); }
   });
   handleValidated(ipcMain, "timeline:reorganizeDay", async (_event, dateKey) => {
-    if (!deps.timelineBuilderWorker) ipcFail("not_ready", "TimelineBuilderWorker 未初始化");
+    if (!deps.timelineWindowCoordinator) ipcFail("not_ready", "TimelineWindowCoordinator 未初始化");
     try {
-      const result = await deps.timelineBuilderWorker.reorganizeDay(dateKey);
-      return result.ok ? { ok: true, data: result } : { ok: false, error: result.errorMessage ?? "timeline reorganize 失败", code: result.errorCode };
+      await deps.timelineWindowCoordinator.rebuildDate(dateKey);
+      return { ok: true, data: { blocks: deps.timelineBlockRepo?.findByDateKey(dateKey) ?? [] } };
     } catch (error) { return failure(error); }
   });
   handleValidated(ipcMain, "timeline:get", (_event, dateKey) => {

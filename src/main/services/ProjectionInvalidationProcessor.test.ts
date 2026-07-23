@@ -35,8 +35,8 @@ function setup(items: ProjectionInvalidation[]) {
       findReportsReferencingScene: vi.fn(() => [{ id: "report-scene" }]),
       markStaleMany: vi.fn(),
     },
-    timelineBuilderWorker: {
-      reorganizeDay: vi.fn(async (_date: string): Promise<{ ok: boolean; errorMessage?: string }> => ({ ok: true })),
+    timelineRebuilder: {
+      rebuildDate: vi.fn(async (_date: string): Promise<void> => undefined),
     },
     sceneRelationProjector: { projectScene: vi.fn() },
   };
@@ -44,11 +44,11 @@ function setup(items: ProjectionInvalidation[]) {
 }
 
 describe("ProjectionInvalidationProcessor", () => {
-  it("reorganizes every local date without deleting blocks first", async () => {
+  it("rebuilds every affected local date through the window coordinator", async () => {
     const { deps, processor } = setup([item("timeline")]);
     await processor.processPending();
 
-    expect(deps.timelineBuilderWorker.reorganizeDay.mock.calls.map(([date]) => date)).toEqual(["2026-07-10", "2026-07-11"]);
+    expect(deps.timelineRebuilder.rebuildDate.mock.calls.map(([date]) => date)).toEqual(["2026-07-10", "2026-07-11"]);
     expect(deps.correctionLifecycleRepo.markCompleted).toHaveBeenCalledWith("inv-timeline");
   });
 
@@ -71,7 +71,7 @@ describe("ProjectionInvalidationProcessor", () => {
 
   it("marks a failed timeline rebuild failed and continues", async () => {
     const { deps, processor } = setup([item("timeline"), item("search")]);
-    deps.timelineBuilderWorker.reorganizeDay.mockResolvedValue({ ok: false, errorMessage: "model unavailable" });
+    deps.timelineRebuilder.rebuildDate.mockRejectedValue(new Error("model unavailable"));
     await processor.processPending();
 
     expect(deps.correctionLifecycleRepo.markFailed).toHaveBeenCalledWith("inv-timeline", "model unavailable");

@@ -33,6 +33,12 @@ interface ProjectRow {
   orphan_status: string | null;
   // 012 字段
   aliases_json: string | null;
+  admission_status: "promoted" | "candidate" | "rejected";
+  admission_reason: string | null;
+  admission_evidence_json: string;
+  admission_decided_by: "legacy" | "auto" | "user";
+  admission_rule_version: number;
+  admission_reviewed_at: string | null;
 }
 
 interface TaskRow {
@@ -68,6 +74,12 @@ interface PersonRow {
   aliases_json: string | null;
   // 022 字段：用户与该人物的关系
   relationship: string | null;
+  admission_status: "promoted" | "candidate" | "rejected";
+  admission_reason: string | null;
+  admission_evidence_json: string;
+  admission_decided_by: "legacy" | "auto" | "user";
+  admission_rule_version: number;
+  admission_reviewed_at: string | null;
 }
 
 interface DecisionRow {
@@ -123,8 +135,10 @@ export class MemoryObjectRepository {
         `INSERT INTO projects (
           id, name, summary, status, last_active_at,
           source_fact_ids_json, source_scene_ids_json,
-          created_at, updated_at, aliases_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, aliases_json,
+          admission_status, admission_reason, admission_evidence_json,
+          admission_decided_by, admission_rule_version, admission_reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -136,7 +150,13 @@ export class MemoryObjectRepository {
         JSON.stringify(input.sourceSceneIds),
         now,
         now,
-        input.aliases ? JSON.stringify(input.aliases) : null
+        input.aliases ? JSON.stringify(input.aliases) : null,
+        input.admissionStatus ?? "promoted",
+        input.admissionReason ?? null,
+        JSON.stringify(input.admissionEvidence ?? []),
+        input.admissionDecidedBy ?? "auto",
+        input.admissionRuleVersion ?? 1,
+        input.admissionReviewedAt ?? now
       );
     return this.getProjectById(id)!;
   }
@@ -174,14 +194,8 @@ export class MemoryObjectRepository {
     return row ? mapProjectRow(row) : null;
   }
 
-  /**
-   * 按名字或别名模糊查找 active 项目（增强去重）
-   * 匹配顺序：精确(name) → 别名(aliases_json) → 规范化名字包含
-   * - 规范化：去括号、去空格、转小写
-   * - 包含匹配要求规范化后长度 >= 2，避免过短名字误匹配
-   */
+  /** 保留旧方法名兼容调用方；身份复用只接受精确名称或精确别名。 */
   findActiveProjectByFuzzyName(title: string): Project | null {
-    const normalized = normalizeName(title);
     const titleLower = title.toLowerCase();
     const rows = this.db
       .prepare(
@@ -189,18 +203,9 @@ export class MemoryObjectRepository {
       )
       .all() as ProjectRow[];
     for (const row of rows) {
-      // 1. 精确匹配（大小写不敏感）
       if (row.name.toLowerCase() === titleLower) return mapProjectRow(row);
-      // 2. 别名匹配
       const aliases = row.aliases_json ? safeParseArray<string>(row.aliases_json) : [];
       if (aliases.some((a) => a.toLowerCase() === titleLower)) return mapProjectRow(row);
-      // 3. 规范化包含匹配
-      if (normalized.length >= 2) {
-        const rowNorm = normalizeName(row.name);
-        if (rowNorm.length >= 2 && (rowNorm.includes(normalized) || normalized.includes(rowNorm))) {
-          return mapProjectRow(row);
-        }
-      }
     }
     return null;
   }
@@ -210,6 +215,8 @@ export class MemoryObjectRepository {
     includeArchived?: boolean;
     limit?: number;
     offset?: number;
+    admissionStatus?: "promoted" | "candidate" | "rejected";
+    includeNonPromoted?: boolean;
   } = {}): Project[] {
     const conditions: string[] = [];
     const params: unknown[] = [];
@@ -220,12 +227,26 @@ export class MemoryObjectRepository {
     if (!opts.includeArchived) {
       conditions.push("archived_at IS NULL");
     }
+    if (opts.admissionStatus) {
+      conditions.push("admission_status = ?");
+      params.push(opts.admissionStatus);
+    } else if (!opts.includeNonPromoted) {
+      conditions.push("admission_status = 'promoted'");
+    }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
     const rows = this.db
       .prepare(`SELECT * FROM projects ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as ProjectRow[];
+    return rows.map(mapProjectRow);
+  }
+
+  listProjectsForAdmissionReview(ruleVersion: number, limit = 200): Project[] {
+    const rows = this.db.prepare(`SELECT * FROM projects
+      WHERE admission_decided_by <> 'user' AND admission_rule_version < ?
+      ORDER BY created_at ASC, id ASC LIMIT ?`)
+      .all(ruleVersion, limit) as ProjectRow[];
     return rows.map(mapProjectRow);
   }
 
@@ -247,6 +268,17 @@ export class MemoryObjectRepository {
     return uniqueIds.flatMap((id) => projects.get(id) ?? []);
   }
 
+  findProjectByExactIdentity(name: string): Project | null {
+    const rows = this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all() as ProjectRow[];
+    const normalized = name.trim().toLowerCase();
+    const row = rows.find((candidate) =>
+      candidate.name.trim().toLowerCase() === normalized
+      || safeParseArray<string>(candidate.aliases_json ?? "[]")
+        .some((alias) => alias.trim().toLowerCase() === normalized)
+    );
+    return row ? mapProjectRow(row) : null;
+  }
+
   updateProject(id: string, patch: Partial<Omit<Project, "id" | "createdAt" | "updatedAt">>): Project | null {
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -261,6 +293,12 @@ export class MemoryObjectRepository {
       sets.push("aliases_json = ?");
       params.push(patch.aliases.length > 0 ? JSON.stringify(patch.aliases) : null);
     }
+    if (patch.admissionStatus !== undefined) { sets.push("admission_status = ?"); params.push(patch.admissionStatus); }
+    if (patch.admissionReason !== undefined) { sets.push("admission_reason = ?"); params.push(patch.admissionReason); }
+    if (patch.admissionEvidence !== undefined) { sets.push("admission_evidence_json = ?"); params.push(JSON.stringify(patch.admissionEvidence)); }
+    if (patch.admissionDecidedBy !== undefined) { sets.push("admission_decided_by = ?"); params.push(patch.admissionDecidedBy); }
+    if (patch.admissionRuleVersion !== undefined) { sets.push("admission_rule_version = ?"); params.push(patch.admissionRuleVersion); }
+    if (patch.admissionReviewedAt !== undefined) { sets.push("admission_reviewed_at = ?"); params.push(patch.admissionReviewedAt); }
     if (sets.length === 0) return this.getProjectById(id);
     sets.push("updated_at = ?");
     params.push(new Date().toISOString());
@@ -274,6 +312,13 @@ export class MemoryObjectRepository {
       .prepare("UPDATE projects SET archived_at = ?, status = 'archived', updated_at = ? WHERE id = ? AND archived_at IS NULL")
       .run(new Date().toISOString(), new Date().toISOString(), id);
     return result.changes > 0;
+  }
+
+  restoreProject(id: string): boolean {
+    const now = new Date().toISOString();
+    return this.db.prepare(`UPDATE projects SET archived_at = NULL, status = 'active',
+      admission_status = 'promoted', admission_decided_by = 'user', admission_reviewed_at = ?, updated_at = ?
+      WHERE id = ?`).run(now, now, id).changes > 0;
   }
 
   deleteProject(id: string): boolean {
@@ -417,8 +462,10 @@ export class MemoryObjectRepository {
         `INSERT INTO people (
           id, name, role, organization, summary,
           related_project_ids_json, source_fact_ids_json,
-          created_at, updated_at, aliases_json, relationship
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          created_at, updated_at, aliases_json, relationship,
+          admission_status, admission_reason, admission_evidence_json,
+          admission_decided_by, admission_rule_version, admission_reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -431,7 +478,13 @@ export class MemoryObjectRepository {
         now,
         now,
         input.aliases ? JSON.stringify(input.aliases) : null,
-        input.relationship ?? null
+        input.relationship ?? null,
+        input.admissionStatus ?? "promoted",
+        input.admissionReason ?? null,
+        JSON.stringify(input.admissionEvidence ?? []),
+        input.admissionDecidedBy ?? "auto",
+        input.admissionRuleVersion ?? 1,
+        input.admissionReviewedAt ?? now
       );
     return this.getPersonById(id)!;
   }
@@ -468,14 +521,8 @@ export class MemoryObjectRepository {
     return row ? mapPersonRow(row) : null;
   }
 
-  /**
-   * 按名字或别名模糊查找人物（增强去重）
-   * 匹配顺序：精确(name) → 别名(aliases_json) → 规范化名字包含
-   * - 规范化：去括号、去空格、转小写
-   * - 包含匹配要求规范化后长度 >= 2，避免过短名字误匹配
-   */
+  /** 保留旧方法名兼容调用方；身份复用只接受精确名称或精确别名。 */
   findPersonByFuzzyName(title: string): Person | null {
-    const normalized = normalizeName(title);
     const titleLower = title.toLowerCase();
     const rows = this.db
       .prepare(
@@ -483,31 +530,38 @@ export class MemoryObjectRepository {
       )
       .all() as PersonRow[];
     for (const row of rows) {
-      // 1. 精确匹配（大小写不敏感）
       if (row.name.toLowerCase() === titleLower) return mapPersonRow(row);
-      // 2. 别名匹配
       const aliases = row.aliases_json ? safeParseArray<string>(row.aliases_json) : [];
       if (aliases.some((a) => a.toLowerCase() === titleLower)) return mapPersonRow(row);
-      // 3. 规范化包含匹配
-      if (normalized.length >= 2) {
-        const rowNorm = normalizeName(row.name);
-        if (rowNorm.length >= 2 && (rowNorm.includes(normalized) || normalized.includes(rowNorm))) {
-          return mapPersonRow(row);
-        }
-      }
     }
     return null;
   }
 
-  listPeople(opts: { includeDeleted?: boolean; limit?: number; offset?: number } = {}): Person[] {
+  listPeople(opts: {
+    includeDeleted?: boolean;
+    limit?: number;
+    offset?: number;
+    admissionStatus?: "promoted" | "candidate" | "rejected";
+    includeNonPromoted?: boolean;
+  } = {}): Person[] {
     const conditions: string[] = [];
     if (!opts.includeDeleted) { conditions.push("deleted_at IS NULL"); }
+    if (opts.admissionStatus) { conditions.push("admission_status = ?"); }
+    else if (!opts.includeNonPromoted) { conditions.push("admission_status = 'promoted'"); }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = opts.limit ?? 100;
     const offset = opts.offset ?? 0;
     const rows = this.db
       .prepare(`SELECT * FROM people ${where} ORDER BY updated_at DESC LIMIT ? OFFSET ?`)
-      .all(limit, offset) as PersonRow[];
+      .all(...(opts.admissionStatus ? [opts.admissionStatus] : []), limit, offset) as PersonRow[];
+    return rows.map(mapPersonRow);
+  }
+
+  listPeopleForAdmissionReview(ruleVersion: number, limit = 200): Person[] {
+    const rows = this.db.prepare(`SELECT * FROM people
+      WHERE admission_decided_by <> 'user' AND admission_rule_version < ?
+      ORDER BY created_at ASC, id ASC LIMIT ?`)
+      .all(ruleVersion, limit) as PersonRow[];
     return rows.map(mapPersonRow);
   }
 
@@ -525,6 +579,12 @@ export class MemoryObjectRepository {
       sets.push("aliases_json = ?");
       params.push(patch.aliases.length > 0 ? JSON.stringify(patch.aliases) : null);
     }
+    if (patch.admissionStatus !== undefined) { sets.push("admission_status = ?"); params.push(patch.admissionStatus); }
+    if (patch.admissionReason !== undefined) { sets.push("admission_reason = ?"); params.push(patch.admissionReason); }
+    if (patch.admissionEvidence !== undefined) { sets.push("admission_evidence_json = ?"); params.push(JSON.stringify(patch.admissionEvidence)); }
+    if (patch.admissionDecidedBy !== undefined) { sets.push("admission_decided_by = ?"); params.push(patch.admissionDecidedBy); }
+    if (patch.admissionRuleVersion !== undefined) { sets.push("admission_rule_version = ?"); params.push(patch.admissionRuleVersion); }
+    if (patch.admissionReviewedAt !== undefined) { sets.push("admission_reviewed_at = ?"); params.push(patch.admissionReviewedAt); }
     if (sets.length === 0) return this.getPersonById(id);
     sets.push("updated_at = ?");
     params.push(new Date().toISOString());
@@ -546,6 +606,24 @@ export class MemoryObjectRepository {
       .prepare("UPDATE people SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL")
       .run(new Date().toISOString(), new Date().toISOString(), id);
     return result.changes > 0;
+  }
+
+  findPersonByExactIdentity(name: string): Person | null {
+    const rows = this.db.prepare("SELECT * FROM people ORDER BY updated_at DESC").all() as PersonRow[];
+    const normalized = name.trim().toLowerCase();
+    const row = rows.find((candidate) =>
+      candidate.name.trim().toLowerCase() === normalized
+      || safeParseArray<string>(candidate.aliases_json ?? "[]")
+        .some((alias) => alias.trim().toLowerCase() === normalized)
+    );
+    return row ? mapPersonRow(row) : null;
+  }
+
+  restorePerson(id: string): boolean {
+    const now = new Date().toISOString();
+    return this.db.prepare(`UPDATE people SET deleted_at = NULL,
+      admission_status = 'promoted', admission_decided_by = 'user', admission_reviewed_at = ?, updated_at = ?
+      WHERE id = ?`).run(now, now, id).changes > 0;
   }
 
   deletePerson(id: string): boolean {
@@ -904,6 +982,12 @@ function mapProjectRow(row: ProjectRow): Project {
     orphanStatus: row.orphan_status,
     // 012 字段
     aliases: row.aliases_json ? safeParseArray<string>(row.aliases_json) : [],
+    admissionStatus: row.admission_status ?? "promoted",
+    admissionReason: row.admission_reason,
+    admissionEvidence: safeParseArray(row.admission_evidence_json ?? "[]"),
+    admissionDecidedBy: row.admission_decided_by ?? "legacy",
+    admissionRuleVersion: row.admission_rule_version ?? 0,
+    admissionReviewedAt: row.admission_reviewed_at,
   };
 }
 
@@ -943,6 +1027,12 @@ function mapPersonRow(row: PersonRow): Person {
     aliases: row.aliases_json ? safeParseArray<string>(row.aliases_json) : [],
     // 022 字段
     relationship: row.relationship,
+    admissionStatus: row.admission_status ?? "promoted",
+    admissionReason: row.admission_reason,
+    admissionEvidence: safeParseArray(row.admission_evidence_json ?? "[]"),
+    admissionDecidedBy: row.admission_decided_by ?? "legacy",
+    admissionRuleVersion: row.admission_rule_version ?? 0,
+    admissionReviewedAt: row.admission_reviewed_at,
   };
 }
 
@@ -971,20 +1061,6 @@ function safeParseArray<T = unknown>(json: string): T[] {
   } catch {
     return [];
   }
-}
-
-/**
- * 名字规范化（用于模糊去重）
- * - 转小写
- * - 去除括号及括号内内容（中文括号（）和英文括号 ()）
- * - 去除首尾空格
- * 例："陈章（耀石锂电hr）" → "陈章"
- */
-function normalizeName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[（(][^）)]*[）)]/g, "") // 去除中文/英文括号及内容
-    .trim();
 }
 
 function generateId(prefix: string): string {

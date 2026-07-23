@@ -7104,6 +7104,45 @@ textarea:focus,
   opacity: 0.55;
 }
 
+.project-card:not([role="button"]),
+.person-card:not([role="button"]),
+.person-card__body--static {
+  cursor: default;
+}
+
+.admission-card__status {
+  border-color: var(--recall-amber);
+  background: var(--recall-amber-soft);
+  color: var(--recall-amber);
+}
+
+.admission-card__reason {
+  min-height: 36px;
+  padding: 9px 10px;
+  border-left: 3px solid var(--recall-amber);
+  background: var(--recall-surface-muted);
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.admission-card__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admission-card__actions .btn {
+  min-height: 32px;
+  padding: 5px 12px;
+}
+
+.admission-card__actions button:disabled,
+.project-card__actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .memory-search-page__hero {
   width: 100%;
   max-width: none;
@@ -7414,4 +7453,30 @@ textarea:focus,
   background: var(--recall-border);
   content: "";
   opacity: 0.45;
+}
+/* Renderer-level recovery state: kept independent from app data and IPC. */
+.renderer-error {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: start;
+  gap: 12px;
+  padding: 40px;
+  background: #f7f6f2;
+  color: #17332c;
+}
+
+.renderer-error h1,
+.renderer-error p {
+  margin: 0;
+}
+
+.renderer-error button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid #397866;
+  border-radius: 6px;
+  background: #397866;
+  color: #fff;
+  cursor: pointer;
 }

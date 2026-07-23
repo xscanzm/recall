@@ -5,7 +5,7 @@
 // - Renderer 严禁：直接持有 API Key、直接访问截图文件真实路径后展示截图墙、直接调用模型、直接写 SQLite
 // - 所有 main 进程能力通过 window.recallAPI（preload 暴露）调用
 
-import { StrictMode } from "react";
+import { Component, StrictMode, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { EndOfDayReviewPopup } from "./components/EndOfDayReviewPopup";
@@ -20,8 +20,33 @@ if (!container) {
 const isPopup = new URLSearchParams(window.location.search).get("window") === "end-of-day-review";
 const isReportPopup = new URLSearchParams(window.location.search).get("window") === "report-generated";
 
+class RendererErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    console.error("renderer_root_failed", error.name, info.componentStack ? "component_stack_available" : "no_component_stack");
+  }
+
+  render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <main className="renderer-error" role="alert">
+        <h1>主界面加载失败</h1>
+        <p>请重新加载应用界面。</p>
+        <button type="button" onClick={() => window.location.reload()}>重新加载</button>
+      </main>
+    );
+  }
+}
+
 createRoot(container).render(
   <StrictMode>
-    {isPopup ? <EndOfDayReviewPopup /> : isReportPopup ? <ReportGeneratedPopup /> : <App />}
+    <RendererErrorBoundary>
+      {isPopup ? <EndOfDayReviewPopup /> : isReportPopup ? <ReportGeneratedPopup /> : <App />}
+    </RendererErrorBoundary>
   </StrictMode>
 );

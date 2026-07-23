@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const EXPECTED_INVOKE_CHANNEL_COUNT = 81;
+const EXPECTED_INVOKE_CHANNEL_COUNT = 82;
 const DECOMPOSED_DOMAIN_PREFIXES = [
   "reports:",
   "timeline:",

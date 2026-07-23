@@ -567,6 +567,12 @@ export interface Project {
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+  admissionStatus?: "promoted" | "candidate" | "rejected";
+  admissionReason?: string | null;
+  admissionEvidence?: MemoryObjectAdmissionEvidence[];
+  admissionDecidedBy?: "legacy" | "auto" | "user";
+  admissionRuleVersion?: number;
+  admissionReviewedAt?: string | null;
   /** 003 字段：标记仅由被删 facts 支撑的对象，取值 'ok'/'needs_review'/'source_deleted' */
   orphanStatus?: string | null;
   /**
@@ -614,6 +620,12 @@ export interface Person {
   deletedAt: string | null;
   /** 022 字段：用户与该人物的关系（手动编辑，如"同事""客户""朋友"） */
   relationship: string | null;
+  admissionStatus?: "promoted" | "candidate" | "rejected";
+  admissionReason?: string | null;
+  admissionEvidence?: MemoryObjectAdmissionEvidence[];
+  admissionDecidedBy?: "legacy" | "auto" | "user";
+  admissionRuleVersion?: number;
+  admissionReviewedAt?: string | null;
   /**
    * 012 字段：别名列表（合并过的旧名字）
    * - 例：人物「陈章」合并过「陈章（耀石锂电 hr）」「耀石锂电 hr」，则 to.aliases = ['陈章（耀石锂电 hr）', '耀石锂电 hr']
@@ -834,14 +846,10 @@ export type TimelineBlockCategory =
  *
  * spec.md 行 722-752
  */
-export interface TimelineBlockOutputItem {
-  id?: string;
-  startAt?: string;
-  endAt?: string;
+export interface TimelineCardOutput {
   title: string;
   summary: string;
   category: TimelineBlockCategory;
-  projectIds: string[];
   projectNames: string[];
   highlights: string[];
   generatedTasks: string[];
@@ -849,11 +857,17 @@ export interface TimelineBlockOutputItem {
   reportable: boolean;
   privateRisk: "low" | "medium" | "high";
   privateRiskReason: string;
-  sourceSceneIds: string[];
-  sourceFactIds: string[];
-  sourceObservationIds: string[];
   confidence: number;
 }
+
+export interface MemoryObjectAdmissionEvidence {
+  factId: string;
+  kind: "exact_hint" | "strong_work" | "continuity" | "direct_relationship";
+  episodeIds: string[];
+}
+
+/** @deprecated Timeline generation now returns exactly one semantic card. */
+export type TimelineBlockOutputItem = TimelineCardOutput;
 
 /**
  * Observer 输出 V2（doc 20 第 3 节 / spec.md 行 513-539）
@@ -1022,10 +1036,17 @@ export interface TimelineBuilderInput {
  * TimelineBuilder 输出（doc 20 第 5 节 / spec.md 行 718-753）
  */
 export interface TimelineBuilderOutput {
-  dateKey: string;
-  dayStartSummary: string;
-  dayMainThread: string;
-  blocks: TimelineBlockOutputItem[];
+  title: string;
+  summary: string;
+  category: TimelineBlockCategory;
+  projectNames: string[];
+  highlights: string[];
+  generatedTasks: string[];
+  generatedDecisions: string[];
+  reportable: boolean;
+  privateRisk: "low" | "medium" | "high";
+  privateRiskReason: string;
+  confidence: number;
 }
 
 /**

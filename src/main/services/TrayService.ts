@@ -32,8 +32,8 @@ export interface TrayServiceDeps {
     pipelineState: string;
     lastError?: string;
   };
-  startObserving: () => void;
-  pauseObserving: () => void;
+  startObserving: () => void | Promise<void>;
+  pauseObserving: () => void | Promise<void>;
   getMainWindow: () => BrowserWindow | null;
   createMainWindow: () => BrowserWindow;
   onQuit: () => void;
@@ -224,13 +224,10 @@ export class TrayService {
         label: status.paused ? "恢复观察" : "暂停观察",
         click: () => {
           if (!this.deps) return;
-          if (status.paused) {
-            this.deps.startObserving();
-          } else {
-            this.deps.pauseObserving();
-          }
-          // 刷新托盘菜单（观察状态已变化）
-          this.updateMenu();
+          const action = status.paused
+            ? this.deps.startObserving()
+            : this.deps.pauseObserving();
+          void Promise.resolve(action).finally(() => this.updateMenu());
         },
       },
       { type: "separator" },

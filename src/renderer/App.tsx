@@ -43,13 +43,20 @@ export default function App() {
   const [defaultConsentBusy, setDefaultConsentBusy] = useState(false);
 
   useEffect(() => {
-    const ipc = getIpc();
-    const unsub = ipc.app.onNavigate((page) => {
-      if (page === "today" || page === "reports") {
-        useAppStore.getState().setPage(page);
-      }
-    });
-    return unsub;
+    try {
+      const ipc = getIpc();
+      const unsub = ipc.app.onNavigate((page) => {
+        if (page === "today" || page === "reports") {
+          useAppStore.getState().setPage(page);
+        }
+      });
+      return unsub;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setBootError(`启动失败：${message}`);
+      setError(message);
+      return undefined;
+    }
   }, []);
 
   useEffect(() => {

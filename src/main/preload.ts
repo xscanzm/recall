@@ -203,8 +203,21 @@ const recallApi = {
       people: Array<{ id: string; name: string; aliases: string[] }>;
     }> => ipcRenderer.invoke("memory:listAllAliases"),
     // 012 新增：列出所有人物 / 项目（人物/项目页用）
-    listPeople: <T>(): Promise<{ ok: true; people: T[] }> => ipcRenderer.invoke("memory:listPeople"),
-    listProjects: <T>(input?: { includeArchived?: boolean }): Promise<{ ok: true; projects: T[] }> => ipcRenderer.invoke("memory:listProjects", input),
+    listPeople: <T>(input?: {
+      includeDeleted?: boolean;
+      admissionStatus?: "promoted" | "candidate" | "rejected";
+      includeNonPromoted?: boolean;
+    }): Promise<{ ok: true; people: T[] }> => ipcRenderer.invoke("memory:listPeople", input),
+    listProjects: <T>(input?: {
+      includeArchived?: boolean;
+      admissionStatus?: "promoted" | "candidate" | "rejected";
+      includeNonPromoted?: boolean;
+    }): Promise<{ ok: true; projects: T[] }> => ipcRenderer.invoke("memory:listProjects", input),
+    reviewAdmission: (input: {
+      objectType: "project" | "person";
+      id: string;
+      decision: "promote" | "reject" | "restore";
+    }): Promise<{ ok: true }> => ipcRenderer.invoke("memory:reviewAdmission", input),
   },
 
   // -------------------- reminders --------------------

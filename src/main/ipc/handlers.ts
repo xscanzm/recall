@@ -52,12 +52,14 @@ import type { DB } from "../db/Database";
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { SceneRepository } from "../db/repositories/SceneRepository";
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
+import type { MemoryObjectAdmissionService } from "../services/MemoryObjectAdmissionService";
 import type { ProactiveItemRepository } from "../db/repositories/ProactiveItemRepository";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { ReporterWorker } from "../services/ReporterWorker";
 import type { ReportScheduler } from "../services/ReportScheduler";
 // Phase 2 新增
 import type { TimelineBuilderWorker } from "../services/TimelineBuilderWorker";
+import type { TimelineWindowCoordinator } from "../services/TimelineWindowCoordinator";
 import type { PersonalReviewWriterWorker } from "../services/PersonalReviewWriterWorker";
 import type { WorkReportWriterWorker } from "../services/WorkReportWriterWorker";
 import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRepository";
@@ -119,14 +121,15 @@ export interface IpcDeps {
   factRepo?: FactRepository;
   sceneRepo?: SceneRepository;
   memoryObjectRepo?: MemoryObjectRepository;
+  memoryObjectAdmissionService?: MemoryObjectAdmissionService;
   proactiveItemRepo?: ProactiveItemRepository;
   // M6 报告相关
   reportRepo?: ReportRepository;
   infographicService?: InfographicService;
   reporterWorker?: ReporterWorker;
   reportScheduler?: ReportScheduler;
-  startObserving?: () => void;
-  pauseObserving?: () => void;
+  startObserving?: () => void | Promise<void>;
+  pauseObserving?: () => void | Promise<void>;
   /**
    * M8 新增：数据库实例引用
    * 用于 data:clearAll / data:export 等 bulk 操作
@@ -135,6 +138,7 @@ export interface IpcDeps {
   db?: DB;
   // Phase 2 新增：TimelineBuilder / PersonalReviewWriter / WorkReportWriter
   timelineBuilderWorker?: TimelineBuilderWorker;
+  timelineWindowCoordinator?: TimelineWindowCoordinator;
   personalReviewWriterWorker?: PersonalReviewWriterWorker;
   workReportWriterWorker?: WorkReportWriterWorker;
   timelineBlockRepo?: TimelineBlockRepository;
@@ -1104,11 +1108,20 @@ ${context}
    * - 用于人物页 PeoplePage 渲染
    * - 返回 Person 完整字段（含 aliases）
    */
-  ipcMain.handle("memory:listPeople", () => {
+  ipcMain.handle("memory:listPeople", (_event, input?: {
+    includeDeleted?: boolean;
+    admissionStatus?: "promoted" | "candidate" | "rejected";
+    includeNonPromoted?: boolean;
+  }) => {
     if (!deps.memoryObjectRepo) {
       fail("not_ready", "MemoryObjectRepository 未初始化");
     }
-    return { ok: true, people: deps.memoryObjectRepo.listPeople({ includeDeleted: false }) };
+    return { ok: true, people: deps.memoryObjectRepo.listPeople({
+      includeDeleted: input?.includeDeleted ?? false,
+      admissionStatus: input?.admissionStatus,
+      includeNonPromoted: input?.includeNonPromoted,
+      limit: 500,
+    }) };
   });
 
   /**
@@ -1116,11 +1129,40 @@ ${context}
    * - 用于项目页 ProjectsPage 渲染
    * - 返回 Project 完整字段（含 aliases）
    */
-  ipcMain.handle("memory:listProjects", (_event, input?: { includeArchived?: boolean }) => {
+  ipcMain.handle("memory:listProjects", (_event, input?: {
+    includeArchived?: boolean;
+    admissionStatus?: "promoted" | "candidate" | "rejected";
+    includeNonPromoted?: boolean;
+  }) => {
     if (!deps.memoryObjectRepo) {
       fail("not_ready", "MemoryObjectRepository 未初始化");
     }
-    return { ok: true, projects: deps.memoryObjectRepo.listProjects({ includeArchived: input?.includeArchived ?? false, limit: 500 }) };
+    return { ok: true, projects: deps.memoryObjectRepo.listProjects({
+      includeArchived: input?.includeArchived ?? false,
+      admissionStatus: input?.admissionStatus,
+      includeNonPromoted: input?.includeNonPromoted,
+      limit: 500,
+    }) };
+  });
+
+  ipcMain.handle("memory:reviewAdmission", (_event, input: unknown) => {
+    if (!deps.memoryObjectAdmissionService) {
+      fail("not_ready", "MemoryObjectAdmissionService 未初始化");
+    }
+    if (!input || typeof input !== "object") fail("schema_invalid", "准入审核参数无效");
+    const value = input as Record<string, unknown>;
+    if (!["project", "person"].includes(String(value.objectType))
+      || typeof value.id !== "string"
+      || !["promote", "reject", "restore"].includes(String(value.decision))) {
+      fail("schema_invalid", "准入审核参数无效");
+    }
+    const updated = deps.memoryObjectAdmissionService.review(value as {
+      objectType: "project" | "person";
+      id: string;
+      decision: "promote" | "reject" | "restore";
+    });
+    if (!updated) fail("not_found", "未找到待审核对象");
+    return { ok: true };
   });
 
   // -------------------- reminders --------------------

@@ -28,7 +28,6 @@
 
 import type { ReporterWorker } from "./ReporterWorker";
 import type { PersonalReviewWriterWorker } from "./PersonalReviewWriterWorker";
-import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
 import type { SettingsService } from "./SettingsService";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import { logger } from "./Logger";
@@ -123,7 +122,7 @@ interface RetryState {
 export class ReportScheduler {
   private readonly reporterWorker: ReporterWorker;
   private readonly personalReviewWriterWorker: PersonalReviewWriterWorker | null;
-  private readonly timelineBuilderWorker: TimelineBuilderWorker | null;
+  private readonly timelinePreflight: { preflightReport: (dateKey: string) => Promise<void> } | null;
   private readonly settingsService: SettingsService | null;
   private readonly reportRepo: ReportRepository | null;
   private checkTimer: NodeJS.Timeout | null = null;
@@ -143,13 +142,13 @@ export class ReportScheduler {
   constructor(deps: {
     reporterWorker: ReporterWorker;
     personalReviewWriterWorker?: PersonalReviewWriterWorker;
-    timelineBuilderWorker?: TimelineBuilderWorker;
+    timelinePreflight?: { preflightReport: (dateKey: string) => Promise<void> };
     reportRepo?: ReportRepository;
     settingsService?: SettingsService;
   }) {
     this.reporterWorker = deps.reporterWorker;
     this.personalReviewWriterWorker = deps.personalReviewWriterWorker ?? null;
-    this.timelineBuilderWorker = deps.timelineBuilderWorker ?? null;
+    this.timelinePreflight = deps.timelinePreflight ?? null;
     this.reportRepo = deps.reportRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
   }
@@ -216,6 +215,7 @@ export class ReportScheduler {
   ): Promise<ScheduleResult> {
     const targetDate = date ?? localTodayKey();
     try {
+      await this.timelinePreflight?.preflightReport(targetDate);
       const result = await this.reporterWorker.generateDailyReport(
         targetDate,
         generationRequirement
@@ -588,14 +588,7 @@ export class ReportScheduler {
     origin: "scheduled" | "backfill" | "retry"
   ): Promise<boolean> {
     try {
-      // 报告生成前先触发 buildTimeline 收尾，确保最后一段未落盘的数据已持久化
-      if (this.timelineBuilderWorker) {
-        try {
-          await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
-        } catch {
-          // buildTimeline 失败不阻断报告生成，继续使用已有 timeline_blocks
-        }
-      }
+      await this.timelinePreflight?.preflightReport(dateKey);
       const result = await this.reporterWorker.generateDailyReport(dateKey);
       if (result.ok && result.reportRecord) {
         this.markDailyReportDone(dateKey);
@@ -627,14 +620,6 @@ export class ReportScheduler {
   ): Promise<boolean> {
     if (!this.personalReviewWriterWorker) return false;
     try {
-      // 报告生成前先触发 buildTimeline 收尾，确保最后一段未落盘的数据已持久化
-      if (this.timelineBuilderWorker) {
-        try {
-          await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
-        } catch {
-          // buildTimeline 失败不阻断报告生成，继续使用已有 timeline_blocks
-        }
-      }
       const result = await this.personalReviewWriterWorker.writePersonalReview(dateKey);
       if (result.ok && result.reportRecord) {
         this.markPersonalReviewDone(dateKey);

@@ -64,6 +64,7 @@ export type IpcChannel =
   | "memory:listAllAliases"
   | "memory:listPeople"
   | "memory:listProjects"
+  | "memory:reviewAdmission"
   | "reminders:list"
   | "reminders:updateStatus"
   | "reports:list"
@@ -165,6 +166,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "memory:listAllAliases",
   "memory:listPeople",
   "memory:listProjects",
+  "memory:reviewAdmission",
   "reminders:list",
   "reminders:updateStatus",
   "reports:list",

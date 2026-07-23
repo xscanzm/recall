@@ -13,6 +13,7 @@
 // - screenshot_paths_json
 
 import type { DB } from "../Database";
+import * as fs from "node:fs";
 import type { Observation, CreateObservationInput } from "../../models/types";
 import type { ScreenshotRetentionPolicy } from "../../models/types";
 import { getLocalTodayStartIso } from "./_helpers";
@@ -270,38 +271,37 @@ export class ObservationRepository {
    *
    * 注意：此方法可能在大批量数据时较慢，仅在启动时清理后调用一次
    */
-  markExpiredScreenshots(): number {
-    const rows = this.db
-      .prepare(
-        `SELECT id, screenshot_paths_json FROM observations
-         WHERE screenshot_retention NOT IN ('expired', 'deleted')`
-      )
-      .all() as Array<{ id: string; screenshot_paths_json: string }>;
-
+  async markExpiredScreenshots(batchSize = 200): Promise<number> {
     let updated = 0;
     const update = this.db.prepare(
       "UPDATE observations SET screenshot_retention = 'expired' WHERE id = ?"
     );
-    for (const row of rows) {
-      const paths = safeParseArray<string>(row.screenshot_paths_json);
-      if (paths.length === 0) {
-        continue;
-      }
-      // 检查所有路径是否都不存在
-      const allMissing = paths.every((p) => {
-        try {
-          // 同步检查文件是否存在
-          // eslint-disable-next-line @typescript-eslint/no-var-requires
-          const fs = require("node:fs");
-          return !fs.existsSync(p);
-        } catch {
-          return true;
+    const updateBatch = this.db.transaction((ids: string[]) => {
+      for (const id of ids) update.run(id);
+    });
+    let cursor = "";
+
+    while (true) {
+      const rows = this.db
+        .prepare(
+          `SELECT id, screenshot_paths_json FROM observations
+           WHERE screenshot_retention NOT IN ('expired', 'deleted') AND id > ?
+           ORDER BY id ASC LIMIT ?`
+        )
+        .all(cursor, Math.max(1, batchSize)) as Array<{ id: string; screenshot_paths_json: string }>;
+      if (rows.length === 0) break;
+
+      const expiredIds: string[] = [];
+      for (const row of rows) {
+        const paths = safeParseArray<string>(row.screenshot_paths_json);
+        if (paths.length > 0 && paths.every((filePath) => !fs.existsSync(filePath))) {
+          expiredIds.push(row.id);
         }
-      });
-      if (allMissing) {
-        update.run(row.id);
-        updated++;
       }
+      if (expiredIds.length > 0) updateBatch(expiredIds);
+      updated += expiredIds.length;
+      cursor = rows[rows.length - 1].id;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     return updated;
   }

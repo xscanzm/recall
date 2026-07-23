@@ -130,6 +130,7 @@ export interface TodayTimelineProjection {
    * LLM 输出的置信度，持久化时可选保留
    */
   confidence?: number;
+  sourceCompleteness?: "complete" | "partial";
   createdAt?: string;
   updatedAt?: string;
 }

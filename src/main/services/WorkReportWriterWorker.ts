@@ -37,7 +37,6 @@ import type { ReportSelectionRepository } from "../db/repositories/ReportSelecti
 import type { FactRepository } from "../db/repositories/FactRepository";
 import type { ReportRepository } from "../db/repositories/ReportRepository";
 import type { SettingsService } from "./SettingsService";
-import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
 import {
   hasReportGenerationRequirements,
   resolveReportGenerationRequirements,
@@ -106,7 +105,7 @@ export class WorkReportWriterWorker {
   private readonly factRepo: FactRepository;
   private readonly reportRepo: ReportRepository;
   private readonly settingsService: SettingsService | null;
-  private readonly timelineBuilderWorker: TimelineBuilderWorker | null;
+  private readonly timelinePreflight: { preflightReport: (dateKey: string) => Promise<void> } | null;
   private readonly infographicService: InfographicService | null;
   private readonly onReportGenerated?: (report: Report) => void;
 
@@ -118,7 +117,7 @@ export class WorkReportWriterWorker {
     factRepo: FactRepository;
     reportRepo: ReportRepository;
     settingsService?: SettingsService;
-    timelineBuilderWorker?: TimelineBuilderWorker;
+    timelinePreflight?: { preflightReport: (dateKey: string) => Promise<void> };
     infographicService?: InfographicService;
     onReportGenerated?: (report: Report) => void;
   }) {
@@ -129,7 +128,7 @@ export class WorkReportWriterWorker {
     this.factRepo = deps.factRepo;
     this.reportRepo = deps.reportRepo;
     this.settingsService = deps.settingsService ?? null;
-    this.timelineBuilderWorker = deps.timelineBuilderWorker ?? null;
+    this.timelinePreflight = deps.timelinePreflight ?? null;
     this.infographicService = deps.infographicService ?? null;
     this.onReportGenerated = deps.onReportGenerated;
   }
@@ -160,16 +159,8 @@ export class WorkReportWriterWorker {
       };
     }
 
-    // 2. 加载当日所有 TimelineBlock
-    //    先调用 buildTimeline 确保最新（spec.md 行 645 "生成报告前确保 timeline blocks 最新"）。
-    //    buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks。
-    if (this.timelineBuilderWorker) {
-      try {
-        await this.timelineBuilderWorker.buildTimeline(dateKey, "forceFinalizeTail");
-      } catch {
-        // buildTimeline 失败不阻断报告生成，继续使用现有 timeline_blocks
-      }
-    }
+    // 报告读取时间轴前必须完成可收尾窗口；失败交给报告调用方重试。
+    await this.timelinePreflight?.preflightReport(dateKey);
     const allBlocks = this.fetchTimelineBlocks(dateKey);
     if (allBlocks.length === 0) {
       return {

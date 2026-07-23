@@ -43,6 +43,7 @@ import type { UnfinishedThread } from "../../shared/types";
 import { getSystemTimezone, getSystemTimezoneOffset } from "../utils/timezone";
 import { normalizeIsoToZ } from "../utils/isoTime";
 import { logger } from "./Logger";
+import type { MemoryObjectAdmissionService } from "./MemoryObjectAdmissionService";
 
 /**
  * SceneBuilder 触发原因（从 SceneBuilderWorker 移植，避免跨文件依赖）
@@ -175,6 +176,7 @@ export class LinkerSceneJudgeWorker {
   private readonly unfinishedThreadRepo: UnfinishedThreadRepository | null;
   private readonly timelineBlockRepo: TimelineBlockRepository | null;
   private readonly settingsService: SettingsService | null;
+  private readonly admissionService: MemoryObjectAdmissionService;
 
   constructor(deps: {
     modelGateway: ModelGateway;
@@ -187,6 +189,7 @@ export class LinkerSceneJudgeWorker {
     unfinishedThreadRepo?: UnfinishedThreadRepository;
     timelineBlockRepo?: TimelineBlockRepository;
     settingsService?: SettingsService;
+    admissionService: MemoryObjectAdmissionService;
   }) {
     this.modelGateway = deps.modelGateway;
     this.modelJobQueue = deps.modelJobQueue;
@@ -198,6 +201,7 @@ export class LinkerSceneJudgeWorker {
     this.unfinishedThreadRepo = deps.unfinishedThreadRepo ?? null;
     this.timelineBlockRepo = deps.timelineBlockRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
+    this.admissionService = deps.admissionService;
   }
 
   /**
@@ -424,6 +428,7 @@ export class LinkerSceneJudgeWorker {
       const projects = this.memoryObjectRepo.listProjects({
         status: "active",
         limit: 10,
+        includeNonPromoted: true,
       });
       return projects
         .slice()
@@ -479,7 +484,7 @@ export class LinkerSceneJudgeWorker {
    */
   private fetchCandidatePeople(): CandidatePersonSummary[] {
     try {
-      const people = this.memoryObjectRepo.listPeople({ limit: 10 });
+      const people = this.memoryObjectRepo.listPeople({ limit: 10, includeNonPromoted: true });
       return people.map((p) => ({
         id: p.id,
         name: p.name,
@@ -588,6 +593,9 @@ export class LinkerSceneJudgeWorker {
         }
 
         this.persistFactLinkEdge(link);
+        if (link.targetType === "project" || link.targetType === "person") {
+          this.admissionService.reassessObject(link.targetType, link.targetId);
+        }
 
         processed.push(link);
       } catch {
@@ -768,30 +776,18 @@ export class LinkerSceneJudgeWorker {
 
     switch (newObj.objectType) {
       case "project": {
-        const existingId = this.dedupCheck("project", newObj.title);
-        if (existingId) {
-          if (debugEvents) {
-            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: project", targetType: "project", itemId: existingId });
-          }
-          logger.info({
-            jobType: "linker_scene_judge",
-            message: `dedup hit: project ${existingId}`,
-          });
-          this.linkFactIdsToExisting("project", existingId, sourceFactIds);
-          this.finalizeObjectFactLinks("project", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
-          return true;
-        }
-        const created = this.memoryObjectRepo.createProject({
-          name: newObj.title,
+        const admitted = this.admissionService.admitOrAccumulate({
+          objectType: "project",
+          title: newObj.title,
           summary: newObj.summary,
-          status: "active",
-          lastActiveAt: now,
           sourceFactIds,
-          sourceSceneIds: [],
+          confidence: newObj.confidence,
         });
-        this.finalizeObjectFactLinks("project", created.id, sourceFactIds, newObj.confidence, "新建项目对象的事实来源关系");
-        // 自动相似度检测：若与现有项目相似，写入合并建议
-        this.checkAndWriteAutoMergeSuggestion("project", created.id, created.name, sourceFactIds);
+        if (admitted.status === "rejected") return false;
+        this.finalizeObjectFactLinks("project", admitted.object.id, sourceFactIds, newObj.confidence, "项目候选的事实来源关系");
+        if (admitted.created) {
+          this.checkAndWriteAutoMergeSuggestion("project", admitted.object.id, admitted.object.name, sourceFactIds);
+        }
         return true;
       }
       case "task": {
@@ -823,34 +819,21 @@ export class LinkerSceneJudgeWorker {
         return true;
       }
       case "person": {
-        const existingId = this.dedupCheck("person", newObj.title);
-        if (existingId) {
-          if (debugEvents) {
-            debugEvents.push({ layer: "L3", action: "dedup", reason: "dedup_hit: person", targetType: "person", itemId: existingId });
-          }
-          logger.info({
-            jobType: "linker_scene_judge",
-            message: `dedup hit: person ${existingId}`,
-          });
-          this.linkFactIdsToExisting("person", existingId, sourceFactIds);
-          this.finalizeObjectFactLinks("person", existingId, sourceFactIds, newObj.confidence, "新对象去重命中后补齐事实来源关系");
-          // dedup 命中时，若现有 person 的 role/organization 为空且模型本次输出了值，补齐
-          this.backfillPersonRoleOrganization(existingId, newObj);
-          return true;
-        }
-        const inferredProjectId = this.inferProjectIdFromFacts(sourceFactIds);
-        const created = this.memoryObjectRepo.createPerson({
-          name: newObj.title,
+        const admitted = this.admissionService.admitOrAccumulate({
+          objectType: "person",
+          title: newObj.title,
+          summary: newObj.summary,
+          sourceFactIds,
+          confidence: newObj.confidence,
           role: newObj.role ?? null,
           organization: newObj.organization ?? null,
-          relationship: null,
-          summary: newObj.summary,
-          relatedProjectIds: inferredProjectId ? [inferredProjectId] : [],
-          sourceFactIds,
         });
-        this.finalizeObjectFactLinks("person", created.id, sourceFactIds, newObj.confidence, "新建人物对象的事实来源关系");
-        // 自动相似度检测：若与现有人物相似，写入合并建议
-        this.checkAndWriteAutoMergeSuggestion("person", created.id, created.name, sourceFactIds);
+        if (admitted.status === "rejected") return false;
+        this.finalizeObjectFactLinks("person", admitted.object.id, sourceFactIds, newObj.confidence, "人物候选的事实来源关系");
+        this.backfillPersonRoleOrganization(admitted.object.id, newObj);
+        if (admitted.created) {
+          this.checkAndWriteAutoMergeSuggestion("person", admitted.object.id, admitted.object.name, sourceFactIds);
+        }
         return true;
       }
       case "decision": {
@@ -901,7 +884,7 @@ export class LinkerSceneJudgeWorker {
     try {
       switch (objectType) {
         case "project": {
-          const existing = this.memoryObjectRepo.findActiveProjectByFuzzyName(title);
+          const existing = this.memoryObjectRepo.findProjectByExactIdentity(title);
           return existing?.id ?? null;
         }
         case "task": {
@@ -912,7 +895,7 @@ export class LinkerSceneJudgeWorker {
           return existing?.id ?? null;
         }
         case "person": {
-          const existing = this.memoryObjectRepo.findPersonByFuzzyName(title);
+          const existing = this.memoryObjectRepo.findPersonByExactIdentity(title);
           return existing?.id ?? null;
         }
         case "decision": {
@@ -1589,15 +1572,14 @@ export class LinkerSceneJudgeWorker {
       const projects = this.memoryObjectRepo.listProjects({
         status: "active",
         limit: 50,
+        includeNonPromoted: false,
       });
-      const exactMatch = projects.find((p) => p.name === projectHint);
+      const exactIdentity = this.memoryObjectRepo.findProjectByExactIdentity(projectHint);
+      const exactMatch = exactIdentity?.admissionStatus === "promoted" && !exactIdentity.archivedAt
+        ? exactIdentity
+        : projects.find((p) => p.name === projectHint);
       if (exactMatch) return exactMatch.id;
-      const fuzzyMatch = projects.find(
-        (p) =>
-          p.name.toLowerCase().includes(projectHint.toLowerCase()) ||
-          projectHint.toLowerCase().includes(p.name.toLowerCase())
-      );
-      return fuzzyMatch?.id ?? null;
+      return null;
     } catch {
       return null;
     }

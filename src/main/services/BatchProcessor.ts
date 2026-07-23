@@ -7,6 +7,8 @@ import { logger } from "./Logger";
 const MAX_ATTEMPTS = 3;
 const BATCH_CONCURRENCY = 5;
 
+export type BatchSettlementStatus = "succeeded" | "retry_pending" | "retry_exhausted";
+
 export class BatchProcessor {
   private stopping = false;
   private readonly activeBatches = new Map<string, Promise<void>>();
@@ -18,7 +20,11 @@ export class BatchProcessor {
     private readonly onSucceeded?: (
       result: BatchPipelineResult,
       bundle: BatchCaptureBundle
-    ) => Promise<void>
+    ) => Promise<void>,
+    private readonly onSettled?: (
+      status: BatchSettlementStatus,
+      bundle: BatchCaptureBundle
+    ) => Promise<void> | void
   ) {}
 
   start(): void {
@@ -59,6 +65,32 @@ export class BatchProcessor {
       this.notify();
       if (this.processPromise) await this.processPromise;
     } while (this.repository.listProcessableBatches(MAX_ATTEMPTS).length > 0);
+  }
+
+  async drainThroughCapturedAt(collectionStart: string, collectionEnd: string): Promise<void> {
+    while (!this.stopping) {
+      const records = this.repository.listProcessableBatchesForWindow(
+        collectionStart,
+        collectionEnd,
+        MAX_ATTEMPTS
+      );
+      for (const record of records) {
+        if (this.activeBatches.has(record.batchId)) continue;
+        this.repository.markRunning(record.batchId);
+        const promise = this.processOneBatch(record).finally(() => {
+          this.activeBatches.delete(record.batchId);
+        });
+        this.activeBatches.set(record.batchId, promise);
+      }
+      const relevant = this.repository.getWindowWatermark(collectionStart, collectionEnd).batchIds
+        .flatMap((batchId) => this.activeBatches.get(batchId) ?? []);
+      if (relevant.length > 0) await Promise.allSettled(relevant);
+      if (this.repository.listProcessableBatchesForWindow(
+        collectionStart,
+        collectionEnd,
+        MAX_ATTEMPTS
+      ).length === 0) break;
+    }
   }
 
   private async processAvailable(): Promise<void> {
@@ -109,7 +141,17 @@ export class BatchProcessor {
       }
       this.repository.markSucceeded(record.batchId);
       CaptureBatcher.cleanupCompressedImages(record.bundle.compressedImagePaths);
-      await this.onSucceeded?.(result, record.bundle);
+      try {
+        await this.onSucceeded?.(result, record.bundle);
+      } catch (error) {
+        logger.warn({
+          jobType: "batch_pipeline",
+          status: "failed",
+          errorCode: "post_success_callback_failed",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      await this.notifySettled("succeeded", record.bundle);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const retry = record.attempts + 1 < MAX_ATTEMPTS;
@@ -122,6 +164,20 @@ export class BatchProcessor {
         status: "failed",
         errorCode: retry ? "retry_pending" : "retry_exhausted",
         message,
+      });
+      await this.notifySettled(retry ? "retry_pending" : "retry_exhausted", record.bundle);
+    }
+  }
+
+  private async notifySettled(status: BatchSettlementStatus, bundle: BatchCaptureBundle): Promise<void> {
+    try {
+      await this.onSettled?.(status, bundle);
+    } catch (error) {
+      logger.warn({
+        jobType: "batch_pipeline",
+        status: "failed",
+        errorCode: "settlement_callback_failed",
+        message: error instanceof Error ? error.message : String(error),
       });
     }
   }

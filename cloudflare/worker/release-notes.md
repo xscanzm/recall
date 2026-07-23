@@ -1,3 +1,74 @@
+## v0.5.1 — 时间轴生成窗口化 + 记忆对象准入机制
+
+本次版本聚焦时间轴与记忆对象的架构升级：时间轴生成从固定 10 分钟增量改为事件时间窗口化（TimelineWindowCoordinator），支持 collecting/sealing/ready/generating 状态机与多种关闭原因；projects 与 people 表新增准入状态（promoted/candidate/rejected），自动评估候选对象是否晋升；ProjectionInvalidationProcessor 支持窗口级重建；TimelineBuilderWorker 支持按窗口生成与 source_completeness 标记。
+
+### 新增功能
+
+#### 1. 时间轴生成窗口化（TimelineWindowCoordinator）
+
+时间轴生成从固定 10 分钟增量改为事件时间窗口化，按实际活动边界生成更连贯的时间轴块：
+
+- 新增 `src/main/services/TimelineWindowCoordinator.ts`：窗口状态机（collecting → sealing → ready → generating → succeeded/failed），支持 7 种关闭原因（duration/idle/pause/day_rollover/report/shutdown/rebuild）
+- 新增 migration 026：`capture_inbox` 表新增 `captured_at` 字段（从 bundle_json 提取）+ 索引；`timeline_blocks` 表新增 `source_completeness`（complete/partial）；新建 `timeline_generation_windows` 表
+- 新增 `TimelineGenerationWindowRepository`：窗口 CRUD + 状态转移 + 中断恢复（`resetInterruptedGenerating`）
+- 窗口配置：`TIMELINE_COLLECTION_MS = 10min`（收集窗口）、`TIMELINE_MIN_SPAN_MS = 5min`（最小跨度）、`TIMELINE_SEAL_GRACE_MS = 5s`（封存宽限期）
+- `onBatchSettled` 回调驱动窗口推进；`finalizeTail` 支持暂停/日报/关停等场景的尾部封存
+- 与 BatchProcessor 协作：`drainThroughCapturedAt` 确保窗口边界前的批次全部排空
+
+#### 2. 记忆对象准入机制（MemoryObjectAdmissionService）
+
+projects 与 people 表新增后端拥有的准入状态，自动评估候选对象是否晋升为正式记忆对象：
+
+- 新增 migration 027：`projects` 与 `people` 表新增 6 个字段（admission_status / admission_reason / admission_evidence_json / admission_decided_by / admission_rule_version / admission_reviewed_at）+ 索引
+- 新增 `src/main/services/MemoryObjectAdmissionService.ts`：基于事实证据评估候选对象，输出 `promoted / candidate / rejected` 三态决策
+- 准入决策来源：`legacy`（历史数据回填）/ `auto`（规则自动评估）/ `user`（用户手动决定）
+- `reassessLoadedObject`：对非用户决定的对象重新评估，rejected 时级联清理关联记录
+- `MEMORY_OBJECT_ADMISSION_RULE_VERSION = 1`：规则版本号，便于后续规则迭代时批量重评估
+
+### 改进
+
+#### 3. TimelineBuilderWorker 窗口化适配
+
+- 新增 `TimelineBuildWindowRequest`：按窗口的生成请求（dateKey / collectionStart / collectionEnd / sourceCompleteness / existingTimelineBlockId）
+- `TimelineBuilderResult` 新增 `block`（单块）+ `blocks`（兼容数组）双字段，支持增量替换与窗口级重建
+- `MAX_OBSERVATIONS = 2000`：单窗口最大观察数，防止超大窗口导致 prompt 爆炸
+- prompt 输入按窗口的 collectionStart/End 裁剪 observations / facts / scenes
+
+#### 4. ProjectionInvalidationProcessor 窗口级重建
+
+- `timelineRebuilder.rebuildDate` 改为按窗口级重建，避免全日期重建的性能开销
+- `claimPending` + `markCompleted` / `markFailed` 状态机，支持失败重试
+- 投影失效类型：timeline（时间轴重建）/ report（报告标 stale）/ l3（L3 对象重评估）
+
+#### 5. 配套基础设施完善
+
+- `shutdownRuntime`：新增 `TimelineWindowCoordinator.stop()` + `finalizeTail('shutdown')` 到优雅关闭序列
+- `ReportScheduler`：日报/个人复盘 finalization 触发 `finalizeTail('report')`，确保报告覆盖完整数据窗口
+- `BatchProcessor`：新增 `drainThroughCapturedAt` 方法，配合窗口边界排空
+- `TrayService`：托盘菜单适配暂停/恢复时的窗口封存
+- `ActivityService`：活动概览适配窗口化数据
+- `channels.ts` / `preload.ts` / `store.ts`：IPC 通道与渲染层适配
+- `PeoplePage` / `ProjectsPage`：展示准入状态标签
+- `schemas.timeline-card.test.ts`：时间轴卡片 schema 测试
+
+#### 6. 测试基础设施
+
+- 新增 `TimelineWindowCoordinator.test.ts`：窗口状态机、封存、重试、中断恢复测试
+- 新增 `MemoryObjectAdmissionService.test.ts`：准入评估、重评估、级联清理测试
+- 新增 `tests/e2e/renderer-admission.spec.ts`：渲染层准入状态 E2E 测试
+- `ProjectionInvalidationProcessor.test.ts` / `TimelineBuilderWorker.test.ts` / `ReportScheduler.test.ts` / `shutdownRuntime.test.ts` 全部适配新接口
+- 新增 `scripts/smoke-renderer-memory-ui.js` / `scripts/test-sqlite-integration.js`：冒烟与集成测试脚本
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 全部单元测试与 E2E 测试通过
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.0 — RapidOCR 引擎升级 + OCR 准确率大幅提升
 
 本次版本为 OCR 识别架构的重大升级：引入基于 ONNX Runtime + PP-OCRv6 模型的 RapidOCR 作为主 OCR 引擎，打包为常驻 worker 进程（PyInstaller exe），Windows.Media.Ocr 降级为 fallback。RapidOCR 在中文识别、复杂版式、小字密集场景下的准确率显著优于 Windows OCR，且不依赖 Windows 系统语言包。同时 Worker 端新增异步模型任务队列（D1 持久化 + HMAC 安装标识鉴权），为后续复杂模型调用奠定基础。
@@ -65,10 +136,6 @@ Cloudflare Worker 端新增异步模型任务处理基础设施，为后续复�
 - RapidOCR worker 在 Windows x64 上通过 `verify-rapidocr-worker.js` 验证
 - 全部单元测试通过
 - 本地构建与 NSIS 安装包打包通过（安装包体积因内置 RapidOCR 运行时显著增大）
-
----
-
-以下为历史版本发布说明：
 
 ## v0.4.5 — 默认模型服务 + 安装身份识别 + 匿名统计
 

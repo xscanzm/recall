@@ -176,6 +176,33 @@ describe("ReportScheduler", () => {
     expect(dailyGenerate).toHaveBeenCalledTimes(2);
     expect(settings.schedule.lastDailyReportDate).toBe(TODAY);
   });
+
+  it("completes timeline preflight before report generation and aborts on failure", async () => {
+    const order: string[] = [];
+    const dailyGenerate = vi.fn(async () => {
+      order.push("report");
+      return successResult("daily-report");
+    });
+    const preflightReport = vi.fn(async () => { order.push("preflight"); });
+    const scheduler = createScheduler({
+      settings: createSettings({}),
+      reporterWorker: {
+        generateDailyReport: dailyGenerate,
+        generateWeeklyReport: vi.fn(async () => successResult("weekly-report")),
+      },
+      timelinePreflight: { preflightReport },
+    });
+
+    await expect(scheduler.generateDailyReportNow(TODAY)).resolves.toMatchObject({ ok: true });
+    expect(order).toEqual(["preflight", "report"]);
+
+    preflightReport.mockRejectedValueOnce(new Error("tail failed"));
+    await expect(scheduler.generateDailyReportNow(TODAY)).resolves.toMatchObject({
+      ok: false,
+      errorMessage: "tail failed",
+    });
+    expect(dailyGenerate).toHaveBeenCalledTimes(1);
+  });
 });
 
 type SettingsOverrides = Omit<
@@ -216,6 +243,7 @@ function createScheduler(deps: {
   reporterWorker: Partial<ReporterWorker>;
   personalReviewWriterWorker?: Partial<PersonalReviewWriterWorker>;
   reportRepo?: Partial<ReportRepository>;
+  timelinePreflight?: { preflightReport: (dateKey: string) => Promise<void> };
 }): ReportScheduler {
   const settingsService = {
     getAll: () => deps.settings,
@@ -229,6 +257,7 @@ function createScheduler(deps: {
     personalReviewWriterWorker:
       deps.personalReviewWriterWorker as PersonalReviewWriterWorker | undefined,
     reportRepo: deps.reportRepo as ReportRepository | undefined,
+    timelinePreflight: deps.timelinePreflight,
     settingsService,
   });
 }

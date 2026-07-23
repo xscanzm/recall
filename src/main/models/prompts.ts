@@ -879,127 +879,35 @@ export const JSON_REPAIR_PROMPT_TEMPLATE = `下面的模型输出不是合法 JS
  * 不写"摸鱼"/"闲置过久"等羞辱性文字。
  * 输出 TimelineBuilderOutput：blocks + dayStartSummary + dayMainThread。
  */
-export const TIMELINE_BUILDER_PROMPT_TEMPLATE = `任务：你是 Recall 的今日时间轴整理员。请把输入 JSON 中给定时间窗口内的 observations、facts、scenes 聚合为用户可读的 TimelineBlock。
+export const TIMELINE_BUILDER_PROMPT_TEMPLATE = `任务：你是 Recall 的时间轴卡片概括员。
 
-【重要：可变尾部重组机制】
-- 输入 JSON 顶层包含 windowStart 和 windowEnd 两个字段，定义本次处理的时间范围
-- 你只处理 [windowStart, windowEnd] 范围内的数据，不要涉及范围外的内容
-- existingBlocks 是窗口内已有的可变 blocks；它们及其来源 observations 会一并传入
-- 你必须根据全部输入重新组织窗口，可拆分、合并或改写 existingBlocks，不必保持原结构
-- 输出的 blocks 共同替换窗口内未受保护的旧 blocks
-- 如果窗口内数据很少或都是噪声，可以输出空 blocks 数组（但 dayStartSummary/dayMainThread 仍需填写）
+后端已经固定了本次唯一的收集窗口，并提供该窗口内的全部有效 observations、facts 和 episodes。你只负责把这些内容概括成一张卡片。
 
-目标：
-1. 让普通用户一眼看懂这段时间发生了什么。
-2. 不要机械按半小时切分。
-3. 相近主题、相近项目、连续工作应该合并成自然工作片段。
-3a. 常规片段目标长度为 8-15 分钟；同一事项跨应用切换仍可合并。
-3b. 遇到明确事项切换、会议起止、长时间中断或隐私边界时必须拆分，不为凑时长合并。
-4. 标题必须清楚、务实，不诗化。
-5. 摘要要温和但事实优先。
-6. 每个 block 必须保留 source ids，且 id 必须逐字来自本次输入，禁止猜测或编造。后端只根据这些来源 observation 的 capturedAt 计算展示时间，会忽略你输出的 startAt/endAt。
-7. 判断该 block 是否适合进入工作日报。
-8. 判断该 block 的隐私风险。
-
-【输入理解规则】
-- observations 是最基础的瞬时记录，userFacingSummary / likelyWorkPurpose / privacyRisk / reportableSignal 比 sceneSummary 更贴近用户可读表达，优先利用。
-- scenes 在当前系统里可能来自规则化 Episode 聚合，即使 factIds 为空，也仍然可以作为组织时间轴的主骨架。
-- facts 可能为空、很少，或明显落后于 observations/scenes；不要因为 facts 稀少就拒绝整理时间轴。
-- 当 observations 与 scenes 能表达清楚时，可以产出高质量 block；不要强依赖 facts。
-
-禁止：
-- 不要使用"深海沉浸""心流年轮""今日颂歌"等词。
-- 不要输出应用占比。
-- 不要把休息/空闲写成羞辱性文字（如"摸鱼""闲置过久"）。
-- 不要编造不存在的成果。
-
-【重要：时区与时间处理】
-- 输入 JSON 顶层会给出 systemTimezone（如 "Asia/Shanghai"）和 systemTimezoneOffset（如 "+08:00"）
-- 所有 capturedAt / createdAt / startAt / endAt 都是 UTC ISO 字符串（带 Z 后缀）
-- 输出 blocks[].startAt / endAt 必须用 UTC ISO 字符串（带 Z 后缀），不要带 ±HH:MM 也不要省略时区
-- 计算"本地几点几分"时：用 UTC ISO 的时间加上 systemTimezoneOffset
-  - 例：UTC 00:30 + systemTimezoneOffset +08:00 → 本地 08:30
-- 写中文时间词（凌晨/上午/下午/晚上）必须基于本地小时，禁止把 6:00-11:00 写成"凌晨/清晨"
-  - 凌晨 00:00-05:59、清晨/上午 06:00-11:59、中午 12:00-12:59、下午 13:00-17:59、晚上/夜间 18:00-23:59
-- 修复历史问题：之前你看不到系统时区信息，把 stitch image 标签的本地小时数字误当 UTC 写入
-  startAt/endAt，渲染端按本地时区显示变成 +8h 错位。现在输入 JSON 顶部有 systemTimezone，
-  你必须按它正确换算
-
-标题规则：
-- 工作片段：用清楚的主题，如"评估 Recall 体验升级建议"。
-- 休息/空白：用"短暂休息"/"离开电脑"/"暂无明显活动"，不要羞辱用户。
+硬性约束：
+- 只输出一张卡片的 JSON 对象，禁止输出数组、blocks 或多张卡片。
+- 不要决定窗口、切片、合并、开始时间、结束时间或来源。
+- 禁止输出 id、dateKey、collectionStart、collectionEnd、startAt、endAt、sourceObservationIds、sourceFactIds、sourceSceneIds。
+- 应用切换、项目切换、会议或窗口标题变化都不意味着拆卡。
+- 标题清楚务实，摘要事实优先，不编造成果，不使用诗化或羞辱性表达。
+- projectNames 只是对项目归属的语义提示；后端独立决定项目 ID。
 
 输入：
 {{timeline_builder_input_json}}
 
-【输出要求】必须输出严格符合以下 TimelineBuilderOutput schema 的 JSON 对象，所有字段名与下方定义完全一致：
-
+只输出严格符合以下结构的 JSON，不要 markdown，不要增加字段：
 {
-  "dateKey": "字符串，必填。日期 key，格式 YYYY-MM-DD。",
-  "dayStartSummary": "字符串，最大长度 200，必填。今天开始时的简短说明，如'今天的记录从上午 9 点左右开始。'",
-  "dayMainThread": "字符串，最大长度 300，必填。今天的主线工作一句话总结。",
-  "blocks": [
-    {
-      "id": "字符串，可选。block 的 id。",
-      "startAt": "字符串，必填。UTC ISO 8601 时间戳（带 Z 后缀），block 开始时间。例如 2026-07-06T00:30:00.000Z。",
-      "endAt": "字符串，必填。UTC ISO 8601 时间戳（带 Z 后缀），block 结束时间。",
-      "title": "字符串，最大长度 120，必填。block 标题，清楚务实，不诗化。",
-      "summary": "字符串，最大长度 1000，必填。block 摘要，温和但事实优先。",
-      "category": "枚举，必填。可选值：focus_work / communication / research / writing / coding / design / meeting / admin / break / mixed / unknown",
-      "projectIds": ["字符串数组，必填。关联项目 id。如果没有可填空数组 []"],
-      "projectNames": ["字符串数组，必填。关联项目名称。如果没有可填空数组 []"],
-      "highlights": ["字符串数组，必填。该 block 的亮点/成果。如果没有可填空数组 []"],
-      "generatedTasks": ["字符串数组，必填。该 block 中产生的任务。如果没有可填空数组 []"],
-      "generatedDecisions": ["字符串数组，必填。该 block 中产生的决策。如果没有可填空数组 []"],
-      "reportable": "布尔值，必填。该 block 是否适合进入工作日报（true/false）。",
-      "privateRisk": "枚举，必填。可选值：low / medium / high",
-      "privateRiskReason": "字符串，最大长度 500，必填。隐私风险原因说明。",
-      "sourceSceneIds": ["字符串数组，必填。来源 scene 的 id。如果没有可填空数组 []"],
-      "sourceFactIds": ["字符串数组，必填。来源 fact 的 id。如果没有可填空数组 []"],
-      "sourceObservationIds": ["字符串数组，必填。来源 observation 的 id。如果没有可填空数组 []"],
-      "confidence": "数值，范围 [0, 1]，必填。置信度。"
-    }
-  ]
-}
-
-【重要提示】
-- blocks 数组：每个元素必须包含上述所有必填字段（id 可选除外）
-- startAt / endAt 必须带 Z 后缀的 UTC ISO 字符串，不接受 ±HH:MM 或无时区
-- projectIds/projectNames/highlights/generatedTasks/generatedDecisions/sourceSceneIds/sourceFactIds/sourceObservationIds：如果没有内容，必须填空数组 []，不能省略字段
-- category 枚举值严格匹配：focus_work / communication / research / writing / coding / design / meeting / admin / break / mixed / unknown
-- privateRisk 枚举值严格匹配：low / medium / high
-- 标题必须务实，不诗化；休息/空白用"短暂休息"/"离开电脑"/"暂无明显活动"
-
-【示例】以下是一个合规输出（Asia/Shanghai +08:00 时区）：
-
-{
-  "dateKey": "2026-07-06",
-  "dayStartSummary": "今天的记录从上午 9 点左右开始。",
-  "dayMainThread": "今天主要围绕 Recall 的产品体验升级展开，重点是首页时间轴、双轨日报和 AI prompt 改造。",
-  "blocks": [
-    {
-      "startAt": "2026-07-06T01:20:00.000Z",
-      "endAt": "2026-07-06T02:35:00.000Z",
-      "title": "评估 Recall 体验升级建议",
-      "summary": "这段时间主要在阅读另一组体验建议，并筛选其中适合 Recall 落地的部分。",
-      "category": "research",
-      "projectIds": ["project_recall"],
-      "projectNames": ["Recall"],
-      "highlights": ["确认可吸收双轨日报和时间轴主视觉", "决定不沿用过度诗意命名"],
-      "generatedTasks": ["整理统一产品体验升级规格"],
-      "generatedDecisions": ["首页采用时间轴中间、右侧总结看板的方向"],
-      "reportable": true,
-      "privateRisk": "low",
-      "privateRiskReason": "内容为产品工作讨论，不含私人信息",
-      "sourceSceneIds": ["scene_1"],
-      "sourceFactIds": ["fact_1", "fact_2"],
-      "sourceObservationIds": ["obs_1", "obs_2"],
-      "confidence": 0.9
-    }
-  ]
-}
-
-请基于输入的 observations、facts、scenes 输出符合上述 schema 的 JSON。不要输出 markdown，不要添加 schema 之外的字段。`;
+  "title": "清楚务实的标题",
+  "summary": "对整个窗口的概括",
+  "category": "focus_work | communication | research | writing | coding | design | meeting | admin | break | mixed | unknown",
+  "projectNames": ["项目名称提示；没有则为空数组"],
+  "highlights": ["有证据支持的亮点；没有则为空数组"],
+  "generatedTasks": ["窗口中产生的任务；没有则为空数组"],
+  "generatedDecisions": ["窗口中产生的决策；没有则为空数组"],
+  "reportable": true,
+  "privateRisk": "low | medium | high",
+  "privateRiskReason": "隐私风险说明",
+  "confidence": 0.9
+}`;
 
 /**
  * PersonalReviewWriter prompt（Phase 2 新增，来自 doc 20 第 7 节）

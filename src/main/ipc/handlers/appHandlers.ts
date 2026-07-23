@@ -6,13 +6,13 @@ import { LoginItemService } from "../../services/LoginItemService";
 export function registerAppHandlers(deps: IpcDeps): void {
   const loginItemService = new LoginItemService(electronApp);
   handleValidated(ipcMain, "app:getStatus", () => deps.getStatus());
-  handleValidated(ipcMain, "app:startObserving", () => {
-    if (deps.startObserving) deps.startObserving();
+  handleValidated(ipcMain, "app:startObserving", async () => {
+    if (deps.startObserving) await deps.startObserving();
     else deps.setStatus({ observing: true, paused: false, pipelineState: "idle", lastError: undefined });
     return deps.getStatus();
   });
-  handleValidated(ipcMain, "app:pauseObserving", () => {
-    if (deps.pauseObserving) deps.pauseObserving();
+  handleValidated(ipcMain, "app:pauseObserving", async () => {
+    if (deps.pauseObserving) await deps.pauseObserving();
     else deps.setStatus({ observing: false, paused: true, pipelineState: "idle" });
     return deps.getStatus();
   });

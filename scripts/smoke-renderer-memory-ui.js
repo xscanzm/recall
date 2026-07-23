@@ -9,7 +9,7 @@ const indexPath = path.join(rootDir, "dist", "renderer", "index.html");
 const captureDir = process.env.RECALL_CAPTURE_DIR || null;
 const now = "2026-07-09T10:08:00.000Z";
 const dateKey = "2026-07-09";
-const marketingCapture = Boolean(captureDir);
+const marketingCapture = Boolean(captureDir) && process.env.RECALL_STANDARD_CAPTURE !== "1";
 const onboardingCapture = process.env.RECALL_ONBOARDING_CAPTURE === "1";
 const defaultModelCapture = process.env.RECALL_DEFAULT_MODEL_CAPTURE === "1";
 const defaultModelConsentCapture = process.env.RECALL_DEFAULT_MODEL_CONSENT_CAPTURE === "1";
@@ -173,6 +173,24 @@ const projects = [
   },
 ];
 
+const candidateProjects = [{
+  id: "project_candidate",
+  name: "待确认的发布筹备",
+  summary: "目前只在一次活动中出现，需要确认是否作为长期项目。",
+  status: "active",
+  lastActiveAt: now,
+  sourceFactIds: ["fact_task"],
+  sourceSceneIds: ["scene_wechat_memory"],
+  createdAt: now,
+  updatedAt: now,
+  archivedAt: null,
+  aliases: [],
+  admissionStatus: "candidate",
+  admissionReason: "project_needs_independent_episode",
+  admissionEvidence: [{ factId: "fact_task", kind: "exact_hint", episodeIds: ["scene_wechat_memory"] }],
+}];
+const archivedProjects = [];
+
 const tasks = [
   {
     id: "task_l0",
@@ -222,6 +240,25 @@ const people = [
     aliases: [],
   },
 ];
+
+const candidatePeople = [{
+  id: "person_candidate",
+  name: "李明",
+  role: null,
+  organization: null,
+  summary: "出现过姓名，但还没有直接协作证据。",
+  relatedProjectIds: [],
+  sourceFactIds: ["fact_task"],
+  createdAt: now,
+  updatedAt: now,
+  deletedAt: null,
+  relationship: null,
+  aliases: [],
+  admissionStatus: "candidate",
+  admissionReason: "person_without_direct_relationship",
+  admissionEvidence: [{ factId: "fact_task", kind: "exact_hint", episodeIds: ["scene_wechat_memory"] }],
+}];
+const deletedPeople = [];
 
 const today = { observations, facts, scenes, tasks, decisions, people, projects };
 const timelineBlocks = [
@@ -446,8 +483,44 @@ const api = {
     listMergeSuggestions: async () => ({ ok: true, items: [] }),
     rejectMergeSuggestion: async () => ({ ok: true }),
     listAllAliases: async () => ({ ok: true, projects: [], people: [] }),
-    listPeople: async () => ({ ok: true, people }),
-    listProjects: async () => ({ ok: true, projects }),
+    listPeople: async (input = {}) => ({
+      ok: true,
+      people: input.admissionStatus === "candidate"
+        ? candidatePeople
+        : input.includeDeleted
+          ? deletedPeople
+          : people,
+    }),
+    listProjects: async (input = {}) => ({
+      ok: true,
+      projects: input.admissionStatus === "candidate"
+        ? candidateProjects
+        : input.includeArchived
+          ? archivedProjects
+          : projects,
+    }),
+    reviewAdmission: async ({ objectType, id, decision }) => {
+      const candidateList = objectType === "project" ? candidateProjects : candidatePeople;
+      const index = candidateList.findIndex((item) => item.id === id);
+      if (index >= 0) {
+        const [item] = candidateList.splice(index, 1);
+        if (decision === "promote") {
+          item.admissionStatus = "promoted";
+          if (objectType === "project") projects.push(item);
+          else people.push(item);
+        } else {
+          item.admissionStatus = "rejected";
+          if (objectType === "project") {
+            item.archivedAt = now;
+            archivedProjects.push(item);
+          } else {
+            item.deletedAt = now;
+            deletedPeople.push(item);
+          }
+        }
+      }
+      return { ok: true };
+    },
   },
   reminders: {
     list: async () => [],
@@ -609,6 +682,26 @@ async function clickByLabel(win, label) {
   await wait(250);
 }
 
+async function selectFilter(win, label, value) {
+  const changed = await win.webContents.executeJavaScript(
+    `(() => {
+      const label = ${JSON.stringify(label)};
+      const value = ${JSON.stringify(value)};
+      const groups = Array.from(document.querySelectorAll('.memory-filters__group'));
+      const group = groups.find((item) => item.querySelector('.memory-filters__label')?.textContent?.trim() === label);
+      const select = group?.querySelector('select');
+      if (!select) return false;
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(select, value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`,
+    true
+  );
+  if (!changed) throw new Error(`Could not select filter: ${label}=${value}`);
+  await wait(300);
+}
+
 async function assertTexts(win, texts) {
   for (const text of texts) {
     await waitForText(win, text);
@@ -748,11 +841,23 @@ async function run() {
 
   await clickByLabel(win, "项目");
   await assertTexts(win, ["项目", "Recall 记忆系统重构", "查看项目"]);
+  await selectFilter(win, "状态", "candidate");
+  await assertTexts(win, ["待确认的发布筹备", "目前只在一次独立活动中出现", "确认为项目", "排除"]);
+  await capturePage(win, "projects-admission.png");
+  await clickByLabel(win, "确认为项目");
+  await assertTextAbsent(win, "待确认的发布筹备");
+  await selectFilter(win, "状态", "active");
   await clickByLabel(win, "查看项目");
   await assertTexts(win, ["最近时间轴", "关键决策", "相关人物", "Edges 是贯穿 L0-L3 的关系层"]);
 
   await clickByLabel(win, "人物");
   await assertTexts(win, ["人物", "张三", "相关项目"]);
+  await selectFilter(win, "状态", "candidate");
+  await assertTexts(win, ["李明", "尚未发现直接沟通或协作关系", "确认为人物", "排除"]);
+  await capturePage(win, "people-admission.png");
+  await clickByLabel(win, "确认为人物");
+  await assertTextAbsent(win, "李明");
+  await selectFilter(win, "状态", "active");
   await clickByLabel(win, "张三");
   await assertTexts(win, ["最近协作", "提到过的事", "需要把 L0 先稳定为低判断观察层"]);
 

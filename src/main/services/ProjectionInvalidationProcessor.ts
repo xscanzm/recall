@@ -6,7 +6,6 @@ import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRe
 import type { Fact, Scene } from "../models/types";
 import { formatLocalDateKey } from "../utils/dateKey";
 import type { SceneRelationProjector } from "./SceneRelationProjector";
-import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
 
 export class ProjectionInvalidationProcessor {
   private running: Promise<void> | null = null;
@@ -17,7 +16,7 @@ export class ProjectionInvalidationProcessor {
     sceneRepo: SceneRepository;
     timelineBlockRepo: TimelineBlockRepository;
     reportRepo: ReportRepository;
-    timelineBuilderWorker: TimelineBuilderWorker;
+    timelineRebuilder: { rebuildDate: (dateKey: string) => Promise<void> };
     sceneRelationProjector: SceneRelationProjector;
   }) {}
 
@@ -46,8 +45,7 @@ export class ProjectionInvalidationProcessor {
     const affected = this.resolveAffected(item);
     if (item.projectionType === "timeline") {
       for (const date of affected.dates) {
-        const result = await this.deps.timelineBuilderWorker.reorganizeDay(date);
-        if (!result.ok) throw new Error(result.errorMessage ?? result.errorCode ?? `timeline rebuild failed for ${date}`);
+        await this.deps.timelineRebuilder.rebuildDate(date);
       }
     } else if (item.projectionType === "report") {
       const reports = item.targetType === "fact"

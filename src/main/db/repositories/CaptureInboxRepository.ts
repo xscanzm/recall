@@ -14,6 +14,13 @@ interface CaptureRow {
   bundle_json: string;
 }
 
+export interface CaptureWindowWatermark {
+  totalCount: number;
+  unsettledCount: number;
+  failedCount: number;
+  batchIds: string[];
+}
+
 interface BatchRow {
   batch_id: string;
   bundle_json: string;
@@ -44,16 +51,16 @@ export class CaptureInboxRepository {
     const now = new Date().toISOString();
     const result = this.db.prepare(
       `INSERT OR IGNORE INTO capture_inbox
-       (capture_id, bundle_json, status, batch_id, created_at, updated_at)
-       VALUES (?, ?, 'pending', NULL, ?, ?)`
-    ).run(bundle.captureId, JSON.stringify(bundle), now, now);
+       (capture_id, bundle_json, status, batch_id, created_at, updated_at, captured_at)
+       VALUES (?, ?, 'pending', NULL, ?, ?, ?)`
+    ).run(bundle.captureId, JSON.stringify(bundle), now, now, bundle.capturedAt);
     return result.changes > 0;
   }
 
   listPendingCaptures(): CaptureBundle[] {
     const rows = this.db.prepare(
       `SELECT bundle_json FROM capture_inbox
-       WHERE status = 'pending' ORDER BY created_at ASC`
+       WHERE status = 'pending' ORDER BY captured_at ASC, created_at ASC`
     ).all() as CaptureRow[];
     return rows.map((row) => JSON.parse(row.bundle_json) as CaptureBundle);
   }
@@ -93,6 +100,42 @@ export class CaptureInboxRepository {
        WHERE status = 'pending' AND attempts < ? ORDER BY created_at ASC`
     ).all(maxAttempts) as BatchRow[];
     return rows.map(mapBatch);
+  }
+
+  listProcessableBatchesForWindow(
+    collectionStart: string,
+    collectionEnd: string,
+    maxAttempts: number
+  ): CaptureBatchRecord[] {
+    const rows = this.db.prepare(`SELECT DISTINCT cb.* FROM capture_batches cb
+      JOIN capture_inbox ci ON ci.batch_id = cb.batch_id
+      WHERE ci.captured_at >= ? AND ci.captured_at < ?
+        AND cb.status = 'pending' AND cb.attempts < ?
+      ORDER BY cb.created_at ASC`)
+      .all(collectionStart, collectionEnd, maxAttempts) as BatchRow[];
+    return rows.map(mapBatch);
+  }
+
+  getWindowWatermark(collectionStart: string, collectionEnd: string): CaptureWindowWatermark {
+    const rows = this.db.prepare(`SELECT ci.batch_id,
+        CASE
+          WHEN ci.status = 'succeeded' OR cb.status = 'succeeded' THEN 'succeeded'
+          WHEN cb.status = 'failed' THEN 'failed'
+          ELSE 'unsettled'
+        END AS terminal_status
+      FROM capture_inbox ci
+      LEFT JOIN capture_batches cb ON cb.batch_id = ci.batch_id
+      WHERE ci.captured_at >= ? AND ci.captured_at < ?`)
+      .all(collectionStart, collectionEnd) as Array<{
+        batch_id: string | null;
+        terminal_status: "succeeded" | "failed" | "unsettled";
+      }>;
+    return {
+      totalCount: rows.length,
+      unsettledCount: rows.filter((row) => row.terminal_status === "unsettled").length,
+      failedCount: rows.filter((row) => row.terminal_status === "failed").length,
+      batchIds: [...new Set(rows.flatMap((row) => row.batch_id ? [row.batch_id] : []))],
+    };
   }
 
   markRunning(batchId: string): void {

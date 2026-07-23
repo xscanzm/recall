@@ -136,6 +136,15 @@ export interface ProjectItem {
   orphanStatus?: string | null;
   /** 012 字段：别名列表（合并过的旧名字） */
   aliases?: string[];
+  admissionStatus?: "promoted" | "candidate" | "rejected";
+  admissionReason?: string | null;
+  admissionEvidence?: Array<{
+    factId: string;
+    kind: string;
+    episodeIds: string[];
+  }>;
+  admissionDecidedBy?: "legacy" | "auto" | "user";
+  admissionReviewedAt?: string | null;
 }
 
 export interface PersonItem {
@@ -153,6 +162,15 @@ export interface PersonItem {
   relationship: string | null;
   /** 012 字段：别名列表（合并过的旧名字） */
   aliases?: string[];
+  admissionStatus?: "promoted" | "candidate" | "rejected";
+  admissionReason?: string | null;
+  admissionEvidence?: Array<{
+    factId: string;
+    kind: string;
+    episodeIds: string[];
+  }>;
+  admissionDecidedBy?: "legacy" | "auto" | "user";
+  admissionReviewedAt?: string | null;
 }
 
 export interface ReminderItem {
@@ -728,13 +746,14 @@ interface AppState {
   /** 项目页筛选：关键词 / 状态 / 排序 */
   projectsFilters: {
     keyword: string;
-    status: "all" | "active" | "archived";
+    status: "active" | "candidate" | "archived";
     sortBy: "lastActiveAt" | "createdAt" | "name";
   };
   /** 人物页筛选：关键词 / 关联项目 / 排序 */
   peopleFilters: {
     keyword: string;
     projectId: string;
+    status: "active" | "candidate" | "deleted";
     sortBy: "updatedAt" | "createdAt" | "name";
   };
 
@@ -982,9 +1001,9 @@ interface AppState {
   /** 设置历史报告过滤：项目 */
   setReportsHistoryProjectFilter: (projectId: string) => void;
   /** 设置项目页筛选（部分更新） */
-  setProjectsFilters: (patch: Partial<{ keyword: string; status: "all" | "active" | "archived"; sortBy: "lastActiveAt" | "createdAt" | "name" }>) => void;
+  setProjectsFilters: (patch: Partial<{ keyword: string; status: "active" | "candidate" | "archived"; sortBy: "lastActiveAt" | "createdAt" | "name" }>) => void;
   /** 设置人物页筛选（部分更新） */
-  setPeopleFilters: (patch: Partial<{ keyword: string; projectId: string; sortBy: "updatedAt" | "createdAt" | "name" }>) => void;
+  setPeopleFilters: (patch: Partial<{ keyword: string; projectId: string; status: "active" | "candidate" | "deleted"; sortBy: "updatedAt" | "createdAt" | "name" }>) => void;
 
   // Phase 7 新增：设置页 / 信任中心 UI actions
   /** 切换设置页激活分区 */
@@ -1199,6 +1218,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   peopleFilters: {
     keyword: "",
     projectId: "",
+    status: "active",
     sortBy: "updatedAt",
   },
 

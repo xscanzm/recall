@@ -2579,230 +2579,36 @@ export const EpisodeFactExtractorOutputSchema = z.preprocess(
 );
 
 /**
- * TimelineBuilderOutput blocks 归一化
- *
- * 2026-07-07 容错改造：
- * - 之前 startAt/endAt 缺失时填 ""，IsoDateTimeWithOffsetSchema 正则不匹配 ""，
- *   导致单个 block 失败 → 整个 blocks 数组失败 → 整个 timeline_builder 任务失败（234/29）
- * - 修复：startAt/endAt 缺失或非法时跳过该 block（与 title 缺失跳过一致），
- *   保留合法 block，避免一个坏 block 拖垮整批
+ * A timeline model returns one semantic card only. Window identity, time bounds,
+ * source ids and persistence ids are owned by the backend and are rejected here.
  */
-function normalizeTimelineBlocks(raw: unknown): unknown[] {
-  if (!Array.isArray(raw)) return [];
-  const result: unknown[] = [];
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const obj = normalizeKeysToCamel(item) as Record<string, unknown>;
+export const TimelineCardOutputSchema = z.object({
+  title: TitleSchema,
+  summary: SummarySchema,
+  category: z.enum([
+    "focus_work",
+    "communication",
+    "research",
+    "writing",
+    "coding",
+    "design",
+    "meeting",
+    "admin",
+    "break",
+    "mixed",
+    "unknown",
+  ]),
+  projectNames: z.array(z.string().max(TEXT_LIMITS.title)),
+  highlights: z.array(z.string().max(TEXT_LIMITS.summary)),
+  generatedTasks: z.array(z.string().max(TEXT_LIMITS.summary)),
+  generatedDecisions: z.array(z.string().max(TEXT_LIMITS.summary)),
+  reportable: z.boolean(),
+  privateRisk: z.enum(["low", "medium", "high"]),
+  privateRiskReason: z.string().max(TEXT_LIMITS.reason),
+  confidence: ConfidenceSchema,
+}).strict();
 
-    // title/summary 是核心字段，缺失则跳过
-    const title =
-      typeof obj.title === "string"
-        ? obj.title
-        : typeof obj.name === "string"
-        ? obj.name
-        : "";
-    if (!title.trim()) continue;
-
-    // Model times are compatibility-only; backend source observations are authoritative.
-    const startAtRaw = typeof obj.startAt === "string" ? obj.startAt : "";
-    const endAtRaw = typeof obj.endAt === "string" ? obj.endAt : "";
-
-    const summary =
-      typeof obj.summary === "string"
-        ? obj.summary
-        : typeof obj.description === "string"
-        ? obj.description
-        : "";
-
-    // category 归一化
-    const rawCategory = typeof obj.category === "string" ? obj.category.toLowerCase() : "unknown";
-    const category = TIMELINE_BLOCK_CATEGORY_NORMALIZE[rawCategory] ?? "unknown";
-
-    // 数组字段归一化
-    const projectIds = normalizeStringArray(obj.projectIds);
-    const projectNames = normalizeStringArray(obj.projectNames);
-    const highlights = normalizeStringArray(obj.highlights);
-    const generatedTasks = normalizeStringArray(obj.generatedTasks);
-    const sourceSceneIds = normalizeStringArray(obj.sourceSceneIds);
-    const sourceFactIds = normalizeStringArray(obj.sourceFactIds);
-    const sourceObservationIds = normalizeStringArray(obj.sourceObservationIds);
-
-    // generatedDecisions 可能缺失
-    const generatedDecisions = normalizeStringArray(obj.generatedDecisions);
-
-    // reportable 归一化
-    let reportable: boolean;
-    if (typeof obj.reportable === "boolean") {
-      reportable = obj.reportable;
-    } else if (typeof obj.reportable === "string") {
-      reportable =
-        obj.reportable.toLowerCase() === "true" ||
-        obj.reportable.toLowerCase() === "yes" ||
-        obj.reportable.toLowerCase() === "1";
-    } else {
-      reportable = false;
-    }
-
-    // privateRisk 归一化
-    let privateRisk = "low";
-    const rawPrivateRisk = obj.privateRisk ?? obj.privacyRisk;
-    if (typeof rawPrivateRisk === "string") {
-      const norm = PRIVACY_RISK_NORMALIZE[rawPrivateRisk.toLowerCase()];
-      if (norm) privateRisk = norm;
-    }
-
-    const privateRiskReason =
-      typeof obj.privateRiskReason === "string"
-        ? obj.privateRiskReason
-        : typeof obj.privacyRiskReason === "string"
-        ? obj.privacyRiskReason
-        : "";
-
-    const confidence = normalizeNumber(obj.confidence, 0.5);
-
-    const normalized: Record<string, unknown> = {
-      startAt: isValidIsoish(startAtRaw) ? startAtRaw : undefined,
-      endAt: isValidIsoish(endAtRaw) ? endAtRaw : undefined,
-      title: title.slice(0, TEXT_LIMITS.title),
-      summary: summary.slice(0, TEXT_LIMITS.summary),
-      category,
-      projectIds,
-      projectNames,
-      highlights,
-      generatedTasks,
-      generatedDecisions,
-      reportable,
-      privateRisk,
-      privateRiskReason: privateRiskReason.slice(0, TEXT_LIMITS.reason),
-      sourceSceneIds,
-      sourceFactIds,
-      sourceObservationIds,
-      confidence: Math.max(0, Math.min(1, confidence)),
-    };
-
-    if (typeof obj.id === "string") {
-      normalized.id = obj.id;
-    }
-
-    result.push(normalized);
-  }
-  return result;
-}
-
-/**
- * 判断字符串是否是"看起来合法"的 ISO 时间
- *
- * 用于 normalizeTimelineBlocks 跳过时间字段非法的 block。
- * 判断标准：new Date() 能解析出有效时间。
- * 这样能过滤掉 ""、"上午 9 点"、"08:30"（无日期）等非法值。
- */
-function isValidIsoish(value: string): boolean {
-  if (!value || typeof value !== "string") return false;
-  const trimmed = value.trim();
-  if (!trimmed) return false;
-  // 必须包含日期部分（YYYY-MM-DD）
-  if (!/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return false;
-  const d = new Date(trimmed);
-  return !Number.isNaN(d.getTime());
-}
-
-/**
- * TimelineBuilderOutput 归一化函数
- *
- * 2026-07-07 容错改造：
- * - 顶层 dayStartSummary/dayMainThread 缺失时填空字符串（之前缺失会导致 schema fail）
- * - 顶层字段做长度截断（之前 LLM 输出超 1000 字会 schema fail）
- * - dateKey 缺失时填空字符串（worker 已知 dateKey，schema 不应因 LLM 漏填 dateKey 而整张失败）
- */
-function normalizeTimelineBuilderOutput(data: unknown): unknown {
-  if (!data || typeof data !== "object") return data;
-  const obj = normalizeKeysToCamel(data);
-  const result: Record<string, unknown> = { ...obj };
-
-  if (obj.blocks !== undefined) {
-    result.blocks = normalizeTimelineBlocks(obj.blocks);
-  } else {
-    result.blocks = [];
-  }
-
-  // dateKey 字段名变体 + 缺失兜底
-  const dateKey = pickFirst(obj, ["dateKey", "date_key", "date"]);
-  result.dateKey = typeof dateKey === "string" ? dateKey : "";
-
-  // dayStartSummary 字段名变体 + 缺失兜底 + 长度截断
-  const dayStartSummary = pickFirst(obj, [
-    "dayStartSummary",
-    "day_start_summary",
-    "daySummary",
-  ]);
-  result.dayStartSummary =
-    typeof dayStartSummary === "string" ? dayStartSummary.slice(0, TEXT_LIMITS.summary) : "";
-
-  // dayMainThread 字段名变体 + 缺失兜底 + 长度截断
-  const dayMainThread = pickFirst(obj, [
-    "dayMainThread",
-    "day_main_thread",
-    "mainThread",
-  ]);
-  result.dayMainThread =
-    typeof dayMainThread === "string" ? dayMainThread.slice(0, TEXT_LIMITS.summary) : "";
-
-  return result;
-}
-
-/**
- * TimelineBuilderOutput CoreSchema
- *
- * - startAt/endAt 强约束必须带时区（IsoDateTimeWithOffsetSchema）
- * - 修复：之前 z.string() 放过无时区字符串，渲染端 new Date() 解析为本地时间，导致错位
- */
-const TimelineBuilderOutputCoreSchema = z.object({
-  dateKey: z.string(),
-  dayStartSummary: z.string().max(TEXT_LIMITS.summary),
-  dayMainThread: z.string().max(TEXT_LIMITS.summary),
-  blocks: z.array(
-    z.object({
-      id: z.string().optional(),
-      startAt: IsoDateTimeWithOffsetSchema.optional(),
-      endAt: IsoDateTimeWithOffsetSchema.optional(),
-      title: TitleSchema,
-      summary: SummarySchema,
-      category: z.enum([
-        "focus_work",
-        "communication",
-        "research",
-        "writing",
-        "coding",
-        "design",
-        "meeting",
-        "admin",
-        "break",
-        "mixed",
-        "unknown",
-      ]),
-      projectIds: z.array(z.string()),
-      projectNames: z.array(z.string()),
-      highlights: z.array(z.string()),
-      generatedTasks: z.array(z.string()),
-      generatedDecisions: z.array(z.string()),
-      reportable: z.boolean(),
-      privateRisk: z.enum(["low", "medium", "high"]),
-      privateRiskReason: z.string().max(TEXT_LIMITS.reason),
-      sourceSceneIds: z.array(z.string()),
-      sourceFactIds: z.array(z.string()),
-      sourceObservationIds: z.array(z.string()),
-      confidence: ConfidenceSchema,
-    })
-  ),
-});
-
-/**
- * 导出的 TimelineBuilderOutput schema
- */
-export const TimelineBuilderOutputSchema = z.preprocess(
-  normalizeTimelineBuilderOutput,
-  TimelineBuilderOutputCoreSchema
-);
+export const TimelineBuilderOutputSchema = TimelineCardOutputSchema;
 
 /**
  * PersonalReviewOutput 归一化函数

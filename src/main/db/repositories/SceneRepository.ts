@@ -467,6 +467,17 @@ export class SceneRepository {
       .get() as { cnt: number };
     return row.cnt;
   }
+
+  listByObservationIds(observationIds: string[]): Scene[] {
+    if (observationIds.length === 0) return [];
+    const placeholders = observationIds.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT * FROM scenes
+      WHERE deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM json_each(scenes.observation_ids_json)
+        WHERE json_each.value IN (${placeholders})
+      ) ORDER BY start_at ASC`).all(...observationIds) as SceneRow[];
+    return rows.map(mapRow);
+  }
 }
 
 export function createSceneRepository(db: DB): SceneRepository {
