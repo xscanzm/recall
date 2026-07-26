@@ -48,6 +48,15 @@ try {
     --copy-metadata "rapidocr" `
     --copy-metadata "onnxruntime" `
     --hidden-import "onnxruntime.capi._pybind_state" `
+    --exclude-module "tkinter" `
+    --exclude-module "unittest" `
+    --exclude-module "pydoc" `
+    --exclude-module "doctest" `
+    --exclude-module "pdb" `
+    --exclude-module "matplotlib" `
+    --exclude-module "pytest" `
+    --exclude-module "setuptools" `
+    --exclude-module "pip" `
     --workpath $workPath `
     --specpath $specPath `
     --distpath $distPath `
@@ -59,6 +68,20 @@ try {
   if (-not (Test-Path -LiteralPath $builtWorker -PathType Leaf)) {
     throw "RapidOCR worker output is missing."
   }
+
+  # OpenCV 的视频 I/O 后端：约 30 MB，纯粹用于解码视频流。
+  # 我们只对单张静态截图做 OCR，cv2 在这条路径上不会碰 videoio。
+  # headless 轮子仍然带着它，所以在这里显式删掉。
+  # 注意：requests / tqdm / certifi / urllib3 不能排除——rapidocr 的
+  # utils/load_image.py 和 utils/download_file.py 在模块顶层 import 它们，
+  # 而这两个模块在主路径上（rapidocr/main.py、onnxruntime 引擎）就会被导入，
+  # 排掉会让 worker 一启动就 ImportError。
+  Get-ChildItem -LiteralPath (Join-Path $builtWorkerDir "_internal\cv2") -Filter "opencv_videoio_ffmpeg*.dll" -File -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $removedMb = [Math]::Round($_.Length / 1MB, 1)
+      Remove-Item -LiteralPath $_.FullName -Force
+      Write-Host "[rapidocr] Removed unused video backend $($_.Name) ($removedMb MB)"
+    }
 
   if (Test-Path -LiteralPath $outputDir) {
     Remove-Item -LiteralPath $outputDir -Recurse -Force

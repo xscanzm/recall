@@ -386,7 +386,6 @@ export class ReporterWorker {
 
     // 2. 计算周起止日期（weekStart 到 weekStart+6）
     const weekEnd = addDays(weekStart, 6);
-    const { startOfDay, endOfDay } = getDateRange(weekEnd);
 
     // 3. 查询本周 daily reports
     const dailyReports = this.fetchDailyReportsByDateRange(weekStart, weekEnd);

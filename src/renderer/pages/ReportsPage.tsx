@@ -129,9 +129,6 @@ export function ReportsPage() {
   const rollOverReportsDateKeyIfNeeded = useAppStore(
     (s) => s.rollOverReportsDateKeyIfNeeded
   );
-  const markReportsDateKeySetByUser = useAppStore(
-    (s) => s.markReportsDateKeySetByUser
-  );
   const fallbackToLatestReportIfMissing = useAppStore(
     (s) => s.fallbackToLatestReportIfMissing
   );
@@ -299,7 +296,7 @@ export function ReportsPage() {
     let active = true;
     setReportRequirementsLoading(true);
     void getIpc().settings
-      .get<{ reportRequirements?: unknown }>()
+      .get()
       .then((settings) => {
         if (!active) return;
         setReportRequirements(normalizeReportRequirements(settings.reportRequirements));
@@ -456,9 +453,7 @@ export function ReportsPage() {
   const handleSaveReportRequirements = async (
     nextRequirements: ReportRequirements
   ) => {
-    const result = await getIpc().settings.update<{
-      reportRequirements?: unknown;
-    }>({ reportRequirements: nextRequirements });
+    const result = await getIpc().settings.update({ reportRequirements: nextRequirements });
     const savedRequirements = normalizeReportRequirements(
       result.settings.reportRequirements
     );

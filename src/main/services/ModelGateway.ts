@@ -631,7 +631,7 @@ export class ModelGateway {
     }
     // 合并 extra options（除 temperature/max_tokens 外的字段）
     for (const [k, v] of Object.entries(extraOptions)) {
-      if (k !== "temperature" && k !== "max_tokens" && !requestBody.hasOwnProperty(k)) {
+      if (k !== "temperature" && k !== "max_tokens" && !Object.hasOwn(requestBody, k)) {
         requestBody[k] = v;
       }
     }

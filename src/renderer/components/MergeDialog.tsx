@@ -99,7 +99,6 @@ export function MergeDialog({
       setSubmitting(false);
       // 显示成功提示
       const stats = `改写 ${result.rewrittenFactsCount} 个事实，${result.rewrittenScenesCount} 个场景，添加 ${result.mergedAliases.length} 个别名`;
-      // eslint-disable-next-line no-alert
       alert(`已合并「${fromName}」到「${target?.name ?? targetId}」。${stats}`);
       onMerged?.();
       onClose();

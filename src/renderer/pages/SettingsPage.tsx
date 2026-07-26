@@ -15,7 +15,7 @@
 // - 危险操作（清空所有 / 删除今天 / 忘掉最近）必须二次确认
 // - 二次确认对话框使用 store 中的 showConfirmDialog / requestConfirm / executeConfirm
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { ModelConfigForm } from "../components/ModelConfigForm";
 import { PrivacyRuleList } from "../components/PrivacyRuleList";
 import { useAppStore, type ScreenshotRetentionPolicy } from "../state/store";
@@ -167,6 +167,7 @@ export function SettingsPage() {
     void loadSettings();
     void refreshCacheSize();
     void refreshLaunchAtLogin();
+    // 仅挂载时拉一次初始数据；这几个 loader 都是稳定引用（zustand action / useCallback）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

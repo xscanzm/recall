@@ -1,0 +1,180 @@
+@import "./logo-theme.css";
+
+/* src/renderer/styles/base.css
+   设计 token、全局 reset、启动阶段错误页
+   （Recall 设计系统 token，来自 doc 22_GLOBAL_DESIGN_SYSTEM_IMPLEMENTATION_SPEC.md）
+
+   第一个被汇入：token 定义在这里，后面所有文件都依赖它。
+   注意 refinement.css 里还有第二组 :root，会覆盖下面一部分取值——排查颜色不对时
+   要看两处。
+
+   品牌色 token：
+   - --recall-bg:        #F7F6F2  主背景
+   - --recall-surface:   #FFFFFF  卡片/面板
+   - --recall-text:      #1E2423  主文字
+   - --recall-text-muted:#66706D  次文字
+   - --recall-border:    #E2E0D8  分隔线
+   - --recall-accent:    #2F8F83  主强调（青绿）
+   - --recall-amber:     #D9912B  琥珀（提醒/警告）
+   - --recall-danger:    #C74D3C  危险/隐私
+   - --recall-info:      #4C7299  信息/可汇报
+
+   避免：
+   - 眼睛/camera logo、监控感
+   - 截图墙
+   - 赛博紫蓝渐变 / 黑色仪表盘 / 荧光高饱和
+   - 过度动画（大量粒子、复杂光幕、长时间打字机、果冻夸张弹跳）
+   - vw/vh 定义字号
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+:root {
+  /* ===== 颜色 token (doc 22 第 2 节) ===== */
+  --recall-bg: #F7F6F2;
+  --recall-bg-subtle: #FBFAF7;
+  --recall-surface: #FFFFFF;
+  --recall-surface-muted: #F3F1EA;
+  --recall-text: #1E2423;
+  --recall-text-muted: #66706D;
+  --recall-text-faint: #8C9491;
+  --recall-border: #E2E0D8;
+  --recall-border-strong: #D3D0C6;
+  --recall-accent: #2F8F83;
+  --recall-accent-hover: #287B72;
+  --recall-accent-soft: #E5F2EF;
+  --recall-amber: #D9912B;
+  --recall-amber-soft: #F8EEDB;
+  --recall-danger: #C74D3C;
+  --recall-danger-soft: #F7E6E2;
+  --recall-info: #4C7299;
+  --recall-info-soft: #E8EEF4;
+
+  /* ===== 圆角 token ===== */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-pill: 999px;
+
+  /* ===== 间距 token ===== */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ===== 阴影 token ===== */
+  --shadow-popover: 0 12px 32px rgba(30, 36, 35, 0.12);
+
+  /* ===== 字体 token ===== */
+  --font-sans: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+
+  /* ===== 语义化字号 token (doc 22 第 3 节) ===== */
+  --fs-page-title: 24px;    --lh-page-title: 32px;    --fw-page-title: 650;
+  --fs-section-title: 18px; --lh-section-title: 28px; --fw-section-title: 650;
+  --fs-card-title: 16px;    --lh-card-title: 24px;    --fw-card-title: 650;
+  --fs-block-title: 13px;   --lh-block-title: 20px;   --fw-block-title: 650;
+  --fs-body: 14px;          --lh-body: 22px;          --fw-body: 400;
+  --fs-aux: 12px;           --lh-aux: 18px;           --fw-aux: 400;
+  --fs-tag: 12px;           --lh-tag: 18px;           --fw-tag: 500;
+
+  /* ===== 动效 token (doc 22 第 8 节) =====
+     全局禁用过度动画：大量粒子、复杂光幕、长时间打字机、果冻夸张弹跳。
+     仅使用以下三种轻量过渡。 */
+  --transition-hover: 120ms ease;
+  --transition-expand: 160ms ease;
+  --transition-slide: 180ms ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  color: var(--recall-text);
+  background-color: var(--recall-bg);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  border-radius: var(--radius-md);
+  padding: 6px 14px;
+  transition: background-color var(--transition-hover), border-color var(--transition-hover);
+}
+
+button:hover {
+  background-color: var(--recall-surface-muted);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+button.primary {
+  background-color: var(--recall-accent);
+  color: #ffffff;
+  border-color: var(--recall-accent);
+}
+
+button.primary:hover {
+  background-color: var(--recall-accent-hover);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  font-weight: 600;
+  color: var(--recall-text);
+}
+
+a {
+  color: var(--recall-accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* 启动错误样式 */
+.boot-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  padding: 24px;
+  text-align: center;
+  color: var(--recall-danger);
+}
+
+.boot-error h1 {
+  color: var(--recall-danger);
+  margin-bottom: 12px;
+}
+
+.boot-error p {
+  color: var(--recall-text-muted);
+  max-width: 480px;
+}

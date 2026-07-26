@@ -1,0 +1,225 @@
+/* src/renderer/styles/pages-normalize.css
+   跨页统一收口：页面容器、过滤栏、骨架、入场动画
+
+   靠排在各页面样式之后来覆盖它们，位置不能往前挪。
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+.reminders-page,
+.unfinished-page,
+.projects-page,
+.people-page,
+.memory-search-page,
+.settings-page,
+.trust-page,
+.debug-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 36px 40px;
+}
+
+.memory-detail-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 36px 40px;
+}
+
+.reports-page {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 36px 40px;
+}
+
+.memory-filters,
+.reminders-page__filters,
+.debug-filters {
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  background: var(--recall-surface-muted);
+}
+
+.memory-filters__group,
+.debug-filters__group {
+  gap: 6px;
+}
+
+.memory-filters__label,
+.debug-filters__label {
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+input[type="text"],
+input[type="search"],
+select,
+textarea,
+.memory-filters__input,
+.memory-filters__select {
+  min-height: 36px;
+  border: 1px solid var(--recall-border);
+  border-radius: 8px;
+  background: var(--recall-surface);
+  color: var(--recall-text);
+  box-shadow: none;
+}
+
+.search-today input[type="search"] {
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+select:focus,
+textarea:focus,
+.memory-filters__input:focus,
+.memory-filters__select:focus {
+  border-color: var(--recall-accent);
+  box-shadow: 0 0 0 3px var(--recall-accent-soft);
+  outline: none;
+}
+
+.search-today input[type="search"]:focus {
+  border-color: transparent;
+  box-shadow: none;
+  outline: none;
+}
+
+.empty-state,
+.error-state,
+.reports-empty {
+  position: relative;
+  overflow: hidden;
+  min-height: 180px;
+  justify-content: center;
+  padding: 32px 24px;
+  border: 1px dashed var(--recall-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--recall-surface);
+}
+
+.empty-state::before,
+.error-state::before {
+  position: absolute;
+  top: -90px;
+  right: -70px;
+  width: 220px;
+  height: 220px;
+  border: 1px solid var(--recall-echo-line);
+  border-radius: 50%;
+  box-shadow: 0 0 0 24px rgba(45, 106, 82, 0.025), 0 0 0 50px rgba(45, 106, 82, 0.02);
+  content: "";
+  pointer-events: none;
+}
+
+.empty-state__icon,
+.error-state__icon {
+  color: var(--recall-accent);
+}
+
+.empty-state__title,
+.error-state__title {
+  font-size: 18px;
+}
+
+.empty-state__desc,
+.error-state__desc,
+.empty-state__hint {
+  max-width: 520px;
+  color: var(--recall-text-muted);
+  line-height: 1.7;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--recall-surface-muted) 20%, var(--recall-border) 45%, var(--recall-surface-muted) 70%);
+  background-size: 240% 100%;
+  border-radius: 6px;
+}
+
+.state-loading,
+.reports-loading,
+.loading-inline {
+  position: relative;
+  min-height: 86px;
+  padding: 26px 18px 18px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  background: var(--recall-surface);
+  color: var(--recall-text-muted);
+  text-align: center;
+}
+
+.state-loading::before,
+.reports-loading::before,
+.loading-inline::before {
+  display: block;
+  width: min(320px, 70%);
+  height: 8px;
+  margin: 0 auto 12px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, var(--recall-surface-muted) 20%, var(--recall-border) 45%, var(--recall-surface-muted) 70%);
+  background-size: 240% 100%;
+  content: "";
+  animation: recall-skeleton 1.6s ease-in-out infinite;
+}
+
+@keyframes recall-skeleton {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+.app-shell__content > * {
+  animation: recall-page-enter 180ms ease-out both;
+}
+
+@keyframes recall-page-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.timeline-main {
+  min-width: 0;
+  padding: 28px 56px 40px;
+  background: var(--recall-bg);
+}
+
+.today-page {
+  grid-template-columns: 1fr;
+  background: var(--recall-bg);
+}
+
+.timeline-header {
+  padding-bottom: 6px;
+}
+
+.timeline-header__actions {
+  gap: 8px;
+}
+
+.timeline-header__icon-btn {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--recall-text-faint);
+}
+
+.timeline-header__icon-btn:hover {
+  border-color: var(--recall-danger-soft);
+  background: var(--recall-danger-soft);
+  color: var(--recall-danger);
+}

@@ -1,0 +1,145 @@
+/* src/renderer/styles/dialogs.css
+   二次确认对话框
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============================================================================
+   Phase 7：二次确认对话框样式
+   ============================================================================ */
+
+.confirm-dialog {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(30, 36, 35, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+  animation: confirm-dialog-fade-in 120ms ease;
+}
+
+@keyframes confirm-dialog-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.confirm-dialog__box {
+  width: 100%;
+  max-width: 480px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.confirm-dialog__title {
+  font-size: var(--fs-card-title);
+  line-height: var(--lh-card-title);
+  font-weight: var(--fw-card-title);
+  color: var(--recall-text);
+  margin: 0;
+}
+
+.confirm-dialog__message {
+  margin: 0;
+  font-size: var(--fs-body);
+  line-height: 1.7;
+  color: var(--recall-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.confirm-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.default-model-consent {
+  max-width: 500px;
+}
+
+.default-model-consent__icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--recall-accent);
+  background: var(--recall-accent-soft);
+  border: 1px solid color-mix(in srgb, var(--recall-accent) 24%, transparent);
+  border-radius: var(--radius-md);
+}
+
+.default-model-consent__note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--recall-text-muted);
+  background: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.default-model-consent__note svg {
+  flex: 0 0 auto;
+}
+
+.model-service-choice {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.model-service-choice label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.model-service-choice label.is-selected {
+  border-color: var(--recall-accent);
+  background: var(--recall-accent-soft);
+  color: var(--recall-text);
+}
+
+.model-service-choice input {
+  margin-top: 3px;
+  accent-color: var(--recall-accent);
+}
+
+.model-service-choice strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--recall-text);
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .model-service-choice {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .confirm-dialog {
+    animation: none;
+  }
+}

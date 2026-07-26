@@ -36,6 +36,7 @@ class MemoryD1 {
   readonly installationTasks = new Map<string, number>();
 
   prepare(sql: string) {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- 下面的 async 方法是对象字面量方法，不共享外层 this
     const self = this;
     return {
       bind(...args: unknown[]) {
@@ -173,5 +174,122 @@ describe("default model statistics", () => {
     expect(day.totalCalls).toBe(50);
     const [installation] = await getDefaultModelInstallationStats(d1 as never);
     expect(installation.totalCalls).toBe(50);
+  });
+});
+
+function statsRequest(path: string, authorization?: string): Request {
+  return new Request(`https://recall-update.ppclaw.online${path}`, {
+    headers: authorization ? { Authorization: authorization } : {},
+  });
+}
+
+function basic(username: string, password: string): string {
+  return `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+describe("stats read authorization", () => {
+  const readEnv = (token?: string) =>
+    env({ STATS_READ_TOKEN: token, MODEL_STATS: new MemoryD1() });
+
+  it("accepts the configured bearer token", async () => {
+    const response = await worker.fetch(
+      statsRequest("/api/metrics/daily?date=2026-07-22", "Bearer read-token"),
+      readEnv("read-token") as never,
+      {} as never,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("hides the endpoint as 404 when the token is wrong or absent", async () => {
+    for (const authorization of [undefined, "Bearer wrong", "Bearer ", "Basic cmVhZDp0b2tlbg=="]) {
+      const response = await worker.fetch(
+        statsRequest("/api/metrics/daily", authorization),
+        readEnv("read-token") as never,
+        {} as never,
+      );
+      expect(response.status).toBe(404);
+    }
+  });
+
+  it("denies everything when no token is configured", async () => {
+    // 没配密钥不等于不设防：不能退化成任何人都能读。
+    for (const token of [undefined, "", "   "]) {
+      const response = await worker.fetch(
+        statsRequest("/api/metrics/daily", "Bearer read-token"),
+        readEnv(token) as never,
+        {} as never,
+      );
+      expect(response.status).toBe(404);
+    }
+  });
+});
+
+describe("stats admin authorization", () => {
+  const adminEnv = () =>
+    env({
+      STATS_ADMIN_USERNAME: "ops",
+      STATS_ADMIN_PASSWORD: "s3cret",
+      MODEL_STATS: new MemoryD1(),
+    });
+
+  it("accepts the configured basic credentials", async () => {
+    const response = await worker.fetch(
+      statsRequest("/admin/stats", basic("ops", "s3cret")),
+      adminEnv() as never,
+      {} as never,
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects a wrong username, a wrong password, and a wrong both", async () => {
+    // 三种都必须是同一个 401：响应上不能区分"哪一半错了"。
+    for (const authorization of [
+      basic("nope", "s3cret"),
+      basic("ops", "nope"),
+      basic("nope", "nope"),
+    ]) {
+      const response = await worker.fetch(
+        statsRequest("/admin/stats", authorization),
+        adminEnv() as never,
+        {} as never,
+      );
+      expect(response.status).toBe(401);
+    }
+  });
+
+  it("rejects malformed or missing authorization headers", async () => {
+    for (const authorization of [
+      undefined,
+      "Bearer s3cret",
+      "Basic not-valid-base64!!",
+      `Basic ${btoa("no-separator")}`,
+    ]) {
+      const response = await worker.fetch(
+        statsRequest("/admin/stats", authorization),
+        adminEnv() as never,
+        {} as never,
+      );
+      expect(response.status).toBe(401);
+    }
+  });
+
+  it("denies access when admin credentials are not configured", async () => {
+    const response = await worker.fetch(
+      statsRequest("/admin/stats", basic("ops", "s3cret")),
+      env({ MODEL_STATS: new MemoryD1() }) as never,
+      {} as never,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("does not accept a credential pair that only shares a prefix", async () => {
+    for (const authorization of [basic("op", "s3cret"), basic("ops", "s3cre"), basic("ops", "s3crett")]) {
+      const response = await worker.fetch(
+        statsRequest("/admin/stats", authorization),
+        adminEnv() as never,
+        {} as never,
+      );
+      expect(response.status).toBe(401);
+    }
   });
 });

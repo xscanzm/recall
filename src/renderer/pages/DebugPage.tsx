@@ -5,12 +5,7 @@
 // 数据源：model_jobs 表（通过 debug:* IPC 查询，手动刷新）
 
 import { useEffect, useState, useMemo } from "react";
-import {
-  useAppStore,
-  type DebugJobSummary,
-  type DebugJobDetails,
-  type DebugEventItem,
-} from "../state/store";
+import { useAppStore, type DebugEventItem } from "../state/store";
 
 function parseDebugEvents(json: string | null): DebugEventItem[] {
   if (!json) return [];
@@ -174,20 +169,6 @@ function extractOcrFramesFromPrompt(promptText: string): OcrFrameEvidence[] {
   } catch {
     return [];
   }
-}
-
-/**
- * 计算单个 job 的 OCR 状态摘要（用于列表展示）。
- * - "—"：非 L0 任务或无 OCR 证据
- * - "N/M"：成功帧/总帧
- * - "失败"：所有帧都失败
- */
-function summarizeOcrStatus(frames: OcrFrameEvidence[]): string {
-  if (frames.length === 0) return "—";
-  const ok = frames.filter((f) => f.available).length;
-  if (ok === frames.length) return `${ok}/${frames.length}`;
-  if (ok === 0) return `0/${frames.length}`;
-  return `${ok}/${frames.length}`;
 }
 
 const LAYER_LABELS: Record<string, string> = {

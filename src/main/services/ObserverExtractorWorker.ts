@@ -842,7 +842,6 @@ export class ObserverExtractorWorker {
       }
       return lines.join("\n");
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.warn("[ObserverExtractorWorker] buildKnownAliasesBlock 失败:", e);
       return "（无法加载已知别名）";
     }

@@ -13,7 +13,7 @@
 // - Renderer 不能直接调用模型、写 SQLite、访问截图真实路径
 // - 所有 main 进程通过 IPC 与 renderer 通信
 
-import { app, BrowserWindow, powerMonitor } from "electron";
+import { app, BrowserWindow, dialog, powerMonitor } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/handlers";
 import type { AppStatus, ReportGeneratedEvent } from "../shared/types";
@@ -37,6 +37,7 @@ import { createMemoryEdgeRepository } from "./db/repositories/MemoryEdgeReposito
 import { CaptureInboxRepository } from "./db/repositories/CaptureInboxRepository";
 import { TimelineGenerationWindowRepository } from "./db/repositories/TimelineGenerationWindowRepository";
 import { SecretService } from "./services/SecretService";
+import { migrateKeytarSecrets } from "./services/secretsMigration";
 import { SettingsService } from "./services/SettingsService";
 import { ModelGateway } from "./services/ModelGateway";
 import { DefaultModelConsentService } from "./services/DefaultModelConsentService";
@@ -82,7 +83,7 @@ import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./s
 import { UpdateService } from "./services/UpdateService";
 import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
 import { shutdownRuntime } from "./services/shutdownRuntime";
-import { formatLocalDateKey } from "./utils/dateKey";
+import { installNavigationGuards, type NavigationPolicy } from "./services/navigationGuard";
 import type { Report } from "./models/types";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
@@ -151,7 +152,6 @@ let activityService: ActivityService | null = null;
 let captureService: CaptureService | null = null;
 let privacyGuard: PrivacyGuard | null = null;
 let screenshotCache: ScreenshotCache | null = null;
-let observationRepo: ObservationRepository | null = null;
 // 提升到模块级，让 startObserving 等函数能访问（原为 whenReady 内局部变量）
 let settingsService: SettingsService | null = null;
 // 提升到模块级，用于启动时清理卡死任务
@@ -253,8 +253,23 @@ const STARTUP_PAGE_HTML = `<!doctype html>
 <body><main><div class="mark"></div><div><h1>回声 Recall</h1><p>正在启动</p></div></main></body>
 </html>`;
 
+const STARTUP_PAGE_URL = `data:text/html;charset=UTF-8,${encodeURIComponent(STARTUP_PAGE_HTML)}`;
+
 function loadStartupPage(win: BrowserWindow): Promise<void> {
-  return win.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(STARTUP_PAGE_HTML)}`);
+  return win.loadURL(STARTUP_PAGE_URL);
+}
+
+/** 打包后 renderer 根目录：dist/main/app.js → dist/renderer */
+function rendererRoot(): string {
+  return path.join(__dirname, "..", "renderer");
+}
+
+function navigationPolicy(): NavigationPolicy {
+  return {
+    rendererRoot: rendererRoot(),
+    devServerUrl: isDev() ? process.env.VITE_DEV_SERVER_URL : undefined,
+    startupUrl: STARTUP_PAGE_URL,
+  };
 }
 
 function loadMainWindowRenderer(win: BrowserWindow): Promise<void> {
@@ -287,6 +302,8 @@ function createMainWindow(options: { deferRendererLoad?: boolean } = {}): Browse
       spellcheck: false,
     },
   });
+
+  installNavigationGuards(win.webContents, navigationPolicy);
 
   // 启动后再显示，避免白屏
   win.once("ready-to-show", () => {
@@ -540,8 +557,10 @@ app.whenReady().then(async () => {
   // 注意：modelJobRepo 提升为模块级变量（用于启动时清理卡死任务）
   modelJobRepo = new ModelJobRepository(db);
   const obsRepo = new ObservationRepository(db);
-  observationRepo = obsRepo;
   const secretService = new SecretService();
+  // keytar → safeStorage 一次性迁移。必须在任何模型调用之前跑完，否则老用户
+  // 第一次调用会因为读不到 key 而失败。迁移内部吞掉所有异常，不会挡启动。
+  await migrateKeytarSecrets({ secretService });
   // 注意：settingsService 提升为模块级变量（让 startObserving 能检查 observation.enabled）
   settingsService = new SettingsService(settingsRepo, secretService);
   settingsService.init();
@@ -1055,6 +1074,17 @@ app.whenReady().then(async () => {
       mainWindow = createMainWindow();
     }
   });
+}).catch((error) => {
+  // 启动链路里任何未捕获异常都会走到这里。此前它是未处理拒绝：
+  // 进程留在后台但没有窗口也没有托盘，用户只能去任务管理器杀。
+  const detail = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  logger.error({
+    status: "failed",
+    errorCode: "startup_failed",
+    message: `Recall 启动失败: ${detail}`,
+  });
+  dialog.showErrorBox("Recall 启动失败", `${detail}\n\n日志位于 %APPDATA%/Recall/logs。`);
+  app.exit(1);
 });
 
 // 应用退出前清理

@@ -130,6 +130,110 @@ const dataExport = z.object({
   reportSelections: z.array(z.unknown()), objectMerges: z.array(z.unknown()), memoryEdges: z.array(z.unknown()),
 });
 
+/** 与 main/models/types.ts AppSettings 对齐。settings:get 直接返回整个结构。 */
+const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "时间必须为 HH:mm");
+const reportRequirement = z.object({
+  focus: z.string().max(2000),
+  presentation: z.string().max(2000),
+  reminders: z.string().max(2000),
+});
+const appSettings = z.object({
+  observation: z.object({
+    enabled: z.boolean(),
+    activeWindowStableSeconds: z.number().nonnegative(),
+    contentChangeMinIntervalSeconds: z.number().nonnegative(),
+    longSessionIntervalMinutes: z.number().nonnegative(),
+    idleThresholdSeconds: z.number().nonnegative(),
+  }),
+  screenshot: z.object({
+    retentionPolicy: z.enum(["delete_immediately", "1h", "6h", "today", "3d", "7d"]),
+  }),
+  notification: z.object({
+    inAppReminders: z.boolean(),
+    desktopNotifications: z.boolean(),
+    dailyReportTime: z.string(),
+    weeklyReportTime: z.string(),
+  }),
+  endOfDayReview: z.object({ enabled: z.boolean(), firstTime: timeOfDay, secondTime: timeOfDay }),
+  dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }),
+  personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }),
+  reportRequirements: z.object({
+    personal: reportRequirement,
+    work: reportRequirement,
+    weekly: reportRequirement,
+    monthly: reportRequirement,
+  }),
+  defaultModelService: z.object({
+    consent: z.enum(["pending", "accepted", "declined"]),
+    acceptedAt: z.string().nullable(),
+  }),
+  schedule: z.object({
+    lastDailyReportDate: z.string().nullable(),
+    lastWeeklyReportWeekStart: z.string().nullable(),
+    lastPersonalReviewDate: z.string().nullable(),
+  }),
+  onboardingCompleted: z.boolean(),
+  debug: z.object({ enabled: z.boolean(), verboseModelIO: z.boolean() }),
+  update: z.object({
+    lastCheckedAt: z.string().nullable(),
+    latestVersion: z.string().nullable(),
+    dismissedVersion: z.string().nullable(),
+    downloadedInstallerPath: z.string().nullable(),
+  }),
+});
+
+/**
+ * settings:update 的请求体。分区整体替换（SettingsService 是浅合并语义），
+ * strict() 保证 renderer 传了拼错的 key 会被当场拒掉而不是静默丢弃。
+ */
+const appSettingsPatch = z.object({
+  observation: appSettings.shape.observation.optional(),
+  screenshot: appSettings.shape.screenshot.optional(),
+  notification: appSettings.shape.notification.optional(),
+  endOfDayReview: appSettings.shape.endOfDayReview
+    .refine((value) => value.secondTime > value.firstTime, {
+      message: "第二次通知时间必须晚于第一次",
+      path: ["secondTime"],
+    })
+    .optional(),
+  dailyReport: appSettings.shape.dailyReport.optional(),
+  personalReview: appSettings.shape.personalReview.optional(),
+  reportRequirements: appSettings.shape.reportRequirements.optional(),
+  defaultModelService: appSettings.shape.defaultModelService.optional(),
+  schedule: appSettings.shape.schedule.optional(),
+  onboardingCompleted: z.boolean().optional(),
+  debug: appSettings.shape.debug.optional(),
+}).strict();
+
+/** 与 shared/types.ts PrivacyRule 对齐。 */
+const privacyRule = z.object({
+  id: z.string(),
+  type: z.enum(["app_name", "window_title_keyword", "domain_keyword"]),
+  pattern: z.string(),
+  action: z.enum(["exclude", "ask_before_capture", "blur_sensitive"]),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+/** 与 main/models/types.ts ProactiveItem 对齐。 */
+const proactiveItem = z.object({
+  id: z.string(),
+  type: z.string(),
+  title: z.string(),
+  body: z.string(),
+  reason: z.string(),
+  priority: z.number(),
+  surface: z.string(),
+  requiresUserConfirmation: z.boolean(),
+  status: z.string(),
+  sourceFactIds: stringArray,
+  sourceSceneIds: stringArray,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  payloadJson: z.string().nullable().optional(),
+});
+
 export const ipcContracts = {
   "app:getStatus": { request: z.undefined(), response: AppStatusSchema },
   "app:startObserving": { request: z.undefined(), response: AppStatusSchema },
@@ -139,6 +243,37 @@ export const ipcContracts = {
   "window:minimize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "window:toggleMaximize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "window:close": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
+  "settings:get": { request: z.undefined(), response: appSettings },
+  "settings:update": { request: appSettingsPatch, response: z.object({ ok: z.literal(true), settings: appSettings }) },
+  "privacy:listRules": { request: z.undefined(), response: z.array(privacyRule) },
+  "privacy:addRule": {
+    request: z.object({
+      type: privacyRule.shape.type,
+      pattern: z.string().min(1).max(500),
+      action: privacyRule.shape.action,
+      enabled: z.boolean().default(true),
+    }),
+    response: privacyRule,
+  },
+  "privacy:updateRule": {
+    // pattern/action/enabled 三者可选，只传的字段才会进 patch。
+    request: z.object({
+      id: z.string().min(1),
+      pattern: z.string().min(1).max(500).optional(),
+      action: privacyRule.shape.action.optional(),
+      enabled: z.boolean().optional(),
+    }),
+    response: z.object({ ok: z.literal(true), rule: privacyRule }),
+  },
+  "privacy:deleteRule": { request: z.object({ id: z.string().min(1) }), response: z.object({ ok: z.boolean() }) },
+  "reminders:list": { request: z.undefined(), response: z.array(proactiveItem) },
+  "reminders:updateStatus": {
+    request: z.object({
+      id: z.string().min(1),
+      status: z.enum(["new", "confirmed", "ignored", "snoozed", "done", "do_not_remind_again"]),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+  },
   "memory:search": {
     request: z.object({
       query: z.string().min(1).max(500),

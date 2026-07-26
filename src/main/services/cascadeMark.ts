@@ -487,7 +487,6 @@ export function mergeObjects(
         });
       } catch (e) {
         // 审计失败不阻塞合并流程，但记录
-        // eslint-disable-next-line no-console
         console.warn("[mergeObjects] object_merges 审计失败:", e);
       }
     }

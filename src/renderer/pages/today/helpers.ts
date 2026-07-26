@@ -58,7 +58,6 @@ export function formatTime(iso: string): string {
       !/(Z|[+-]\d{2}:?\d{2})$/i.test(iso) &&
       iso.length > 10
     ) {
-      // eslint-disable-next-line no-console
       console.warn(
         `[Recall] formatTime 收到无时区 ISO 字符串 "${iso}"，按本地时区解析可能错位`
       );

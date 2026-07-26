@@ -12,7 +12,6 @@ import type { BatchProcessor, BatchSettlementStatus } from "./BatchProcessor";
 import type { CaptureService } from "./CaptureService";
 import type { TimelineBuilderWorker } from "./TimelineBuilderWorker";
 import { formatLocalDateKey, localDateKeyUtcRange } from "../utils/dateKey";
-import { logger } from "./Logger";
 
 export const TIMELINE_COLLECTION_MS = 10 * 60 * 1_000;
 export const TIMELINE_MIN_SPAN_MS = 5 * 60 * 1_000;

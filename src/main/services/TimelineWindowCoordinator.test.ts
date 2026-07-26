@@ -96,6 +96,9 @@ function makeHarness(input: {
   const results = [...(input.buildResults ?? [])];
   const buildWindow = vi.fn(async () => results.shift() ?? ({ ok: true, block: { id: "timeline-1" } }));
   const coordinator = new TimelineWindowCoordinator({
+    // 固定时钟：不传 at 的入口（persistTailForShutdown 等）会用 now() 推 dateKey，
+    // 跟真实系统日期挂钩的话夹具一过当天就整体落到窗口外。
+    now: () => local("09:12:00"),
     windowRepo: windowRepo as never,
     observationRepo: observationRepo as never,
     captureInboxRepo: { getWindowWatermark } as never,

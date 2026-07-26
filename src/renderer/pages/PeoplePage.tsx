@@ -23,7 +23,6 @@ import { MoreHorizontal } from "lucide-react";
 import { useAppStore } from "../state/store";
 import type { PersonItem, ProjectItem, SceneItem, TaskItem, FactItem } from "../state/store";
 import { getIpc } from "../state/ipc";
-import { CorrectionDialog } from "../components/CorrectionDialog";
 import { MergeDialog } from "../components/MergeDialog";
 
 /**

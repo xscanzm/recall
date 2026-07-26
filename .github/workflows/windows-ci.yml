@@ -2,12 +2,56 @@ name: Windows CI
 
 on:
   push:
+    branches: [main]
+    tags: ["v*"]
   pull_request:
 
+# 同一分支上的新 push 取消上一次仍在跑的 CI，避免重型任务排队堆积。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  # 快车道：几分钟内给出反馈，任何一项失败就不必再烧重型任务。
+  fast:
+    name: 快速检查（lint / typecheck / 单测）
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    env:
+      CI: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+      # Worker 有独立的 vitest 配置和 node_modules，主仓的 test 不会收它。
+      # 统计后台的授权判断就在这套测试里，必须一起跑。
+      - name: Worker 单测
+        working-directory: cloudflare/worker
+        run: npm ci && npm test
+      - name: Worker 类型检查
+        working-directory: cloudflare/worker
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: 上传覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # 重车道：构建 + 原生模块 + 端到端，只在快车道通过后运行。
+  heavy:
+    name: 集成检查（build / sqlite / smoke / e2e）
+    needs: fast
+    runs-on: windows-latest
+    timeout-minutes: 45
     env:
       CI: "1"
       ELECTRON_DISABLE_GPU: "1"
@@ -19,9 +63,10 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm test
-      - run: npm run typecheck
       - run: npm run build
       - run: npm run test:sqlite
       - run: npm run smoke:memory
+      # 注：playwright.config.ts 的 outputDir 指向系统临时目录、reporter 为 line，
+      # 仓库内不会留下 playwright-report/ 或 test-results/，故不做产物上传。
+      # 若日后需要排查 CI 上的 e2e 失败，先把 outputDir 改成仓库内路径再加 upload-artifact。
       - run: npm run test:e2e

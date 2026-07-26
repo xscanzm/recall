@@ -22,7 +22,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { TrustCenterPage } from "./pages/TrustCenterPage";
 import { DebugPage } from "./pages/DebugPage";
 import { DefaultModelConsentDialog } from "./components/DefaultModelConsentDialog";
-import { useAppStore, type AppSettingsState } from "./state/store";
+import { useAppStore } from "./state/store";
 import { getIpc } from "./state/ipc";
 import type { UpdateStatus } from "../shared/updateTypes";
 
@@ -57,7 +57,8 @@ export default function App() {
       setError(message);
       return undefined;
     }
-  }, []);
+    // setError 来自 zustand，引用稳定；列出来只为满足 lint，不会触发重订阅。
+  }, [setError]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -93,7 +94,7 @@ export default function App() {
         setReady(true);
         // 直接通过 IPC 获取最新设置，避免 store 闭包陈旧导致启动闪烁
         try {
-          const currentSettings = await ipc.settings.get<AppSettingsState>();
+          const currentSettings = await ipc.settings.get();
           if (cancelled) return;
           if (currentSettings && !currentSettings.onboardingCompleted) {
             setBootState("onboarding");
@@ -139,6 +140,8 @@ export default function App() {
       if (unsubReportsGenerated) unsubReportsGenerated();
       if (unsubDefaultConsent) unsubDefaultConsent();
     };
+    // 启动引导只跑一次：依赖项全是 zustand action 引用（稳定）和一次性订阅，
+    // 补全依赖会让整个 boot 链路在任意 store 更新后重跑。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -84,12 +84,13 @@ export function TrustCenterPage() {
             Recall 可以使用默认模型服务，也可以直连你配置的视觉、语言或多模态模型。自己的 API Key 保存在系统安全存储中，不写入数据库。
           </p>
           <ul className="trust-card__list">
-            <li>API Key 通过系统安全存储（Electron safeStorage / keytar）保存</li>
-            <li>不会进入 SQLite 数据库</li>
+            <li>API Key 由系统安全存储加密（Windows 上是 DPAPI），密文单独存放在数据目录的 secrets.json</li>
+            <li>不会进入 SQLite 数据库，导出或备份数据库不会带走 Key</li>
             <li>不会出现在 renderer 进程内存或日志中</li>
             <li>测试失败时不显示完整 key（main 进程已 sanitize）</li>
             <li>输入框使用 type=password，不显示明文</li>
-            <li>删除模型配置时同时删除系统安全存储中的 Key</li>
+            <li>删除模型配置时同时删除已保存的 Key</li>
+            <li>系统安全存储不可用时直接拒绝保存，不会退化成明文写盘</li>
             <li>默认服务只记录匿名安装标识、任务类型、客户端版本和调用结果，不记录提示词、截图或模型回答</li>
             <li>使用自己配置的 Key 时直接调用对应 endpoint，不向 Recall 上报调用统计</li>
           </ul>

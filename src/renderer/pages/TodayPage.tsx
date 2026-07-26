@@ -99,6 +99,10 @@ export function TodayPage() {
     const rolledOver = rollOverTodayDateKeyIfNeeded();
     if (rolledOver) return; // 滚动已触发 load，避免重复
     void refreshTodayPageData();
+    // 故意只依赖 isReady + todayPageDateKey：
+    // workReportSelectionMode 上面只作为 early-return 的守卫，若列入依赖，
+    // 退出选择模式的那一刻就会重跑 load 并清空用户刚选好的条目。
+    // 其余依赖是 zustand action，引用稳定。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isReady, todayPageDateKey]);
 

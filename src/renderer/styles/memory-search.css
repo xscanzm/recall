@@ -1,0 +1,402 @@
+/* src/renderer/styles/memory-search.css
+   记忆库搜索页
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============ Phase 6：记忆库搜索页样式 ============ */
+
+.memory-search-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.memory-search-bar__input {
+  flex: 1;
+  padding: 12px 16px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 15px;
+}
+
+.memory-search-bar__input:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+
+.memory-search__error {
+  color: var(--recall-danger);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* 过滤区 */
+.memory-filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}
+
+.memory-filters__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memory-filters__label {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  font-weight: 500;
+}
+
+.memory-filters__select {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--recall-surface);
+  font-size: 12px;
+  color: var(--recall-text);
+  font-family: inherit;
+  min-width: 100px;
+}
+
+.memory-filters__input {
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--recall-surface);
+  font-size: 12px;
+  color: var(--recall-text);
+  font-family: inherit;
+  min-width: 160px;
+}
+
+.memory-filters__input:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+
+.memory-filters__select:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+
+/* 搜索结果 */
+.memory-results {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.memory-results__summary {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.memory-results__query {
+  font-style: italic;
+}
+
+.memory-results__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 搜索结果卡片（不像数据库表格） */
+.memory-result-card {
+  padding: 14px 16px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color var(--transition-hover);
+}
+
+.memory-result-card:hover {
+  border-color: var(--recall-accent);
+}
+
+.memory-result-card__header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.memory-result-card__type {
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-bg);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.memory-result-card__project {
+  font-size: 11px;
+  color: var(--recall-accent);
+  padding: 2px 8px;
+  background-color: var(--recall-accent-soft);
+  border-radius: var(--radius-pill);
+}
+
+.memory-result-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--recall-text);
+  line-height: 1.5;
+}
+
+.memory-result-card__summary {
+  font-size: 13px;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+}
+
+.memory-result-card__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.memory-result-card__time {
+  font-size: 11px;
+  color: var(--recall-text-faint);
+}
+
+.memory-result-card__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.memory-result-card__action {
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  color: var(--recall-accent);
+}
+
+.memory-result-card__action:hover {
+  background-color: var(--recall-accent-soft);
+}
+
+.memory-result-card__action--ghost {
+  color: var(--recall-text-muted);
+}
+
+.memory-result-card__action--ghost:hover {
+  background-color: var(--recall-surface-muted);
+}
+
+/* 问答区 */
+.memory-ask {
+  margin-top: 16px;
+  padding: 20px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}
+
+.memory-ask__title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+}
+
+.memory-ask__hint {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0 0 12px 0;
+  line-height: 1.6;
+}
+
+.memory-ask__bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.memory-ask__input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.memory-ask__input:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+
+.memory-ask__result {
+  border-top: 1px dashed var(--recall-border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.memory-ask__question,
+.memory-ask__answer {
+  font-size: 13px;
+  line-height: 1.6;
+  display: flex;
+  gap: 6px;
+}
+
+.memory-ask__label {
+  font-weight: 600;
+  color: var(--recall-text-muted);
+  flex-shrink: 0;
+}
+
+.memory-ask__answer-text {
+  flex: 1;
+  white-space: pre-wrap;
+  color: var(--recall-text);
+}
+
+.memory-ask__sources {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-ask__sources-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--recall-text-muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.memory-ask__search-count {
+  font-weight: 400;
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.memory-ask__sources-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memory-ask__source {
+  display: flex;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background-color: var(--recall-bg);
+}
+
+.memory-ask__source:hover {
+  background-color: var(--recall-surface-muted);
+}
+
+.memory-ask__source-type {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  height: fit-content;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.memory-ask__source-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.memory-ask__source-title {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 2px;
+}
+
+.memory-ask__source-summary {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.5;
+}
+
+.memory-ask__no-sources {
+  font-size: 12px;
+  color: var(--recall-amber);
+  padding: 8px 12px;
+  background-color: var(--recall-amber-soft);
+  border-radius: var(--radius-sm);
+  line-height: 1.6;
+}
+
+.memory-ask__error {
+  color: var(--recall-danger);
+  font-size: 13px;
+}
+
+.memory-ask__error p {
+  margin: 0 0 4px 0;
+}
+
+.memory-ask__error-hint {
+  font-size: 12px !important;
+  color: var(--recall-text-muted);
+  opacity: 0.8;
+}
+
+.memory-ask__empty {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 8px 0 0 0;
+  text-align: center;
+  padding: 12px;
+  border: 1px dashed var(--recall-border);
+  border-radius: var(--radius-md);
+}
+
+.timeline-card__title-button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-card__title-button:hover,
+.timeline-card__title-button:focus-visible {
+  color: var(--recall-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}

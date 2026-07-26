@@ -12,6 +12,9 @@ release/
 build/
 out/
 
+# 覆盖率报告
+coverage/
+
 # Vite 临时
 *.local
 

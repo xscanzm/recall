@@ -34,7 +34,13 @@ export const DATABASE_FILENAME = "recall.db";
 export const SETTINGS_FILENAME = "settings.json";
 
 /**
- * Keytar 服务名前缀（API Key 安全存储 key 命名规范：recall:model:<configId>:apiKey）
+ * API Key 密文文件名（位于 DATA_DIR 下，safeStorage 加密，不进 SQLite）
+ */
+export const SECRETS_FILENAME = "secrets.json";
+
+/**
+ * 旧版 keytar 服务名（key 命名规范：recall:model:<configId>:apiKey）
+ * 仅供一次性迁移读取历史条目使用，新写入不再经过 keytar。
  */
 export const KEYTAR_SERVICE_PREFIX = "recall";
 

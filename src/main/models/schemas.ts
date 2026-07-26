@@ -97,76 +97,10 @@ export const IsoDateTimeWithOffsetSchema = z.preprocess(
     )
 );
 
-/**
- * PrivacyRule schema（用于 privacy:addRule / privacy:updateRule IPC 参数校验）
- */
-export const PrivacyRuleInputSchema = z.object({
-  type: z.enum(["app_name", "window_title_keyword", "domain_keyword"]),
-  pattern: z.string().min(1).max(500),
-  action: z.enum(["exclude", "ask_before_capture", "blur_sensitive"]),
-  enabled: z.boolean().default(true),
-});
-
+/** 仍被 reports:getImage 复用（只需要一个 id 字段）。 */
 export const PrivacyRuleIdSchema = z.object({
   id: z.string().min(1),
 });
-
-/** 设置更新 IPC 参数 schema。每个分区按 SettingsService 的浅合并语义整体替换。 */
-const TimeOfDaySchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "时间必须为 HH:mm");
-
-export const ReportRequirementSchema = z.object({
-  focus: z.string().max(2000),
-  presentation: z.string().max(2000),
-  reminders: z.string().max(2000),
-}).strict();
-
-export const ReportRequirementsSchema = z.object({
-  personal: ReportRequirementSchema,
-  work: ReportRequirementSchema,
-  weekly: ReportRequirementSchema,
-  monthly: ReportRequirementSchema,
-}).strict();
-
-export const SettingsUpdateSchema = z.object({
-  observation: z.object({
-    enabled: z.boolean(),
-    activeWindowStableSeconds: z.number().nonnegative(),
-    contentChangeMinIntervalSeconds: z.number().nonnegative(),
-    longSessionIntervalMinutes: z.number().nonnegative(),
-    idleThresholdSeconds: z.number().nonnegative(),
-  }).optional(),
-  screenshot: z.object({
-    retentionPolicy: z.enum(["delete_immediately", "1h", "6h", "today", "3d", "7d"]),
-  }).optional(),
-  notification: z.object({
-    inAppReminders: z.boolean(),
-    desktopNotifications: z.boolean(),
-    dailyReportTime: z.string(),
-    weeklyReportTime: z.string(),
-  }).optional(),
-  endOfDayReview: z.object({
-    enabled: z.boolean(),
-    firstTime: TimeOfDaySchema,
-    secondTime: TimeOfDaySchema,
-  }).refine((value) => value.secondTime > value.firstTime, {
-    message: "第二次通知时间必须晚于第一次",
-    path: ["secondTime"],
-  }).optional(),
-  dailyReport: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
-  personalReview: z.object({ autoGenerate: z.boolean(), time: z.string() }).optional(),
-  reportRequirements: ReportRequirementsSchema.optional(),
-  defaultModelService: z.object({
-    consent: z.enum(["pending", "accepted", "declined"]),
-    acceptedAt: z.string().datetime().nullable(),
-  }).optional(),
-  schedule: z.object({
-    lastDailyReportDate: z.string().nullable(),
-    lastWeeklyReportWeekStart: z.string().nullable(),
-    lastPersonalReviewDate: z.string().nullable(),
-  }).optional(),
-  onboardingCompleted: z.boolean().optional(),
-  debug: z.object({ enabled: z.boolean(), verboseModelIO: z.boolean() }).optional(),
-}).strict();
 
 /**
  * 模型配置测试 IPC 参数 schema

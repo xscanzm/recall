@@ -157,7 +157,9 @@ export function buildAttentionSegmentsFromStats(stats: TodayActivityStats): Atte
   return segments.sort((left, right) => right.minutes - left.minutes);
 }
 
-export function getActivityAxisDomain(overview: TodayActivityOverview): RhythmAxisDomain | null {
+export function getActivityAxisDomain(
+  overview: Pick<TodayActivityOverview, "observedStartAt" | "observedEndAt">
+): RhythmAxisDomain | null {
   if (!overview.observedStartAt || !overview.observedEndAt) return null;
   const startMs = Date.parse(overview.observedStartAt);
   const endMs = Date.parse(overview.observedEndAt);
@@ -371,7 +373,7 @@ function segmentWords(text: string): string[] {
   }
 
   return cleanText
-    .split(/[\s,，。.!！?？:：;；、/\\|()（）\[\]【】_-]+/)
+    .split(/[\s,，。.!！?？:：;；、/\\|()（）[\]【】_-]+/)
     .filter(isUsefulWord);
 }
 

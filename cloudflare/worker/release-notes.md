@@ -1,3 +1,66 @@
+## v0.5.2 — 安全存储迁移 + 导航护栏加固 + 渲染层架构重构
+
+本次版本聚焦安全加固与内部架构整理：API Key 存储从已归档的 keytar 原生模块迁移到 Electron 内置 safeStorage（DPAPI），降低原生依赖维护成本；BrowserWindow 新增导航白名单护栏，作为 prompt injection 逃逸的纵深防御；数据库写入增加 busy_timeout 与迁移备份自动清理；渲染层将单文件 global.css 与 store.ts 拆分为按页面/组件的 CSS 多文件与 Zustand slice 模式。
+
+### 新增功能
+
+#### 1. 密钥存储迁移（keytar → Electron safeStorage）
+
+将 API Key 从 keytar（Windows 凭据管理器原生模块）迁移到 Electron 内置 safeStorage，密文落盘到 `%APPDATA%/Recall/data/secrets.json`：
+
+- 新增 `src/main/services/secretsMigration.ts`：启动时幂等执行一次迁移，写成功后才删源（避免 key 丢失），全程不记录 key 本身
+- keytar 模块缺失时静默跳过（`keytar_unavailable`），不挡启动；最坏情况老用户重填一次 API Key
+- 接入点：`app.ts` 启动早期、任何模型调用之前跑完
+- 迁移动机：keytar 上游已归档不再维护，每次 Electron 大版本升级都要 electron-rebuild；safeStorage 安全等级同源（都基于 DPAPI，按当前用户+机器绑定），密文刻意不进 SQLite 避免被备份/VACUUM INTO 复制时扩大暴露面
+- 新增 `SecretService.test.ts` / `secretsMigration.test.ts`：9 个用例覆盖正常迁移、写失败保留源、空密码、二次运行幂等、safeStorage 不可用、keytar 缺失等
+
+#### 2. 导航护栏（navigationGuard）
+
+给 BrowserWindow 的 WebContents 安装导航白名单护栏，作为 prompt injection 防御的纵深第二层。renderer 渲染的内容包含不可信输入（OCR 屏幕文字 + 模型生成报告正文），即使模型被绕过吐出可点击链接或触发 `window.open`，主进程必须兜住：
+
+- 新增 `src/main/services/navigationGuard.ts`：覆盖四类逃逸面
+  - `setWindowOpenHandler`：一律 deny，外部链接走 `memory:openSourceUrl → shell.openExternal` 正规通道
+  - `will-navigate`：主框架导航白名单外 `preventDefault`
+  - `will-frame-navigate`：子框架（iframe）导航白名单外 `preventDefault`
+  - `will-attach-webview`：一律拒绝（本应用不使用 webview）
+- 白名单允许：`dist/renderer` 目录下的 `file:` 资源（含 query/hash）、开发模式 dev server 同源地址、启动占位页精确匹配的 `data:` URL
+- 显式拒绝：`http(s)` 外链、其他 `data:`/`blob:` URL、`javascript:`/`ftp:`/`about:`、renderer 目录外的 `file:` 路径（含 `..` 穿越与同前缀兄弟目录攻击）
+- 应用到主窗口与 EndOfDayReview 日报弹窗
+- 新增 `navigationGuard.test.ts`：8 个用例覆盖目录内外导航、穿越、同前缀兄弟目录、生产模式拒绝 http/https、dev server 同源、data: URL 精确匹配等
+
+### 改进
+
+#### 3. 数据库稳健性
+
+- `Database.ts`：启用 `busy_timeout = 5000ms`，避免并发写撞锁（BatchProcessor / TimelineWindowCoordinator / ReportScheduler / ProjectionInvalidationProcessor / ScreenshotCacheScheduler / 准入后台重评）立即抛 SQLITE_BUSY
+- 新增 `pruneMigrationBackups`：迁移成功后自动清理历史备份，只保留最近 2 份（`MIGRATION_BACKUP_KEEP`）；备份文件名内嵌 ISO 时间戳，按名排序即按时间排序；清理失败不影响启动
+- 迁移失败时保留全部备份用于人工恢复
+
+#### 4. 渲染层架构重构（内部，用户无感）
+
+将单文件 `global.css` 与 `store.ts` 拆分为按职责分层的多文件结构，对外 API 与用户可见行为均保持不变：
+
+- **CSS 拆分**：`global.css` 退化为纯 `@import` 清单，拆为基础层（`base.css` / `pages-common.css` / `pages-normalize.css`）、布局层（`app-shell.css`）、页面层（`today.css` / `reminders.css` / `settings.css` / `projects.css` / `people.css` / `reports.css` / `memory-search.css` / `memory-detail.css` / `debug.css` / `trust-center.css` / `unfinished.css`）、组件层（`components.css` / `dialogs.css` / `today-*.css` / `reports-history.css` / `update-badge.css` 等）、两轮精修（`refinement.css` / `refinement-pass2.css`）
+- **状态管理拆分**：`store.ts` 精简为极薄组合器（约 30 行），按域拆为 8 个 slice（`shell` / `today` / `reminders` / `search` / `objects` / `settings` / `reports` / `debug`）；领域类型抽到 `state/types.ts`，跨 slice 共用初始值与日期工具抽到 `state/defaults.ts`；对外仍是 `useAppStore((s) => s.someAction)`，页面无需改 import
+
+#### 5. 工程基础设施
+
+- 新增 `eslint.config.mjs`：ESLint 9 扁平配置，主进程/共享层与渲染层走不同 tsconfig，仅开"真能抓 bug"的类型感知规则（`no-floating-promises` / `no-misused-promises` / `await-thenable` / `no-explicit-any`），`no-console` 限制为只允许 `error/warn`
+- 新增契约测试：`settingsContract.test.ts`（设置 IPC 契约）、`migrations.contract.test.ts`（迁移契约）
+- `windows-ci.yml` 调整：fast 轨道 lint + typecheck + test:coverage + Worker 独立测试，heavy 轨道 build + sqlite + smoke + e2e，concurrency cancel-in-progress
+- `ActivityService.start()` 首次轮询吞异常，避免未处理拒绝
+- `MemorySearchRepository` 删除未使用的 `TYPE_LABELS`，FTS 失败分支补注释
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 全部单元测试与契约测试通过
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.1 — 时间轴生成窗口化 + 记忆对象准入机制
 
 本次版本聚焦时间轴与记忆对象的架构升级：时间轴生成从固定 10 分钟增量改为事件时间窗口化（TimelineWindowCoordinator），支持 collecting/sealing/ready/generating 状态机与多种关闭原因；projects 与 people 表新增准入状态（promoted/candidate/rejected），自动评估候选对象是否晋升；ProjectionInvalidationProcessor 支持窗口级重建；TimelineBuilderWorker 支持按窗口生成与 source_completeness 标记。

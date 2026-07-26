@@ -35,6 +35,7 @@
 // - 不在 ActivityService 中保存截图，仅发出事件
 
 import { EventEmitter } from "node:events";
+import * as path from "node:path";
 import { powerMonitor } from "electron";
 import activeWin from "active-win";
 import type { CaptureBundle } from "../models/types";
@@ -203,7 +204,10 @@ export class ActivityService extends EventEmitter {
     this.lastTriggerTimeByReason.clear();
 
     // 立即执行一次，然后周期性轮询
-    this.pollOnce();
+    // 首次调用同样要吞异常：start() 是同步接口，抛到这里会变成未处理拒绝。
+    this.pollOnce().catch(() => {
+      // 首轮失败不阻断后续轮询
+    });
     this.pollTimer = setInterval(() => {
       this.pollOnce().catch(() => {
         // 单次轮询失败不阻断后续轮询
@@ -538,7 +542,7 @@ export class ActivityService extends EventEmitter {
       // 提取应用名：优先使用 owner.name；若失败用 path 的 basename
       let appName = result.owner.name;
       if (!appName && result.owner.path) {
-        appName = require("node:path").basename(result.owner.path);
+        appName = path.basename(result.owner.path);
       }
       if (!appName) {
         appName = "unknown";

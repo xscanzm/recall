@@ -87,7 +87,6 @@ export function ReminderCard(props: ReminderCardProps) {
     title,
     reason,
     sourceCount,
-    confidence,
     status,
     createdAt,
     requiresUserConfirmation,

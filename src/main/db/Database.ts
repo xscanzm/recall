@@ -32,6 +32,19 @@ export type DB = Database.Database;
  */
 const MIGRATIONS_TABLE = "_migrations";
 
+/**
+ * 撞锁等待窗口（毫秒）
+ * 超过后仍抛 SQLITE_BUSY，避免无限期挂住调用方。
+ */
+const BUSY_TIMEOUT_MS = 5_000;
+
+/**
+ * 迁移前备份保留份数
+ * 备份是完整库拷贝（VACUUM INTO），重度用户单份可达数百 MB，
+ * 跨多个版本升级会累积成串，因此只保留最近若干份。
+ */
+const MIGRATION_BACKUP_KEEP = 2;
+
 let dbInstance: DB | null = null;
 
 /**
@@ -52,8 +65,42 @@ export function getDatabase(): DB {
     dbInstance = null;
     throw err;
   }
+  // 迁移成功后再清理历史备份：迁移失败时保留全部备份用于人工恢复。
+  pruneMigrationBackups();
   seedDefaultPrivacyRules(dbInstance);
   return dbInstance;
+}
+
+/**
+ * 清理历史迁移备份，只保留最近 MIGRATION_BACKUP_KEEP 份
+ *
+ * 每次有待执行 migration 都会 VACUUM INTO 一份完整库拷贝，跨版本升级会累积。
+ * 备份文件名内嵌 ISO 时间戳（冒号/点替换为短横），按名排序即按时间排序。
+ * 清理失败不影响启动。
+ */
+export function pruneMigrationBackups(): void {
+  try {
+    const dataDir = path.join(app.getPath("userData"), DATA_DIR);
+    const prefix = `${DATABASE_FILENAME}.pre-migration.`;
+    const backups = fs
+      .readdirSync(dataDir)
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".bak"))
+      .sort();
+
+    const stale = backups.slice(0, Math.max(0, backups.length - MIGRATION_BACKUP_KEEP));
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(dataDir, name), { force: true });
+        logger.info({ message: `已清理过期迁移备份: ${name}` });
+      } catch (err) {
+        logger.warn({
+          message: `清理迁移备份失败 ${name}: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+  } catch {
+    // 目录不存在或不可读时跳过；备份清理不是启动关键路径。
+  }
 }
 
 function openDatabase(): DB {
@@ -69,6 +116,11 @@ function openDatabase(): DB {
   // 启用 WAL 模式提升并发读性能；启用外键约束
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  // WAL 下写事务仍互斥，而本应用有多个并发写入方（BatchProcessor /
+  // TimelineWindowCoordinator / ReportScheduler / ProjectionInvalidationProcessor /
+  // ScreenshotCacheScheduler / 准入后台重评）。默认 busy_timeout=0 会让撞锁的写
+  // 立即抛 SQLITE_BUSY；给出等待窗口让 better-sqlite3 自行重试。
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
 
   return db;
 }

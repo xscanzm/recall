@@ -67,6 +67,7 @@ export function Onboarding(props: OnboardingProps) {
     void loadModelConfigs();
     void loadPrivacyRules();
     void loadSettings();
+    // 仅挂载时拉一次初始数据；三个 loader 都是 zustand action，引用稳定。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

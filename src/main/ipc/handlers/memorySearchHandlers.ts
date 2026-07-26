@@ -2,7 +2,7 @@ import { ipcMain, shell } from "electron";
 import type { IpcDeps } from "../handlers";
 import { handleValidated, ipcFail } from "../validated";
 import { MemoryAskOutputSchema, MemorySearchExpansionOutputSchema } from "../../models/schemas";
-import type { MemorySearchItem, MemorySearchRef } from "../../db/repositories/MemorySearchRepository";
+import type { MemorySearchRef } from "../../db/repositories/MemorySearchRepository";
 import type { ModelCallInput } from "../../services/ModelGateway";
 
 export function registerMemorySearchHandlers(deps: IpcDeps): void {

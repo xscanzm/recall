@@ -181,9 +181,11 @@ describe("RapidOcrService", () => {
 
   it("keeps streamed frames and classifies an unexpected worker exit", async () => {
     const log = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
-    let worker: FakeWorker;
-    worker = new FakeWorker((request) => {
-      setTimeout(() => worker.emit("close", 9, null), 0);
+    // 回调里要引用 worker 自身。用 holder 绕开"声明前引用"：
+    // 回调只在 new 返回之后才被触发，此时 holder.current 已赋值。
+    const holder: { current: FakeWorker | null } = { current: null };
+    const worker = new FakeWorker((request) => {
+      setTimeout(() => holder.current?.emit("close", 9, null), 0);
       return {
         id: request.id,
         type: "frame",
@@ -192,6 +194,7 @@ describe("RapidOcrService", () => {
         frame: { frameIndex: 1, text: "rapid", lines: ["rapid"], blocks: [] },
       };
     });
+    holder.current = worker;
     const fallback = fallbackService("crash fallback");
     const service = new RapidOcrService({
       spawnWorker: () => worker.asChildProcess(),

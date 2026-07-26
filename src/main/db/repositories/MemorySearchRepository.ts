@@ -111,17 +111,6 @@ interface ProjectRow {
   created_at: string;
 }
 
-const TYPE_LABELS: Record<MemorySearchType, string> = {
-  fact: "内容",
-  scene: "工作片段",
-  task: "任务",
-  project: "项目",
-  decision: "决策",
-  report: "报告",
-  person: "人物",
-  record: "记录",
-};
-
 const QUESTION_STOP_PHRASES = [
   "上周", "本周", "这周", "上个月", "本月", "昨天", "今天", "前天",
   "是什么", "什么", "有什么", "怎么做", "为什么", "哪些", "哪个", "那次", "上次",
@@ -333,6 +322,8 @@ export class MemorySearchRepository {
         const rows = this.db.prepare(`SELECT o.id, o.captured_at, o.app_name, o.window_title, o.url_or_domain, o.scene_summary, o.visible_content_json, o.screenshot_retention, o.screenshot_paths_json, o.user_facing_summary FROM observation_search_fts JOIN observations o ON o.id = observation_search_fts.observation_id WHERE ${ftsWhere} ORDER BY bm25(observation_search_fts), o.captured_at DESC LIMIT 2500`).all(ftsQuery, ...params) as ObservationRow[];
         for (const row of rows) byId.set(row.id, row);
       } catch {
+        // FTS 表可能尚未建好或查询词触发 fts5 语法错误；
+        // 下面的 LIKE 分支是完整兜底，这里静默降级即可。
       }
     }
     const likeConditions = [...conditions];

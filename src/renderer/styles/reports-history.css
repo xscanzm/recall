@@ -1,0 +1,302 @@
+/* src/renderer/styles/reports-history.css
+   历史报告：过滤栏、列表、来源面板
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* 历史报告过滤栏 */
+.reports-filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  padding: 12px 14px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}
+
+.reports-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.reports-filter__label {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  font-weight: 500;
+}
+
+.reports-filter__select {
+  appearance: none;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--recall-text);
+  cursor: pointer;
+  min-width: 120px;
+  font-family: inherit;
+}
+
+.reports-filter__select:focus {
+  outline: 2px solid var(--recall-accent);
+  outline-offset: 1px;
+}
+
+/* 历史报告列表 */
+.reports-history-list {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.reports-history-header {
+  display: grid;
+  grid-template-columns: 110px 90px 1fr 140px 180px;
+  gap: 12px;
+  padding: 10px 14px;
+  background-color: var(--recall-surface-muted);
+  border-bottom: 1px solid var(--recall-border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--recall-text-muted);
+}
+
+.reports-history-row {
+  display: grid;
+  grid-template-columns: 110px 90px 1fr 140px 180px;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--recall-border);
+  font-size: 13px;
+  color: var(--recall-text);
+  align-items: center;
+  transition: background-color var(--transition-hover);
+}
+
+.reports-history-row:last-child {
+  border-bottom: none;
+}
+
+.reports-history-row:hover {
+  background-color: var(--recall-bg);
+}
+
+.reports-history-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reports-history-col--date {
+  font-variant-numeric: tabular-nums;
+  color: var(--recall-text-muted);
+  font-size: 12px;
+}
+
+.reports-history-col--type {
+  font-size: 12px;
+}
+
+.reports-history-col--title {
+  font-size: 13px;
+  color: var(--recall-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reports-history-col--time {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.reports-history-col--actions {
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.reports-history-section {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reports-history-section__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--recall-text-muted);
+  margin: 0;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--recall-border);
+}
+
+@media (max-width: 1023px) {
+  .reports-history-header,
+  .reports-history-row {
+    grid-template-columns: 90px 70px 1fr 100px 140px;
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+}
+
+/* 来源面板（弹层，不显示截图） */
+.report-source-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(30, 36, 35, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+  animation: report-source-fade-in 160ms ease;
+}
+
+@keyframes report-source-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.report-source-panel {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-popover);
+  width: min(560px, 100%);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.report-source-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--recall-border);
+  flex-shrink: 0;
+}
+
+.report-source-panel__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--recall-text);
+  margin: 0;
+}
+
+.report-source-panel__close {
+  appearance: none;
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--recall-text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-hover), color var(--transition-hover);
+}
+
+.report-source-panel__close:hover {
+  background-color: var(--recall-surface-muted);
+  color: var(--recall-text);
+}
+
+.report-source-panel__body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.report-source-panel__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  background-color: var(--recall-info-soft);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  line-height: 1.6;
+}
+
+.report-source-panel__stats {
+  display: flex;
+  gap: 16px;
+  padding: 10px 12px;
+  background-color: var(--recall-bg);
+  border-radius: var(--radius-sm);
+}
+
+.report-source-panel__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.report-source-panel__stat-label {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+}
+
+.report-source-panel__stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--recall-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.report-source-panel__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-source-panel__group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--recall-text);
+  margin: 0;
+}
+
+.report-source-panel__empty {
+  margin: 0;
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--recall-text-faint);
+  background-color: var(--recall-bg);
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .report-source-overlay {
+    animation: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .reports-page {
+    padding: 16px 20px 24px;
+  }
+  .report-article {
+    padding: 18px 20px;
+  }
+  .reports-history-header,
+  .reports-history-row {
+    grid-template-columns: 80px 60px 1fr 90px 120px;
+  }
+}

@@ -158,9 +158,11 @@ Rule action：
 - API Key 不进入 renderer。
 - API Key 不进 SQLite。
 - API Key 不进日志。
-- API Key 使用 keytar 或 Electron safeStorage。
+- API Key 使用 Electron safeStorage 加密（Windows 走 DPAPI），密文存 `data/secrets.json`，不进 settings.json。
+- safeStorage 不可用时保存直接失败，不允许退化成明文存储。
 - 连接测试失败时不显示 key。
 - 删除模型配置时同时删除 SecretService 中的 key。
+- 历史版本存在 keytar（Windows 凭据管理器）的 key，启动时一次性迁移到 safeStorage 并删除源条目。
 
 ## 数据删除
 

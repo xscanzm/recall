@@ -1,0 +1,35 @@
+/* src/renderer/styles/update-badge.css
+   版本更新徽章（顶栏右上角）
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============================================================================
+   版本更新徽章（顶栏右上角，UpdateBadge.tsx 使用）
+   ========================================================================== */
+.update-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+}
+.update-badge__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--recall-danger);
+  flex-shrink: 0;
+}
+.update-badge__progress {
+  width: 80px;
+  height: 4px;
+  background: var(--recall-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.update-badge__progress-bar {
+  height: 100%;
+  background: var(--recall-accent);
+  transition: width 0.2s;
+}

@@ -265,19 +265,11 @@ export function RemindersPage() {
     setMergingId(item.id);
     setMergeError(null);
     try {
-      const result = await mergeObjects({
+      await mergeObjects({
         objectType: payload.objectType,
         fromId: payload.fromId,
         toId: payload.toId,
         reason: payload.reason ?? item.reason ?? undefined,
-      });
-      console.log("[merge] confirmed", {
-        objectType: payload.objectType,
-        fromName: payload.fromName,
-        toName: payload.toName,
-        rewrittenFactsCount: result.rewrittenFactsCount,
-        rewrittenScenesCount: result.rewrittenScenesCount,
-        mergedAliases: result.mergedAliases,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

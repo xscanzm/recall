@@ -5,6 +5,7 @@ import type { TimelineBlockRepository } from "../db/repositories/TimelineBlockRe
 import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedThreadRepository";
 import type { SettingsService } from "./SettingsService";
 import { formatLocalDateKey } from "../utils/dateKey";
+import { installNavigationGuards } from "./navigationGuard";
 
 interface DailyState {
   dateKey: string;
@@ -161,6 +162,13 @@ export class EndOfDayReviewService {
         sandbox: false,
       },
     });
+    // 弹窗渲染的是模型生成的日报正文，同样按不可信内容处理。
+    installNavigationGuards(win.webContents, () => ({
+      // __dirname = dist/main/services，renderer 在 dist/renderer
+      rendererRoot: path.join(__dirname, "..", "..", "renderer"),
+      devServerUrl: this.deps.isDev() ? this.deps.devServerUrl : undefined,
+    }));
+
     this.popup = win;
     win.on("closed", () => {
       if (this.popup === win) this.popup = null;

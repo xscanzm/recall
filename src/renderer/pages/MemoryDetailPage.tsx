@@ -33,12 +33,17 @@ export function MemoryDetailPage({ detailRef, onBack, onOpenRelation, backLabel 
   const [previewError, setPreviewError] = useState<Record<string, string>>({});
   const [correctionOpen, setCorrectionOpen] = useState(false);
 
+  // 按字段依赖而非按对象依赖：父组件每次渲染都会新建 detailRef 字面量，
+  // 直接依赖对象会导致每渲染一次就重新拉取详情。
+  const detailId = detailRef.id;
+  const detailType = detailRef.type;
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     setDetail(null);
-    void getIpc().memory.getDetail(detailRef)
+    void getIpc().memory.getDetail({ id: detailId, type: detailType })
       .then((result) => {
         if (cancelled) return;
         setDetail(result as MemoryDetail | null);
@@ -52,7 +57,7 @@ export function MemoryDetailPage({ detailRef, onBack, onOpenRelation, backLabel 
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [detailRef.id, detailRef.type]);
+  }, [detailId, detailType]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

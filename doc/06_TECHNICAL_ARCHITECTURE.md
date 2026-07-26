@@ -11,7 +11,7 @@ MVP 推荐：
 - better-sqlite3 或 sqlite wrapper
 - Zustand 或轻量 React store
 - zod 做 schema 校验
-- keytar 或 Electron safeStorage 保存 API Key
+- Electron safeStorage 加密 API Key（Windows 走 DPAPI），密文存 `data/secrets.json`
 - OpenAI-compatible HTTP client
 
 Windows-first。不要在 MVP 中追求多端。

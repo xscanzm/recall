@@ -1,0 +1,32 @@
+/* src/renderer/styles/renderer-error.css
+   渲染层兜底错误页
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* Renderer-level recovery state: kept independent from app data and IPC. */
+.renderer-error {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  justify-items: start;
+  gap: 12px;
+  padding: 40px;
+  background: #f7f6f2;
+  color: #17332c;
+}
+
+.renderer-error h1,
+.renderer-error p {
+  margin: 0;
+}
+
+.renderer-error button {
+  min-height: 40px;
+  padding: 0 16px;
+  border: 1px solid #397866;
+  border-radius: 6px;
+  background: #397866;
+  color: #fff;
+  cursor: pointer;
+}

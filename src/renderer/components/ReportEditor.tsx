@@ -23,8 +23,6 @@
 // 月报 MonthlyReportOutput 使用 monthStart/monthEnd + nextMonthSuggestions。
 
 import { useEffect, useState } from "react";
-import { useAppStore } from "../state/store";
-import { NAMING } from "../app/naming";
 
 // ============================================================================
 // 类型定义（与 main/models/schemas.ts 保持结构一致，进程边界隔离）
@@ -147,7 +145,7 @@ export interface ReportEditorProps {
 // ============================================================================
 
 export function ReportEditor(props: ReportEditorProps) {
-  const { reportId, type, dateKey, title, contentJson, sourceFactIds = [], sourceSceneIds = [] } = props;
+  const { dateKey, title, contentJson, sourceFactIds = [], sourceSceneIds = [] } = props;
   const [content, setContent] = useState<ReportContent | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [editedJson, setEditedJson] = useState("");
@@ -156,22 +154,6 @@ export function ReportEditor(props: ReportEditorProps) {
   const [parseError, setParseError] = useState<string | null>(null);
   // 12.5/22.11：报告 stale 标志（来源被 soft delete）
   const isReportStale = props.isStale === 1;
-
-  // 来源跳转相关 store action
-  const setPage = useAppStore((s) => s.setPage);
-  const searchMemory = useAppStore((s) => s.searchMemory);
-
-  // 跳转到记忆库并搜索指定 factId（来自 Checkpoint 10.12）
-  const handleJumpToFact = (factId: string) => {
-    setPage("memory");
-    void searchMemory(factId);
-  };
-
-  // 跳转到记忆库并搜索指定 sceneId
-  const handleJumpToScene = (sceneId: string) => {
-    setPage("memory");
-    void searchMemory(sceneId);
-  };
 
   // 解析 content_json
   useEffect(() => {

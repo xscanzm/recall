@@ -53,9 +53,8 @@ const recallApi = {
 
   // -------------------- settings --------------------
   settings: {
-    get: <T>(): Promise<T> => ipcRenderer.invoke("settings:get"),
-    update: <T>(input: unknown): Promise<{ ok: true; settings: T }> =>
-      ipcRenderer.invoke("settings:update", input),
+    get: () => invokeValidated(ipcRenderer, "settings:get"),
+    update: (input: IpcRequest<"settings:update">) => invokeValidated(ipcRenderer, "settings:update", input),
   },
 
   endOfDayReview: {
@@ -110,12 +109,10 @@ const recallApi = {
 
   // -------------------- privacy --------------------
   privacy: {
-    listRules: <T>(): Promise<T[]> => ipcRenderer.invoke("privacy:listRules"),
-    addRule: <T>(input: unknown): Promise<T> => ipcRenderer.invoke("privacy:addRule", input),
-    updateRule: (input: unknown): Promise<{ ok: true }> =>
-      ipcRenderer.invoke("privacy:updateRule", input),
-    deleteRule: (input: { id: string }): Promise<{ ok: true }> =>
-      ipcRenderer.invoke("privacy:deleteRule", input),
+    listRules: () => invokeValidated(ipcRenderer, "privacy:listRules"),
+    addRule: (input: IpcRequest<"privacy:addRule">) => invokeValidated(ipcRenderer, "privacy:addRule", input),
+    updateRule: (input: IpcRequest<"privacy:updateRule">) => invokeValidated(ipcRenderer, "privacy:updateRule", input),
+    deleteRule: (input: IpcRequest<"privacy:deleteRule">) => invokeValidated(ipcRenderer, "privacy:deleteRule", input),
   },
 
   // -------------------- memory --------------------
@@ -222,9 +219,8 @@ const recallApi = {
 
   // -------------------- reminders --------------------
   reminders: {
-    list: <T>(): Promise<T[]> => ipcRenderer.invoke("reminders:list"),
-    updateStatus: (input: { id: string; status: string }): Promise<{ ok: true }> =>
-      ipcRenderer.invoke("reminders:updateStatus", input),
+    list: () => invokeValidated(ipcRenderer, "reminders:list"),
+    updateStatus: (input: IpcRequest<"reminders:updateStatus">) => invokeValidated(ipcRenderer, "reminders:updateStatus", input),
   },
 
   // -------------------- reports --------------------

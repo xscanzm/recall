@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { SettingsUpdateSchema } from "./schemas";
+import { ipcContracts } from "../../shared/ipcContracts";
 import { createEmptyReportRequirements } from "../../shared/reportRequirements";
 
-describe("SettingsUpdateSchema", () => {
+// settings:update 迁移到 handleValidated 后，真正把关的是契约里的 request schema，
+// 原来的 SettingsUpdateSchema 已不再挂在任何调用路径上。这些断言改打契约，
+// 免得覆盖率留在一段死代码上。
+const SettingsUpdateSchema = ipcContracts["settings:update"].request;
+
+describe("settings:update request contract", () => {
   it("accepts a complete observation section", () => {
     const observation = {
       enabled: true,

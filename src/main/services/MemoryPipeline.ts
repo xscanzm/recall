@@ -20,7 +20,7 @@
 
 import type { CaptureBundle, BatchCaptureBundle, Fact, DebugEvent } from "../models/types";
 import type { ObserverExtractorWorker, ObserverExtractorWorkerResult, BatchObserverExtractorWorkerResult, BatchObserverWorkerResult } from "./ObserverExtractorWorker";
-import type { ObservationNormalizer, NormalizeResult, BatchNormalizeResult } from "./ObservationNormalizer";
+import type { ObservationNormalizer, NormalizeResult } from "./ObservationNormalizer";
 import type { LinkerSceneJudgeWorker, LinkerSceneJudgeResult } from "./LinkerSceneJudgeWorker";
 import type { EpisodeFactExtractorWorker, EpisodeFactExtractorResult } from "./EpisodeFactExtractorWorker";
 import type { ModelJobQueue, JobResult } from "./ModelJobQueue";

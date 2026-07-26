@@ -76,7 +76,6 @@ export class EpisodeBuilder {
   private shouldSplit(prev: EpisodeCandidateItem, current: EpisodeCandidateItem): boolean {
     const prevObs = prev.observation;
     const curObs = current.observation;
-    const prevBundle = prev.bundle;
     const curBundle = current.bundle;
 
     const gapMs =

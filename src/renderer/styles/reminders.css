@@ -1,0 +1,43 @@
+/* src/renderer/styles/reminders.css
+   提醒页
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============ 提醒页样式 ============ */
+.reminders-page__filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.reminders-filter {
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  border-radius: var(--radius-pill);
+  color: var(--recall-text-muted);
+}
+
+.reminders-filter--active {
+  background-color: var(--recall-accent);
+  color: #fff;
+  border-color: var(--recall-accent);
+}
+
+.reminders-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.reminders-empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--recall-text-muted);
+  font-size: 13px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}

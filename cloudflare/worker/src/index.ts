@@ -2,7 +2,7 @@
 // 同时提供信息图代理，避免把共享图像服务密钥编译进桌面客户端。
 
 import { compareVersions } from "./version";
-import { readManifest, type UpdateManifest } from "./manifest";
+import { readManifest } from "./manifest";
 import {
   getDailyDistributionStats,
   getDistributionStatsHistory,
@@ -74,28 +74,59 @@ function isWebsiteRequest(request: Request): boolean {
   return request.headers.get("Origin") === WEBSITE_ORIGIN;
 }
 
-function isStatsReadAuthorized(request: Request, env: Env): boolean {
-  const token = env.STATS_READ_TOKEN?.trim();
-  return Boolean(token) && request.headers.get("Authorization") === `Bearer ${token}`;
+/**
+ * 常数时间字符串比较。
+ *
+ * 直接用 === 比较密钥会在不匹配的第一个字节就返回，比较耗时随「猜对的前缀长度」
+ * 变化，理论上可被逐字节爆破。这里先各自 SHA-256 成定长摘要再逐字节异或累加：
+ * - 定长：耗时不泄漏原始长度；
+ * - 全量遍历：不提前 return，耗时不泄漏第一个差异位置。
+ */
+async function constantTimeEquals(a: string, b: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [digestA, digestB] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(a)),
+    crypto.subtle.digest("SHA-256", encoder.encode(b)),
+  ]);
+  const bytesA = new Uint8Array(digestA);
+  const bytesB = new Uint8Array(digestB);
+  let diff = 0;
+  for (let i = 0; i < bytesA.length; i += 1) {
+    diff |= bytesA[i] ^ bytesB[i];
+  }
+  return diff === 0;
 }
 
-function isStatsAdminAuthorized(request: Request, env: Env): boolean {
+async function isStatsReadAuthorized(request: Request, env: Env): Promise<boolean> {
+  const token = env.STATS_READ_TOKEN?.trim();
+  if (!token) return false;
+  const provided = request.headers.get("Authorization");
+  if (!provided) return false;
+  return constantTimeEquals(provided, `Bearer ${token}`);
+}
+
+async function isStatsAdminAuthorized(request: Request, env: Env): Promise<boolean> {
   const username = env.STATS_ADMIN_USERNAME?.trim();
   const password = env.STATS_ADMIN_PASSWORD;
   const authorization = request.headers.get("Authorization");
   if (!username || !password || !authorization?.startsWith("Basic ")) return false;
 
+  let credentials: string;
   try {
-    const credentials = atob(authorization.slice("Basic ".length));
-    const separator = credentials.indexOf(":");
-    return (
-      separator !== -1 &&
-      credentials.slice(0, separator) === username &&
-      credentials.slice(separator + 1) === password
-    );
+    credentials = atob(authorization.slice("Basic ".length));
   } catch {
     return false;
   }
+  const separator = credentials.indexOf(":");
+  if (separator === -1) return false;
+
+  // 两个比较都要跑完再合并结果：用 && 会在用户名错时直接短路，
+  // 泄漏「用户名是否猜对」这一位信息。
+  const [userMatches, passwordMatches] = await Promise.all([
+    constantTimeEquals(credentials.slice(0, separator), username),
+    constantTimeEquals(credentials.slice(separator + 1), password),
+  ]);
+  return userMatches && passwordMatches;
 }
 
 function statsLoginRequired(): Response {
@@ -376,6 +407,7 @@ function statsPageResponse(
         <div class="metric"><span>官网访问</span><strong>${stats.websiteVisits}</strong></div>
         <div class="metric"><span>点击下载</span><strong>${stats.websiteDownloadStarts}</strong></div>
         <div class="metric"><span>官网安装包请求</span><strong>${websitePackageDownloads}</strong></div>
+        <div class="metric"><span>直接安装包请求</span><strong>${directPackageDownloads}</strong></div>
         <div class="metric"><span>更新检查</span><strong>${updateChecks}</strong></div>
         <div class="metric"><span>发现可更新</span><strong>${updatesAvailable}</strong></div>
       </section>
@@ -886,7 +918,7 @@ export default {
       // ─── GET /api/metrics/daily?date=YYYY-MM-DD ─────
       // 运营端读取已聚合的统计；必须配置并提供独立密钥。
       if (path === "/api/metrics/daily") {
-        if (!isStatsReadAuthorized(request, env)) {
+        if (!(await isStatsReadAuthorized(request, env))) {
           return jsonResponse({ error: "not-found" }, 404);
         }
         const date = url.searchParams.get("date") ?? currentDateKey();
@@ -899,7 +931,7 @@ export default {
       // ─── GET /admin/stats?date=YYYY-MM-DD ───────────
       // 运营数据页使用浏览器标准 Basic Auth，不写 Cookie 或账号信息。
       if (path === "/admin/stats") {
-        if (!isStatsAdminAuthorized(request, env)) {
+        if (!(await isStatsAdminAuthorized(request, env))) {
           return statsLoginRequired();
         }
         const endDate = url.searchParams.get("date") ?? currentDateKey();

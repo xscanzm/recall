@@ -1,3 +1,12 @@
+# ASCII only: pip decodes this file with the system locale codec (gbk on zh-CN
+# Windows), so non-ASCII comments break "pip install -r". Keep notes in English.
+#
+# opencv-python-headless, not opencv-python: the worker only calls
+# cv2.setNumThreads(1) and all image processing happens inside rapidocr, so no
+# GUI backend is ever used. On Windows the two wheels are nearly the same size
+# (~175 KB apart) because neither bundles Qt -- this swap is about not shipping
+# GUI entry points we never call, not about bytes. The real size win comes from
+# deleting the videoio ffmpeg DLL in scripts/build-rapidocr-worker.ps1.
 rapidocr==3.9.2
 onnxruntime==1.27.0
 antlr4-python3-runtime==4.9.3
@@ -9,7 +18,7 @@ flatbuffers==25.12.19
 idna==3.18
 numpy==2.4.6
 omegaconf==2.3.1
-opencv-python==5.0.0.93
+opencv-python-headless==5.0.0.93
 packaging==26.2
 pillow==12.3.0
 protobuf==7.35.1

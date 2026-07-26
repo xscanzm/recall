@@ -1,0 +1,315 @@
+/* src/renderer/styles/people.css
+   人物页与人物详情
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============ Phase 6：人物页样式 ============ */
+
+.people-page__header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.people-page__header-row h2 {
+  margin: 0;
+}
+
+.people-page__back-btn {
+  font-size: 12px;
+  padding: 4px 10px;
+  background-color: transparent;
+  border: 1px solid var(--recall-border);
+}
+
+.people-page__error {
+  background-color: var(--recall-danger-soft);
+  border: 1px solid var(--recall-danger);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--recall-danger);
+  font-size: 13px;
+}
+
+/* 人物列表网格 */
+.people-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* 人物卡片 */
+.person-card {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color var(--transition-hover), box-shadow var(--transition-hover);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.person-card:hover {
+  border-color: var(--recall-accent);
+  box-shadow: 0 2px 8px rgba(30, 36, 35, 0.06);
+}
+
+.person-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.person-card__name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--recall-text);
+  margin: 0;
+  flex: 1;
+}
+
+.person-card__badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background-color: var(--recall-amber-soft);
+  color: var(--recall-amber);
+  border: 1px solid var(--recall-amber);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.person-card__header-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.person-card__merge-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  background-color: transparent;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-pill);
+  color: var(--recall-text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: border-color var(--transition-hover), color var(--transition-hover);
+}
+
+.person-card__merge-btn:hover {
+  border-color: var(--recall-accent);
+  color: var(--recall-accent);
+}
+
+.person-card__delete-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  background-color: transparent;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-pill);
+  color: var(--recall-text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: border-color var(--transition-hover), color var(--transition-hover);
+}
+
+.person-card__delete-btn:hover {
+  border-color: var(--recall-danger, #e5484d);
+  color: var(--recall-danger, #e5484d);
+}
+
+.person-card__aliases {
+  font-size: 10px;
+  color: var(--recall-text-muted);
+  font-style: italic;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--recall-border);
+}
+
+.person-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.person-card__role {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.5;
+}
+
+.person-card__projects {
+  font-size: 12px;
+  color: var(--recall-accent);
+  line-height: 1.5;
+}
+
+.person-card__meta {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  flex-wrap: wrap;
+  border-top: 1px solid var(--recall-border);
+  padding-top: 8px;
+}
+
+.person-card__time {
+  opacity: 0.7;
+}
+
+/* 人物详情 */
+.person-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.person-detail__section {
+  padding: 16px 20px;
+}
+
+.person-detail__section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.person-detail__actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.person-detail__actions button {
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.person-detail__count {
+  background-color: var(--recall-accent);
+  color: #fff;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+  margin-left: 6px;
+}
+
+.person-detail__summary {
+  color: var(--recall-text);
+  line-height: 1.7;
+  margin: 0 0 8px 0;
+}
+
+.person-detail__meta {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  flex-wrap: wrap;
+}
+
+.person-detail__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.person-detail__list-item {
+  padding: 10px 12px;
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}
+
+.person-detail__list-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--recall-text);
+  margin-bottom: 4px;
+}
+
+.person-detail__list-summary {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+.person-detail__list-meta {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+}
+
+.person-detail__empty {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0;
+  font-style: italic;
+}
+
+/* 人物详情时间轴 */
+.person-detail__timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.person-detail__timeline-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  background-color: var(--recall-bg);
+  border-left: 3px solid var(--recall-accent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.person-detail__timeline-time {
+  font-size: 11px;
+  color: var(--recall-text-faint);
+  flex-shrink: 0;
+  width: 140px;
+}
+
+.person-detail__timeline-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.person-detail__timeline-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--recall-text);
+  margin-bottom: 4px;
+}
+
+.person-detail__timeline-summary {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+}

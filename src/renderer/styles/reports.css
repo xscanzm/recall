@@ -1,0 +1,75 @@
+/* src/renderer/styles/reports.css
+   报告页 5 Tab 骨架
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============ Phase 4：报告页样式（doc 23） ============ */
+/* 5 Tab 结构：我的复盘 / 工作日报 / 周报 / 月报 / 历史
+   主区域随窗口伸缩，左侧时间轴 + 顶部 Tab + 主区内容。 */
+
+.reports-page {
+  /* 复用通用页面布局（display:flex; flex-direction:column; gap:16px），
+     在此基础之上叠加 padding 与 overflow 行为。 */
+  padding: 24px 32px 32px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.reports-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--recall-border);
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.reports-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 10px 16px;
+  font-size: 14px;
+  color: var(--recall-text-muted);
+  cursor: pointer;
+  transition: color var(--transition-hover), border-color var(--transition-hover);
+}
+
+.reports-tab:hover {
+  background-color: transparent;
+  color: var(--recall-text);
+}
+
+.reports-tab.is-active {
+  color: var(--recall-accent);
+  border-bottom-color: var(--recall-accent);
+  font-weight: 600;
+}
+
+.reports-tab:focus-visible {
+  outline: 2px solid var(--recall-accent);
+  outline-offset: -2px;
+}
+
+.reports-content {
+  max-width: none;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+  min-width: 0;
+}
+
+.reports-error {
+  padding: 10px 14px;
+  background-color: var(--recall-danger-soft);
+  border: 1px solid var(--recall-danger);
+  border-radius: var(--radius-md);
+  color: var(--recall-danger);
+  font-size: 13px;
+}

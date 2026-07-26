@@ -1,0 +1,201 @@
+/* src/renderer/styles/today.css
+   今日页两栏骨架（中间时间轴 + 右侧面板）
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============ 今日页样式（Phase 3，doc 21） ============ */
+/* AppShell 已提供 76px Sidebar，TodayPage 仅实现 中间时间轴 + 右侧面板 两栏 */
+.today-page {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr;
+  height: 100%;
+  min-height: 0;
+  background: var(--recall-bg);
+  color: var(--recall-text);
+  overflow: hidden;
+}
+
+.today-page--centered {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  grid-template-columns: none;
+}
+
+.today-page__booting {
+  font-size: 14px;
+  color: var(--recall-text-muted);
+}
+
+.today-page__hero h2 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.today-page__hero-sub {
+  margin: 0;
+  color: var(--recall-text-muted);
+  font-size: 13px;
+}
+
+.today-overview {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  box-shadow: 0 1px 2px rgba(30, 36, 35, 0.04);
+}
+
+.today-overview__headline {
+  font-size: 15px;
+  color: var(--recall-text);
+  line-height: 1.7;
+  margin: 0 0 8px 0;
+}
+
+.today-overview__headline strong {
+  color: var(--recall-accent);
+  font-weight: 600;
+}
+
+.today-overview__focus {
+  font-size: 13px;
+  color: var(--recall-text-muted);
+  margin: 0;
+}
+
+.today-overview__stats {
+  display: flex;
+  gap: 24px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.today-overview__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.today-overview__stat-num {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--recall-text);
+}
+
+.today-overview__stat-label {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+}
+
+.today-section {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  box-shadow: 0 1px 2px rgba(30, 36, 35, 0.04);
+}
+
+.today-section__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--recall-text);
+  margin: 0 0 12px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.today-section__title-link {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--recall-accent);
+  cursor: pointer;
+}
+
+.today-section__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.today-task-row,
+.today-decision-row,
+.today-confirmation-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--recall-border);
+  border-radius: 6px;
+  background-color: var(--recall-bg);
+}
+
+.today-task-row__title,
+.today-decision-row__title {
+  font-size: 13px;
+  color: var(--recall-text);
+  font-weight: 500;
+}
+
+.today-task-row__meta,
+.today-decision-row__meta,
+.today-confirmation-row__meta {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.today-scene-block {
+  padding: 12px 14px;
+  border-left: 3px solid var(--recall-accent);
+  background-color: var(--recall-bg);
+  border-radius: 0 6px 6px 0;
+}
+
+.today-scene-block__title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--recall-text);
+  margin: 0 0 4px 0;
+}
+
+.today-scene-block__summary {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.today-scene-block__time {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+  margin-top: 4px;
+}
+
+.today-report-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: 6px;
+}
+
+.today-report-entry__hint {
+  font-size: 13px;
+  color: var(--recall-text);
+}
+
+.today-report-entry__sub {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0;
+}

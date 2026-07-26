@@ -1,0 +1,54 @@
+/* src/renderer/styles/settings-release-notes.css
+   设置页「关于」分区的更新说明
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+*/
+
+/* ============================================================================
+   设置页「关于」分区：当前版本更新说明（SettingsPage.tsx 使用）
+   ========================================================================== */
+.settings-section__release-notes-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.settings-section__release-notes {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 280px;
+  overflow: auto;
+  background: var(--recall-surface-muted);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--recall-text);
+}
+.settings-section__release-notes .release-notes__h {
+  margin: 12px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--recall-text);
+}
+.settings-section__release-notes .release-notes__h:first-child {
+  margin-top: 0;
+}
+.settings-section__release-notes .release-notes__list {
+  margin: 4px 0;
+  padding-left: 20px;
+  list-style: disc;
+}
+.settings-section__release-notes .release-notes__list li {
+  margin: 2px 0;
+}
+.settings-section__release-notes .release-notes__p {
+  margin: 4px 0;
+}
+.settings-section__release-notes .release-notes__code {
+  padding: 1px 4px;
+  background: var(--recall-bg);
+  border-radius: 3px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}

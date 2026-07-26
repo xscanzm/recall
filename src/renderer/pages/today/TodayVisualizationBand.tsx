@@ -38,10 +38,13 @@ export function TodayVisualizationBand({
     () => buildAttentionSegmentsFromStats(overview.stats),
     [overview.stats]
   );
-  const domain = useMemo(() => getActivityAxisDomain(overview), [
-    overview.observedStartAt,
-    overview.observedEndAt,
-  ]);
+  // getActivityAxisDomain 只读这两个字段，因此按字段依赖而不是整个 overview。
+  const observedStartAt = overview.observedStartAt;
+  const observedEndAt = overview.observedEndAt;
+  const domain = useMemo(
+    () => getActivityAxisDomain({ observedStartAt, observedEndAt }),
+    [observedStartAt, observedEndAt]
+  );
   const rhythm = useMemo(
     () => domain ? buildRhythmSegments(overview.windows, domain) : [],
     [overview.windows, domain]
