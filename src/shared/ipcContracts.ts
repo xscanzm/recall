@@ -242,6 +242,14 @@ export const ipcContracts = {
   "app:setLaunchAtLogin": { request: z.object({ enabled: z.boolean() }), response: z.object({ ok: z.literal(true), enabled: z.boolean() }) },
   "window:minimize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "window:toggleMaximize": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
+  "window:drag": {
+    request: z.object({
+      phase: z.enum(["start", "move", "end"]),
+      screenX: z.number().finite(),
+      screenY: z.number().finite(),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+  },
   "window:close": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "settings:get": { request: z.undefined(), response: appSettings },
   "settings:update": { request: appSettingsPatch, response: z.object({ ok: z.literal(true), settings: appSettings }) },

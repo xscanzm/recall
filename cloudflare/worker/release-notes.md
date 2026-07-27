@@ -1,3 +1,67 @@
+## v0.5.3 — 批次死锁修复 + 残批攒批优化 + 跨天窗口封窗 + 窗口拖动改进
+
+本次版本聚焦 v0.5.1 时间轴窗口化落地后暴露的批次与窗口协调类 bug 修复，并顺带把窗口拖动从 CSS `app-region` 改为 IPC + PointerEvent 自定义实现以解决与 React 事件系统的冲突。
+
+### Bug 修复
+
+#### 1. 批次重试耗尽死锁（BatchProcessor + CaptureInboxRepository）
+
+**症状**：崩溃恢复（`recoverRunningBatches`）与优雅关闭（`checkpointRunning`）会把 `running` 写回 `pending` 而不动 `attempts`。若那一次正好是第 `maxAttempts` 次尝试，这条 batch 就落入死区：`listProcessableBatches` 因 `attempts < maxAttempts` 不再挑它，`getWindowWatermark` 又因为它既非 `succeeded` 也非 `failed` 而永久算作 `unsettled`，于是覆盖它的时间轴窗口再也封不掉。
+
+**修复**：
+- `CaptureInboxRepository` 新增 `failExhaustedBatches(maxAttempts)`：把重试次数已用尽却仍停在 `pending`/`running` 的 batch 落到终态 `failed`，`last_error` 补 `retry_exhausted_without_terminal_state`
+- 抽取 `BATCH_MAX_ATTEMPTS = 3` 常量到仓储层，保证 `BatchProcessor` 的挑选条件与 `getWindowWatermark` 的终态判定用同一个数
+- `getWindowWatermark` 的 SQL 补 `attempts >= BATCH_MAX_ATTEMPTS → failed` 分支，让水位线不再把这种 batch 算成 unsettled
+- `BatchProcessor.start()` 启动时调用一次 `failExhaustedBatches`，避免历史死区 batch 卡死新一天的窗口
+
+#### 2. CaptureBatcher 固定 5 分钟定时器抢切近满批次
+
+**症状**：ActivityService 长会话间隔 5 分钟、内容变化最小间隔 60 秒，真实到帧节奏约 60~70 秒一帧，攒满 6 帧要 6 分钟以上。旧的"从第一帧起算固定 5 分钟"定时器会在批次快满时抢先提交，产生大量 4~5 帧、甚至 1 帧的批次，拉低模型单批质量。
+
+**修复**：
+- 用"空闲 + 年龄上限"双约束替代固定 5 分钟：`IDLE_FLUSH_MS = 150s`（距离最后一帧超过 150s 才认为活动停了）、`MAX_BATCH_AGE_MS = 10min`（队首最老一帧不允许超过 10 分钟，与时间轴采集窗口对齐）
+- `scheduleFlush` 每次入队都重排，让"空闲"这一半随新帧顺延；`delay = Math.max(0, Math.min(IDLE_FLUSH_MS, MAX_BATCH_AGE_MS - oldestAge))`
+- 新增 `oldestQueuedAt` 锚点跟踪队首年龄；flush 后剩下的帧从现在起重新计年龄；队列空了清掉锚点
+- flush 失败时帧退回队首，`oldestQueuedAt` 也要退回 `previousAnchor`，不能让失败重排把它们"变新"
+
+#### 3. TimelineWindowCoordinator 跨天窗口死锁 + 封窗重复排空 + 回调环形等待
+
+**症状 A**：跨天窗口里有 batch 永远算不上终态（`unsettledCount` 归不了零），旧实现会在 `sealing` 上原地打转，把 48 次循环耗光，今天的窗口永远开不出来。
+
+**修复 A**：跨天窗口用 `force: true` 强制封窗，把没结算的部分标成 `partial`；封窗后若状态仍没变（说明推不动），直接退出，不在同一个窗口上耗光循环。
+
+**症状 B**：`sealing` 状态每 5 秒轮询一次，旧实现每轮都调用 `captureService.drain()` + `captureBatcher.flush()`，把尚未攒满 6 帧的 L0 队列强制 flush 成单帧 batch。
+
+**修复 B**：用 `preparedSealingWindows: Set<string>` 标记，只在该窗口首次封窗时排空 producer，后续轮询不再强制 flush；窗口离开 sealing 状态（成功/失败/空窗）时清理标记。
+
+**症状 C**：`onBatchSettled` 回调在 `advance` 正在等待 batch 时触发，会形成 `advance → batch → onBatchSettled → advance` 的环形等待死锁。
+
+**修复 C**：`onBatchSettled` 开头检查 `this.running`，若已有 advance 在跑则直接返回，避免环形等待。
+
+### 改进
+
+#### 4. 窗口拖动从 CSS app-region 改为 IPC + PointerEvent
+
+**问题**：CSS `-webkit-app-region: drag` 与 Electron + React 事件系统有冲突（按钮点击被拦截、拖动不流畅）。
+
+**改进**：
+- 新增 IPC 通道 `window:drag`（`phase: start|move|end` + `screenX/screenY`），主进程 `appHandlers.ts` 维护 `dragState`（pointer 起点 + 窗口原位置），`move` 阶段调用 `window.setPosition` 跟随
+- 渲染层 `AppShell.tsx` 三个 handler（`handleWindowDragStart/Move/End`）用 `setPointerCapture` 保证拖动不丢失，忽略非左键和 `button/a/input` 元素
+- 应用于 `.app-shell__brand`（品牌区）和 `.app-shell__topbar`（顶部状态栏）
+- CSS 改为 `app-region: no-drag` + `user-select: none`，避免与自定义拖动冲突
+- 新增 E2E 测试：验证拖动后窗口位置变化但尺寸不变
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增/更新单元测试：BatchProcessor（reap exhausted + concurrency cap）、CaptureBatcher（idle slide + age cap）、TimelineWindowCoordinator（force seal + no spin + no reentrant advance）
+- IPC 契约测试更新：`EXPECTED_INVOKE_CHANNEL_COUNT` 82 → 83，`MIN_VALIDATED_CHANNELS` 40 → 41
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.2 — 安全存储迁移 + 导航护栏加固 + 渲染层架构重构
 
 本次版本聚焦安全加固与内部架构整理：API Key 存储从已归档的 keytar 原生模块迁移到 Electron 内置 safeStorage（DPAPI），降低原生依赖维护成本；BrowserWindow 新增导航白名单护栏，作为 prompt injection 逃逸的纵深防御；数据库写入增加 busy_timeout 与迁移备份自动清理；渲染层将单文件 global.css 与 store.ts 拆分为按页面/组件的 CSS 多文件与 Zustand slice 模式。

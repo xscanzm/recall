@@ -1,6 +1,12 @@
 import type { DB } from "../Database";
 import type { BatchCaptureBundle, CaptureBundle } from "../../models/types";
 
+/**
+ * batch 的最大尝试次数。放在仓储层是因为 getWindowWatermark 的 SQL 也要用它判定终态，
+ * 必须和 BatchProcessor 的挑选条件（attempts < maxAttempts）保持同一个数。
+ */
+export const BATCH_MAX_ATTEMPTS = 3;
+
 export type CaptureBatchStatus = "pending" | "running" | "succeeded" | "failed";
 export type BatchStageStatus = "pending" | "running" | "succeeded" | "failed";
 export type BatchStage = "observer" | "episode" | "atom" | "linker";
@@ -92,6 +98,25 @@ export class CaptureInboxRepository {
     ).run(new Date().toISOString()).changes;
   }
 
+  /**
+   * 把重试次数已经用尽却仍停在 pending/running 的 batch 落到终态 failed。
+   *
+   * 崩溃恢复（recoverRunningBatches）和优雅关闭（checkpointRunning）都会把 running
+   * 改回 pending 而不动 attempts。如果那一次正好是第 maxAttempts 次尝试，这条 batch
+   * 就落进死区：listProcessableBatches 因 attempts < maxAttempts 不再挑它，
+   * getWindowWatermark 又因为它既非 succeeded 也非 failed 而永久算作 unsettled，
+   * 于是覆盖它的时间轴窗口再也封不掉。
+   */
+  failExhaustedBatches(maxAttempts: number): number {
+    return this.db.prepare(
+      `UPDATE capture_batches
+       SET status = 'failed',
+           last_error = COALESCE(last_error, 'retry_exhausted_without_terminal_state'),
+           updated_at = ?
+       WHERE status IN ('pending', 'running') AND attempts >= ?`
+    ).run(new Date().toISOString(), maxAttempts).changes;
+  }
+
   listProcessableBatches(maxAttempts: number): CaptureBatchRecord[] {
     const rows = this.db.prepare(
        `SELECT batch_id, bundle_json, status, attempts, last_error,
@@ -121,6 +146,7 @@ export class CaptureInboxRepository {
         CASE
           WHEN ci.status = 'succeeded' OR cb.status = 'succeeded' THEN 'succeeded'
           WHEN cb.status = 'failed' THEN 'failed'
+          WHEN cb.batch_id IS NOT NULL AND cb.attempts >= ${BATCH_MAX_ATTEMPTS} THEN 'failed'
           ELSE 'unsettled'
         END AS terminal_status
       FROM capture_inbox ci

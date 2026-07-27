@@ -25,6 +25,7 @@ export type IpcChannel =
   | "app:setLaunchAtLogin"
   | "window:minimize"
   | "window:toggleMaximize"
+  | "window:drag"
   | "window:close"
   | "settings:get"
   | "settings:update"
@@ -128,6 +129,7 @@ export const ALL_INVOKE_CHANNELS: readonly IpcChannel[] = [
   "app:setLaunchAtLogin",
   "window:minimize",
   "window:toggleMaximize",
+  "window:drag",
   "window:close",
   "settings:get",
   "settings:update",

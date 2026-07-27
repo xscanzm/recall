@@ -277,6 +277,32 @@ async function main() {
       "an observation exactly on the boundary belongs only to the next half-open window",
     );
 
+    // 重试用尽却被恢复动作写回 pending 的 batch：既挑不出来处理，也不能永远算 unsettled。
+    const zombieCapture = capture("cap-zombie", "", "2026-07-11T10:30:00.000Z");
+    inbox.enqueueCapture(zombieCapture);
+    inbox.createBatch(batch("batch-zombie", [zombieCapture]));
+    db.prepare("UPDATE capture_batches SET attempts = 3, status = 'running' WHERE batch_id = ?").run("batch-zombie");
+    assert.equal(inbox.recoverRunningBatches(), 1);
+    assert.equal(
+      inbox.listProcessableBatchesForWindow("2026-07-11T10:30:00.000Z", "2026-07-11T10:40:00.000Z", 3).length,
+      0,
+      "a retry-exhausted batch is never processable again",
+    );
+    assert.deepEqual(
+      {
+        unsettled: inbox.getWindowWatermark("2026-07-11T10:30:00.000Z", "2026-07-11T10:40:00.000Z").unsettledCount,
+        failed: inbox.getWindowWatermark("2026-07-11T10:30:00.000Z", "2026-07-11T10:40:00.000Z").failedCount,
+      },
+      { unsettled: 0, failed: 1 },
+      "the watermark counts a retry-exhausted pending batch as failed, not unsettled",
+    );
+    assert.equal(inbox.failExhaustedBatches(3), 1, "the reaper drives exhausted batches to a terminal status");
+    assert.equal(
+      db.prepare("SELECT status FROM capture_batches WHERE batch_id = ?").get("batch-zombie").status,
+      "failed",
+    );
+    assert.equal(inbox.failExhaustedBatches(3), 0, "the reaper is idempotent");
+
     const now = "2026-07-11T10:00:00.000Z";
     db.prepare("INSERT INTO projects (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)")
       .run("p1", "Recall project", "SQLite search", "active", "[]", "[]", now, now);

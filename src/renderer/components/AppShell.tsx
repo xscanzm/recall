@@ -6,7 +6,7 @@
 // - 顶部状态栏（48px）：StatusPill + 暂停/恢复按钮
 // - 主内容区：根据当前路由渲染对应页面
 
-import { type ReactNode, type ComponentType } from "react";
+import { type ReactNode, type ComponentType, type PointerEvent as ReactPointerEvent } from "react";
 import {
   CalendarDays,
   ListTodo,
@@ -100,6 +100,41 @@ export const AppShell = ({ children }: AppShellProps) => {
     }
   };
 
+  const sendWindowDrag = (phase: "start" | "move" | "end", event: ReactPointerEvent<HTMLElement>) => {
+    void getIpc().window.drag({ phase, screenX: event.screenX, screenY: event.screenY })
+      .catch((err) => console.error("窗口拖动失败:", err));
+  };
+
+  const handleWindowDragStart = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) return;
+    if ((event.target as Element).closest("button, a, input")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    sendWindowDrag("start", event);
+  };
+
+  const handleWindowDragMove = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    if ((event.buttons & 1) === 0) {
+      sendWindowDrag("end", event);
+      event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
+    sendWindowDrag("move", event);
+  };
+
+  const handleWindowDragEnd = (event: ReactPointerEvent<HTMLElement>) => {
+    if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    sendWindowDrag("end", event);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const windowDragProps = {
+    onPointerDown: handleWindowDragStart,
+    onPointerMove: handleWindowDragMove,
+    onPointerUp: handleWindowDragEnd,
+    onPointerCancel: handleWindowDragEnd,
+  };
+
   const handleOpenUnreadReports = () => {
     setPage("reports");
     markUnreadReportsRead();
@@ -123,7 +158,7 @@ export const AppShell = ({ children }: AppShellProps) => {
   return (
     <div className="app-shell">
       <aside className="app-shell__sidebar">
-        <div className="app-shell__brand">
+        <div className="app-shell__brand" {...windowDragProps}>
           <BrandMark />
           <span className="app-shell__brand-name">回声 Recall</span>
         </div>
@@ -143,7 +178,7 @@ export const AppShell = ({ children }: AppShellProps) => {
       </aside>
 
       <main className="app-shell__main">
-        <header className="app-shell__topbar">
+        <header className="app-shell__topbar" {...windowDragProps}>
           <StatusPill
             onClick={handlePauseToggle}
             actionLabel={isObserving ? "暂停观察" : "开始观察"}

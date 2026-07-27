@@ -27,7 +27,21 @@ import type { OcrBatchService } from "./OcrService";
  * 攒批参数
  */
 const BATCH_SIZE = 6; // 攒满 6 帧立即提交，避免 JSON 输出过长被截断
-const FLUSH_INTERVAL_MS = 5 * 60 * 1000; // 5 分钟超时兜底
+/**
+ * 空闲兜底：距离最后一帧超过这个时长才认为"活动停了"，把不满 6 帧的残批提交。
+ *
+ * 不能用"从第一帧起算固定 5 分钟"：ActivityService 的长会话间隔是 5 分钟、内容变化
+ * 最小间隔 60 秒，真实到帧节奏约 60~70 秒一帧，攒满 6 帧要 6 分钟以上。固定 5 分钟
+ * 的定时器会在批次快满时抢先提交，于是出现大量 4~5 帧、甚至 1 帧的批次。
+ */
+const IDLE_FLUSH_MS = 150 * 1000;
+/**
+ * 年龄上限：队列里最老的一帧不允许比这个时长更旧。
+ *
+ * 空闲定时器每来一帧就重置，光靠它在持续活动下可能无限推迟；这个上限保证残批
+ * 最迟也会提交。取 10 分钟与时间轴采集窗口对齐，封窗时本来也会强制 flush 一次。
+ */
+const MAX_BATCH_AGE_MS = 10 * 60 * 1000;
 const FRAME_TARGET_WIDTH = 800; // 每帧 resize 到 800px 宽（等比缩放）
 const JPEG_QUALITY = 45;
 const JPEG_CHROMA_SUBSAMPLING = "4:2:0";
@@ -60,6 +74,8 @@ export interface CaptureBatcherConfig {
 export class CaptureBatcher extends EventEmitter {
   private queue: CaptureBundle[] = [];
   private flushTimer: NodeJS.Timeout | null = null;
+  /** 队首那一帧入队的本地时刻，用来给残批算年龄上限。 */
+  private oldestQueuedAt: number | null = null;
   private readonly compressedDir: string;
   private readonly repository: CaptureInboxRepository;
   private readonly ocrFrameProcessor: Pick<OcrFrameProcessor, "prepareBatch">;
@@ -78,6 +94,7 @@ export class CaptureBatcher extends EventEmitter {
     fs.mkdirSync(this.compressedDir, { recursive: true });
     this.queue = this.repository.listPendingCaptures();
     if (this.queue.length > 0) {
+      this.oldestQueuedAt = Date.now();
       setImmediate(() => {
         this.flush().catch((err) => {
           logger.error({
@@ -91,7 +108,7 @@ export class CaptureBatcher extends EventEmitter {
   /**
    * 添加一个 capture-bundle 到攒批队列
    * - 攒满 6 帧立即触发 flush
-   * - 未满时启动 5 分钟超时定时器
+   * - 未满时排定兜底：空闲 IDLE_FLUSH_MS 后提交，且不超过 MAX_BATCH_AGE_MS
    */
   add(bundle: CaptureBundle): boolean {
     if (!this.accepting) return false;
@@ -101,6 +118,8 @@ export class CaptureBatcher extends EventEmitter {
       message: `CaptureBatcher.add: 队列长度 ${this.queue.length}/${BATCH_SIZE} (captureId=${bundle.captureId})`,
     });
 
+    if (this.oldestQueuedAt === null) this.oldestQueuedAt = Date.now();
+
     if (this.queue.length >= BATCH_SIZE) {
       // 攒满立即触发（异步，不阻塞 add 调用方）
       this.flush().catch((err) => {
@@ -108,15 +127,9 @@ export class CaptureBatcher extends EventEmitter {
           message: `CaptureBatcher.flush 失败: ${err instanceof Error ? err.message : String(err)}`,
         });
       });
-    } else if (!this.flushTimer) {
-      // 未满，启动超时兜底
-      this.flushTimer = setTimeout(() => {
-        this.flush().catch((err) => {
-          logger.error({
-            message: `CaptureBatcher 超时 flush 失败: ${err instanceof Error ? err.message : String(err)}`,
-          });
-        });
-      }, FLUSH_INTERVAL_MS);
+    } else {
+      // 未满：按"空闲 + 年龄上限"重排兜底提交
+      this.scheduleFlush();
     }
     return true;
   }
@@ -144,6 +157,7 @@ export class CaptureBatcher extends EventEmitter {
         clearTimeout(this.flushTimer);
         this.flushTimer = null;
       }
+      this.oldestQueuedAt = null;
       return;
     }
 
@@ -156,6 +170,9 @@ export class CaptureBatcher extends EventEmitter {
     }
 
     const frames = this.queue.splice(0, BATCH_SIZE);
+    const previousAnchor = this.oldestQueuedAt;
+    // 剩下的帧从现在起重新计年龄；队列空了就清掉锚点。
+    this.oldestQueuedAt = this.queue.length > 0 ? Date.now() : null;
     const batchId = createBatchId(frames);
     logger.info({
       message: `CaptureBatcher.flush: 提交 ${frames.length} 帧`,
@@ -184,6 +201,8 @@ export class CaptureBatcher extends EventEmitter {
         message: `CaptureBatcher 压缩/构造批次失败: ${err instanceof Error ? err.message : String(err)}`,
       });
       this.queue.unshift(...frames);
+      // 帧退回队首，年龄锚点也要退回，不能让失败重排把它们"变新"。
+      this.oldestQueuedAt = previousAnchor ?? Date.now();
       throw err;
     } finally {
       this.isFlushing = false;
@@ -202,6 +221,7 @@ export class CaptureBatcher extends EventEmitter {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
+    if (this.queue.length === 0) this.oldestQueuedAt = null;
   }
 
   stopAccepting(): void {
@@ -333,15 +353,27 @@ export class CaptureBatcher extends EventEmitter {
     };
   }
 
+  /**
+   * 排定残批的兜底提交时间：空闲 IDLE_FLUSH_MS 后提交，但不晚于最老一帧的
+   * MAX_BATCH_AGE_MS。每次入队都要重排，让"空闲"这一半随新帧顺延。
+   */
   private scheduleFlush(): void {
-    if (this.flushTimer) return;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.queue.length === 0) return;
+    const oldestAge = this.oldestQueuedAt === null
+      ? 0
+      : Math.max(0, Date.now() - this.oldestQueuedAt);
+    const delay = Math.max(0, Math.min(IDLE_FLUSH_MS, MAX_BATCH_AGE_MS - oldestAge));
     this.flushTimer = setTimeout(() => {
       this.flush().catch((err) => {
         logger.error({
           message: `CaptureBatcher 超时 flush 失败: ${err instanceof Error ? err.message : String(err)}`,
         });
       });
-    }, FLUSH_INTERVAL_MS);
+    }, delay);
   }
 
   /**

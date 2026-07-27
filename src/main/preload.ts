@@ -48,6 +48,7 @@ const recallApi = {
   window: {
     minimize: () => invokeValidated(ipcRenderer, "window:minimize"),
     toggleMaximize: () => invokeValidated(ipcRenderer, "window:toggleMaximize"),
+    drag: (input: IpcRequest<"window:drag">) => invokeValidated(ipcRenderer, "window:drag", input),
     close: () => invokeValidated(ipcRenderer, "window:close"),
   },
 

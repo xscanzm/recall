@@ -64,6 +64,7 @@ describe("IPC contracts", () => {
     expectTypeOf<Parameters<RecallApi["workReport"]["generate"]>[0]>().toEqualTypeOf<IpcRequest<"workReport:generate">>();
     expectTypeOf<Awaited<ReturnType<RecallApi["window"]["minimize"]>>>().toEqualTypeOf<IpcResponse<"window:minimize">>();
     expectTypeOf<Awaited<ReturnType<RecallApi["window"]["toggleMaximize"]>>>().toEqualTypeOf<IpcResponse<"window:toggleMaximize">>();
+    expectTypeOf<Parameters<RecallApi["window"]["drag"]>[0]>().toEqualTypeOf<IpcRequest<"window:drag">>();
     expectTypeOf<Awaited<ReturnType<RecallApi["activity"]["getDayOverview"]>>>().toEqualTypeOf<IpcResponse<"activity:getDayOverview">>();
   });
 

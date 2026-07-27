@@ -26,6 +26,26 @@ async function closeApp() {
   app = undefined;
 }
 
+async function dragWindowFrom(page: Awaited<ReturnType<typeof launch>>, selector: string) {
+  const region = page.locator(selector);
+  const box = await region.boundingBox();
+  if (!box) throw new Error(`Missing drag region: ${selector}`);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2 + 50, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+}
+
+async function mainWindowBounds() {
+  if (!app) throw new Error("Electron app is not running");
+  return app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("Main window is missing");
+    return window.getBounds();
+  });
+}
+
 test.beforeAll(() => {
   userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-e2e-"));
 });
@@ -62,4 +82,27 @@ test("first-run choice persists, observation intent restores, and core renderer 
   await expect(page.getByRole("button", { name: "最小化" })).toBeVisible();
   await expect(page.getByRole("button", { name: "最大化或还原" })).toBeVisible();
   await expect(page.getByRole("button", { name: "关闭" })).toBeVisible();
+
+  if (process.platform === "win32") {
+    await app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.unmaximize());
+    await page.waitForTimeout(200);
+
+    const beforeTopbarDrag = await mainWindowBounds();
+    await dragWindowFrom(page, ".app-shell__topbar");
+    const afterTopbarDrag = await mainWindowBounds();
+    expect(Math.abs(afterTopbarDrag.width - beforeTopbarDrag.width)).toBeLessThanOrEqual(4);
+    expect(Math.abs(afterTopbarDrag.height - beforeTopbarDrag.height)).toBeLessThanOrEqual(4);
+    expect([afterTopbarDrag.x, afterTopbarDrag.y]).not.toEqual([
+      beforeTopbarDrag.x,
+      beforeTopbarDrag.y,
+    ]);
+
+    const beforeBrandDrag = afterTopbarDrag;
+    await dragWindowFrom(page, ".app-shell__brand");
+    const afterBrandDrag = await mainWindowBounds();
+    expect([afterBrandDrag.x, afterBrandDrag.y]).not.toEqual([
+      beforeBrandDrag.x,
+      beforeBrandDrag.y,
+    ]);
+  }
 });

@@ -1163,6 +1163,7 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "app:setLaunchAtLogin",
   "window:minimize",
   "window:toggleMaximize",
+  "window:drag",
   "window:close",
   "settings:get",
   "settings:update",
@@ -1229,4 +1230,3 @@ const ALL_INVOKE_CHANNELS_EXPECTED = [
   "update:getStatus",
   "update:dismissVersion",
 ] as const;
-

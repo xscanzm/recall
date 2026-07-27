@@ -100,6 +100,99 @@ describe("CaptureBatcher OCR and compression", () => {
     expect(batcher.add(makeFrame(8))).toBe(false);
   });
 
+  it("lets the idle timer slide with new frames instead of cutting a nearly-full batch", async () => {
+    vi.useFakeTimers();
+    try {
+      const batchSizes: number[] = [];
+      const batcher = new CaptureBatcher({
+        repository: {
+          listPendingCaptures: () => [],
+          enqueueCapture: () => true,
+          createBatch: (batch: BatchCaptureBundle) => {
+            batchSizes.push(batch.frames.length);
+            return true;
+          },
+        } as never,
+        ocrFrameProcessor: {
+          prepareBatch: async () => ({ results: [], commit: () => undefined }),
+        },
+      });
+      const frame = (index: number): CaptureBundle => ({
+        captureId: `capture-${index}`,
+        capturedAt: new Date(index * 70_000).toISOString(),
+        timezone: "UTC",
+        appName: "Recall Test",
+        windowTitle: "Idle Test",
+        captureReason: "manual_capture",
+        activitySignals: {
+          keyboardActive: false, mouseActive: false, idleSeconds: 0, activeWindowStableSeconds: 60,
+        },
+        imagePaths: [],
+        retentionPolicy: "today",
+      });
+
+      // 真实节奏约 70 秒一帧：攒满 6 帧要 350 秒，旧的固定 5 分钟定时器会中途切一刀。
+      for (let index = 0; index < 6; index += 1) {
+        batcher.add(frame(index));
+        await vi.advanceTimersByTimeAsync(70_000);
+      }
+      expect(batchSizes).toEqual([6]);
+
+      // 活动停下来之后，残批才由空闲兜底提交。
+      batcher.add(frame(6));
+      await vi.advanceTimersByTimeAsync(140_000);
+      expect(batchSizes).toEqual([6]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(batchSizes).toEqual([6, 1]);
+      batcher.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("caps the fallback by batch age when frames keep trickling in", async () => {
+    vi.useFakeTimers();
+    try {
+      const batchSizes: number[] = [];
+      const batcher = new CaptureBatcher({
+        repository: {
+          listPendingCaptures: () => [],
+          enqueueCapture: () => true,
+          createBatch: (batch: BatchCaptureBundle) => {
+            batchSizes.push(batch.frames.length);
+            return true;
+          },
+        } as never,
+        ocrFrameProcessor: {
+          prepareBatch: async () => ({ results: [], commit: () => undefined }),
+        },
+      });
+      const frame = (index: number): CaptureBundle => ({
+        captureId: `capture-${index}`,
+        capturedAt: new Date(index * 120_000).toISOString(),
+        timezone: "UTC",
+        appName: "Recall Test",
+        windowTitle: "Age Cap",
+        captureReason: "manual_capture",
+        activitySignals: {
+          keyboardActive: false, mouseActive: false, idleSeconds: 0, activeWindowStableSeconds: 60,
+        },
+        imagePaths: [],
+        retentionPolicy: "today",
+      });
+
+      // 每 120 秒一帧，空闲定时器永远被顺延；年龄上限必须在 10 分钟处兜住。
+      for (let index = 0; index < 5; index += 1) {
+        batcher.add(frame(index));
+        await vi.advanceTimersByTimeAsync(120_000);
+      }
+      expect(batchSizes).toEqual([5]);
+      batcher.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("recognizes the original image before persisting an optimized JPEG", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-capture-batcher-"));
     tempDirs.push(tempDir);

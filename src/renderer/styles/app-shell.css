@@ -27,6 +27,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+  user-select: none;
 }
 
 .app-shell__brand-mark {
@@ -106,7 +109,9 @@
   background-color: var(--recall-surface);
   border-bottom: 1px solid var(--recall-border);
   gap: 16px;
-  -webkit-app-region: drag;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+  user-select: none;
 }
 
 .app-shell__topbar-actions {
@@ -146,6 +151,7 @@
 .app-shell__topbar a,
 .app-shell__topbar input,
 .app-shell__topbar-actions {
+  app-region: no-drag;
   -webkit-app-region: no-drag;
 }
 

@@ -187,8 +187,30 @@ describe("TimelineWindowCoordinator", () => {
     watermark.unsettledCount = 0;
     watermark.failedCount = 1;
     await harness.coordinator.advance(due);
+    expect(harness.flush).toHaveBeenCalledTimes(1);
+    expect(harness.drainThroughCapturedAt).toHaveBeenCalledTimes(2);
     expect(harness.buildWindow).toHaveBeenCalledWith(expect.objectContaining({ sourceCompleteness: "partial" }));
     expect([...harness.windows.values()][0]).toMatchObject({ status: "succeeded", sourceCompleteness: "partial" });
+  });
+
+  it("does not await the active advance again from a batch settlement callback", async () => {
+    const harness = makeHarness({ observations: [
+      observation("o1", local("09:03:00").toISOString()),
+      observation("o2", local("09:09:00").toISOString()),
+    ] });
+    harness.drainThroughCapturedAt.mockImplementation(async () => {
+      await harness.coordinator.onBatchSettled("succeeded", {} as never);
+    });
+
+    const result = await Promise.race([
+      harness.coordinator
+        .advance(new Date(local("09:13:00").getTime() + TIMELINE_SEAL_GRACE_MS))
+        .then(() => "completed"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("deadlocked"), 100)),
+    ]);
+
+    expect(result).toBe("completed");
+    expect([...harness.windows.values()][0]).toMatchObject({ status: "succeeded" });
   });
 
   it("keeps a failed model window and retries the same identity", async () => {
@@ -242,6 +264,51 @@ describe("TimelineWindowCoordinator", () => {
       closeReason: "day_rollover",
       status: "succeeded",
     });
+  });
+
+  it("force-seals a rolled-over window whose watermark never settles", async () => {
+    // 复现线上死锁：跨天窗口里有 batch 永远算不上终态，unsettledCount 归不了零。
+    // 旧实现会在 sealing 上原地打转，把 48 次循环耗光，今天的窗口永远开不出来。
+    const harness = makeHarness({
+      observations: [
+        observation("o1", local("09:03:00").toISOString()),
+        observation("o2", local("09:09:00").toISOString()),
+        observation("o3", new Date("2026-07-24T09:03:00+08:00").toISOString()),
+      ],
+      watermark: { totalCount: 3, unsettledCount: 1, failedCount: 0, batchIds: ["b1"] },
+    });
+    await harness.coordinator.advance(local("09:04:00"));
+    expect([...harness.windows.values()][0]).toMatchObject({ status: "collecting" });
+
+    await harness.coordinator.advance(new Date("2026-07-24T09:04:00+08:00"));
+
+    const windows = [...harness.windows.values()];
+    // 跨天那一格被强制封窗并标成 partial，而不是卡在 sealing。
+    expect(windows[0]).toMatchObject({
+      dateKey: "2026-07-23",
+      closeReason: "day_rollover",
+      status: "succeeded",
+      sourceCompleteness: "partial",
+    });
+    // 关键断言：新的一天必须能开出窗口。
+    expect(windows[1]).toMatchObject({ dateKey: "2026-07-24", status: "collecting" });
+  });
+
+  it("does not spin when a rolled-over window cannot leave sealing", async () => {
+    const harness = makeHarness({
+      observations: [observation("o1", local("09:03:00").toISOString())],
+      watermark: { totalCount: 1, unsettledCount: 1, failedCount: 0, batchIds: ["b1"] },
+    });
+    await harness.coordinator.advance(local("09:04:00"));
+    const id = [...harness.windows.keys()][0];
+    // 模拟封窗完全推不动：任何写入都不改变状态。
+    harness.windowRepo.update.mockImplementation((windowId: string) => harness.windows.get(windowId)!);
+    harness.windows.set(id, { ...harness.windows.get(id)!, status: "sealing" });
+
+    await harness.coordinator.advance(new Date("2026-07-24T09:04:00+08:00"));
+
+    // 一轮推进只应尝试一次，不能在同一个窗口上反复 drain 48 次。
+    expect(harness.drainThroughCapturedAt).toHaveBeenCalledTimes(1);
   });
 
   it("blocks report generation when the eligible tail still fails after retry", async () => {

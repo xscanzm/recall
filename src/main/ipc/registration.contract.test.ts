@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const EXPECTED_INVOKE_CHANNEL_COUNT = 82;
+const EXPECTED_INVOKE_CHANNEL_COUNT = 83;
 
 /**
  * handleValidated 覆盖率地板（棘轮）。
@@ -10,9 +10,9 @@ const EXPECTED_INVOKE_CHANNEL_COUNT = 82;
  * 只准涨不准跌：迁移一个 channel 到 handleValidated 就把这个数往上抬。
  * 目的是让"新加 raw ipcMain.handle"在 review 之外还有一道自动拦截。
  *
- * 2026-07 基线：40 个已迁移 / 41 个仍是裸 ipcMain.handle。
+ * 2026-07 基线：41 个已迁移。
  */
-const MIN_VALIDATED_CHANNELS = 40;
+const MIN_VALIDATED_CHANNELS = 41;
 
 function extractChannels(source: string, pattern: RegExp): Set<string> {
   return new Set(Array.from(source.matchAll(pattern), (match) => match[1]));

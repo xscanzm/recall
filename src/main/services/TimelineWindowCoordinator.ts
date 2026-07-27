@@ -37,6 +37,7 @@ export class TimelineWindowCoordinator {
   private running: Promise<void> | null = null;
   private stopped = false;
   private readonly preparedDates = new Set<string>();
+  private readonly preparedSealingWindows = new Set<string>();
 
   constructor(private readonly deps: TimelineWindowCoordinatorDeps) {
     this.now = deps.now ?? (() => new Date());
@@ -67,6 +68,9 @@ export class TimelineWindowCoordinator {
 
   async onBatchSettled(status: BatchSettlementStatus, _bundle: BatchCaptureBundle): Promise<void> {
     if (status === "retry_pending") return;
+    // sealWindow 正在等待 batch 时，完成回调会从同一条调用链回到这里。
+    // 再等待 this.running 会形成 advance -> batch -> onBatchSettled -> advance 的环形等待。
+    if (this.running) return;
     await this.advance();
   }
 
@@ -131,8 +135,14 @@ export class TimelineWindowCoordinator {
       if (active && active.dateKey !== formatLocalDateKey(at)) {
         const dayEnd = new Date(localDateKeyUtcRange(active.dateKey).end);
         const rolloverEnd = new Date(Math.min(Date.parse(active.collectionEnd), dayEnd.getTime()));
-        await this.closeAndSeal(active, "day_rollover", rolloverEnd, allowModel);
-        if (this.deps.windowRepo.getById(active.id)?.status === "failed") return;
+        // 已经跨天的窗口不会再有新的采集落进来，等 unsettled 归零没有意义：
+        // 强制封窗，把没结算的部分标成 partial，后续补齐再由 recoverPartialWindows 重建。
+        await this.closeAndSeal(active, "day_rollover", rolloverEnd, allowModel, { force: true });
+        const rolled = this.deps.windowRepo.getById(active.id);
+        if (!rolled || rolled.status === "failed") return;
+        // 兜底：万一封窗后状态没变，说明这一轮推进不了，直接退出，
+        // 不要在同一个窗口上把 48 次循环耗光（那会让今天的窗口永远开不出来）。
+        if (rolled.status === "sealing" || rolled.status === "collecting") return;
         continue;
       }
       if (!active) {
@@ -179,14 +189,15 @@ export class TimelineWindowCoordinator {
     window: TimelineGenerationWindow,
     reason: TimelineWindowCloseReason,
     closeAt: Date,
-    allowModel: boolean
+    allowModel: boolean,
+    options: { force?: boolean } = {}
   ): Promise<void> {
     const updated = this.deps.windowRepo.update(window.id, {
       collectionEnd: closeAt.toISOString(),
       status: "sealing",
       closeReason: reason,
     });
-    await this.sealWindow(updated, allowModel);
+    await this.sealWindow(updated, allowModel, options);
   }
 
   private openNextWindow(dateKey: string, at: Date): TimelineGenerationWindow | null {
@@ -213,10 +224,19 @@ export class TimelineWindowCoordinator {
     });
   }
 
-  private async sealWindow(window: TimelineGenerationWindow, allowModel: boolean): Promise<void> {
+  private async sealWindow(
+    window: TimelineGenerationWindow,
+    allowModel: boolean,
+    options: { force?: boolean } = {}
+  ): Promise<void> {
     try {
-      await this.deps.captureService?.drain();
-      await this.deps.captureBatcher.flush();
+      // sealing 状态每 5 秒轮询一次。只在该窗口首次封窗时排空 producer，
+      // 否则每轮都会把尚未攒满 6 帧的 L0 队列强制 flush 成单帧 batch。
+      if (!this.preparedSealingWindows.has(window.id)) {
+        await this.deps.captureService?.drain();
+        await this.deps.captureBatcher.flush();
+        this.preparedSealingWindows.add(window.id);
+      }
       await this.deps.batchProcessor.drainThroughCapturedAt(
         window.collectionStart,
         window.collectionEnd
@@ -225,7 +245,7 @@ export class TimelineWindowCoordinator {
         window.collectionStart,
         window.collectionEnd
       );
-      if (watermark.unsettledCount > 0) return;
+      if (watermark.unsettledCount > 0 && !options.force) return;
 
       const observations = this.deps.observationRepo.listByCapturedAt({
         from: window.collectionStart,
@@ -235,9 +255,11 @@ export class TimelineWindowCoordinator {
       });
       const actualStart = observations[0]?.capturedAt ?? null;
       const actualEnd = observations[observations.length - 1]?.capturedAt ?? null;
-      const sourceCompleteness = watermark.failedCount > 0 ? "partial" : "complete";
+      const sourceCompleteness =
+        watermark.failedCount > 0 || watermark.unsettledCount > 0 ? "partial" : "complete";
       const span = actualStart && actualEnd ? Date.parse(actualEnd) - Date.parse(actualStart) : 0;
       if (!actualStart || !actualEnd || span < TIMELINE_MIN_SPAN_MS) {
+        this.preparedSealingWindows.delete(window.id);
         this.deps.windowRepo.update(window.id, {
           actualStart,
           actualEnd,
@@ -259,8 +281,10 @@ export class TimelineWindowCoordinator {
         sealedAt: this.now().toISOString(),
         lastError: null,
       });
+      this.preparedSealingWindows.delete(window.id);
       if (allowModel) await this.generateWindow(ready);
     } catch (error) {
+      this.preparedSealingWindows.delete(window.id);
       this.deps.windowRepo.update(window.id, {
         status: "failed",
         lastError: errorMessage(error),
