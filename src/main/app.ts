@@ -20,6 +20,10 @@ import type { AppStatus, ReportGeneratedEvent } from "../shared/types";
 import { APP_NAME_ZH } from "../shared/constants";
 import { getDatabase, closeDatabase } from "./db/Database";
 import { MemorySearchRepository } from "./db/repositories/MemorySearchRepository";
+import { MemoryEmbeddingRepository } from "./db/repositories/MemoryEmbeddingRepository";
+import { EmbeddingWorkerClient } from "./services/EmbeddingWorkerClient";
+import { EmbeddingIndexerService } from "./services/EmbeddingIndexerService";
+import { HybridSearchService } from "./services/HybridSearchService";
 import { CorrectionLifecycleRepository } from "./db/repositories/CorrectionLifecycleRepository";
 import { SettingsRepository } from "./db/repositories/SettingsRepository";
 import { ModelJobRepository } from "./db/repositories/ModelJobRepository";
@@ -94,6 +98,9 @@ import type { Report } from "./models/types";
 // ============================================================================
 let isQuitting = false;
 let shutdownStarted = false;
+
+let embeddingIndexerService: EmbeddingIndexerService | undefined;
+let embeddingWorkerClient: EmbeddingWorkerClient | undefined;
 
 // ============================================================================
 // AppStatus 全局状态
@@ -552,6 +559,11 @@ app.whenReady().then(async () => {
   // 初始化数据库与服务
   const db = getDatabase();
   const memorySearchRepo = new MemorySearchRepository(db);
+  const memoryEmbeddingRepo = new MemoryEmbeddingRepository(db);
+  embeddingWorkerClient = new EmbeddingWorkerClient();
+  embeddingIndexerService = new EmbeddingIndexerService(db, memoryEmbeddingRepo, embeddingWorkerClient);
+  const hybridSearchService = new HybridSearchService(memorySearchRepo, memoryEmbeddingRepo, embeddingWorkerClient);
+  embeddingIndexerService.startBackgroundIndexing();
   const correctionLifecycleRepo = new CorrectionLifecycleRepository(db);
   const settingsRepo = new SettingsRepository(db);
   // 注意：modelJobRepo 提升为模块级变量（用于启动时清理卡死任务）
@@ -872,6 +884,7 @@ app.whenReady().then(async () => {
       },
     }, facts, scenes),
     infographicService,
+    embeddingIndexerService,
   });
 
   // 6. 订阅 CaptureService 的 capture-bundle 事件
@@ -1011,6 +1024,7 @@ app.whenReady().then(async () => {
     modelJobRepo,
     dataLifecycleService,
     memorySearchRepo,
+    hybridSearchService,
     correctionLifecycleRepo,
     projectionInvalidationProcessor,
     endOfDayReviewService,
@@ -1108,6 +1122,8 @@ app.on("before-quit", (event) => {
     sceneScheduler,
     captureBatcher,
     ocrService,
+    embeddingIndexerService,
+    embeddingWorkerClient,
     batchProcessor,
     modelJobQueue: modelJobQueueForShutdown,
     trayService,

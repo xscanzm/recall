@@ -123,7 +123,7 @@ export class MemoryObjectAdmissionService {
     const repo = this.deps.memoryObjectRepo;
     const existing = candidate.objectType === "project"
       ? repo.findProjectByExactIdentity(candidate.title)
-      : repo.findPersonByExactIdentity(candidate.title);
+      : repo.findPersonByExactIdentity(candidate.title, candidate.role, candidate.organization);
     const sourceFactIds = [...new Set([...(existing?.sourceFactIds ?? []), ...candidate.sourceFactIds])];
     const accumulated = { ...candidate, sourceFactIds };
 

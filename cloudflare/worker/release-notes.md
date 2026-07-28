@@ -1,3 +1,75 @@
+## v0.5.4 — 混合搜索（FTS5 trigram + BGE 本地 embedding）+ 身份归一化与重复对象审计
+
+本次版本聚焦记忆搜索能力升级与对象身份治理：搜索从单一 LIKE 全表扫描升级为 FTS5 trigram 词法召回 + BGE 本地 embedding 语义召回的双路混合检索，支持中文子串精确匹配与"意思相近但字面不同"的语义召回；同时引入身份归一化工具与只读审计服务，解决历史数据中同名不同人或同人异名的问题。
+
+### 新增功能
+
+#### 1. 混合搜索（HybridSearchService）
+
+将记忆搜索从单一 `LIKE '%关键词%'` 全表扫描升级为 FTS5 trigram 词法召回 + BGE 本地 embedding 语义召回的双路混合检索：
+
+- **migration 028**：重建 `memory_search_fts` 虚拟表，tokenize 改为 `trigram`，支持中文任意 3 字符子串精确匹配，查询从 O(N) 全表扫描降到 O(log N) 索引查找；覆盖 7 类对象（facts/scenes/tasks/projects/decisions/people/reports），每类配 INSERT/UPDATE/DELETE 触发器自动维护索引
+- **migration 029**：新建 `memory_embeddings` 表（512 维 float32 向量 BLOB 存储）+ `memory_embedding_queue` 索引队列表
+- **HybridSearchService**：词法保底（FTS5 top 500）+ 向量召回（cosine 相似度 > 0.15，top 100）→ RRF 融合（k=60，词法权重 1.0，向量权重 0.7）→ 精确匹配提权（exact_id +10、exact_title +5）→ 静默降级（向量路超时 1500ms 或失败时自动回退纯 FTS）
+- **MemorySearchResponse** 新增 `quality: "strong" | "weak" | "none"` 字段，区分双路命中、单路命中、无结果
+- 观察数据走独立的 `observation_search_fts` 表，同样带 bm25 排序和 LIKE 降级
+- 新增 `getCandidates` + `batchGetFtsRowsByKeys` 批量回填候选详情，消除 N+1 查询
+
+#### 2. BGE 本地 embedding 推理
+
+全本地 CPU 推理的 embedding 服务，无需外网、无需 GPU、无需配置 API Key：
+
+- 模型：`bge-small-zh-v1.5`（BGE 中文小模型），512 维，ONNX 量化版（`model_quantized.onnx`），位于 `resources/embedding/bge-small-zh-v1.5/`
+- **进程复用**：EmbeddingWorkerClient 复用 `rapidocr-worker` 进程，通过 `--mode embedding --model-dir <path>` 参数切换模式，减少打包体积和进程数量
+- 进程间协议：stdin 写 JSON 请求（`{id, type: "query"|"document", texts}`），stdout 读 JSON 响应；单批最多 32 条文本，超过自动分块
+- 三种部署形态自动适配：打包态 `rapidocr-worker.exe` / 开发态本地构建 exe / Python 源码 `rapidocr_worker.py`
+- 进程崩溃自动重建，通过 `childGeneration` 机制隔离旧请求，避免僵尸响应污染新进程
+- `EmbeddingIndexerService`：后台索引循环，`generation` 字段防覆盖（旧 embedding 结果不会覆盖已被新内容重新入队的对象）
+- `MemoryEmbeddingRepository.listVectors` 用 `count:max(updated_at)` 签名缓存全量向量，避免每次搜索都从 DB 反序列化所有 BLOB
+
+#### 3. 身份归一化与重复对象审计
+
+引入"同名不等于同一身份"的核心约束，解决历史数据中同名不同人或同人异名的问题：
+
+- **共享工具 `src/shared/identity.ts`**：
+  - `normalizeIdentity`：NFKC + trim + 折叠内部空白 + toLowerCase，保留标点（`Recall-v1.0` 与 `Recall.v1.0` 不会被误并）
+  - `comparePersonIdentity`：名称 + role/organization 强字段三档判定（`strong_field_match` / `normalized_name_match` / `conflict_detected`）
+- **IdentityAuditService**：只读 dry-run 审计，扫描未归档 projects 和未软删 people，按归一化名称分组，给出三档分类；不运行真实合并、不修改 DB、不把"完全同名"直接判定为同一人物
+- **MemoryObjectRepository** 新增 `findProjectByExactIdentity` / `findPersonByExactIdentity`，基于精确身份查询
+- **MemoryObjectAdmissionService**：`admitOrAccumulate` 从模糊匹配切换到精确身份匹配，保留 `admissionDecidedBy === "user"` 的对象不被自动 reassess 覆盖
+- **cascadeMark.mergeObjects**：新增 `mergeNormalizedAliases` 用归一化去重别名；人物合并新增组织信息补全；合并流程包成事务确保原子化
+
+### 改进
+
+#### 4. BatchProcessor lane 化并发
+
+- 新增 backlog/fresh/window 三 lane 调度：`BACKLOG_CONCURRENCY = BATCH_CONCURRENCY - 1 = 4`，始终保留 1 个槽给最新数据（fresh lane），防止旧积压拖死今日观察
+- 新增 `stopAndDrainActive()`：停止接收新批次并等待已 claiming 批次终态，专供 `DataLifecycleService.exclusive()` 清理前调用
+- `drainThroughCapturedAt` 优先调度窗口内批次，避免窗口外积压占满并发槽
+
+#### 5. DataLifecycleService 事务安全
+
+- `exclusive()` 包装器：清理前 pauseSources → drain → suspendAndFlush → drain，避免清理与采集并发；`active` 标志位防止多个清理操作叠加
+- `withEmbeddingIndexerPaused()`：清理期间 stopAndDrain 嵌入索引器，结束后 startBackgroundIndexing，避免索引器读到半删除状态
+- `deleteCaptureLedger` 用 `COALESCE(json_extract, ...)` 兼容新旧 bundle 格式
+- `forgetRecent` / `clearAll` / `clearScreenshots` 全部走事务，`cleanupFiles` 返回 `complete/partial/failed` 三态
+
+#### 6. TimelineHeader 新增"忘掉最近"按钮
+
+- 时间轴头部新增 Eraser 图标按钮，点击弹确认框后调 `forgetRecent("30m")` 清理最近 30 分钟数据
+- CSS 配套：`.timeline-header__forget-btn` 34px 高、13px 字号、hover 态变危险红色调
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试：HybridSearchService（双路融合 + 降级）、EmbeddingWorkerClient（进程崩溃重建）、MemoryEmbeddingRepository、IdentityAuditService（三档分类 + 只读断言）、mergeSuggestionsFix（Phase 0 身份归一化）
+- migration 028/029 契约测试通过
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.3 — 批次死锁修复 + 残批攒批优化 + 跨天窗口封窗 + 窗口拖动改进
 
 本次版本聚焦 v0.5.1 时间轴窗口化落地后暴露的批次与窗口协调类 bug 修复，并顺带把窗口拖动从 CSS `app-region` 改为 IPC + PointerEvent 自定义实现以解决与 React 事件系统的冲突。

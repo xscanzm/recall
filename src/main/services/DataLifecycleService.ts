@@ -7,6 +7,7 @@ import type { InfographicService } from "./InfographicService";
 import type { CaptureService } from "./CaptureService";
 import type { CaptureBatcher } from "./CaptureBatcher";
 import type { BatchProcessor } from "./BatchProcessor";
+import type { EmbeddingIndexerService } from "./EmbeddingIndexerService";
 import type { Fact, Scene } from "../models/types";
 import { localDayUtcRange } from "../utils/dateKey";
 
@@ -32,12 +33,15 @@ interface Dependencies {
   resumeSources: () => void;
   cascade: (facts: Fact[], scenes: Scene[]) => void;
   infographicService?: InfographicService;
+  embeddingIndexerService?: Pick<EmbeddingIndexerService, "stopAndDrain" | "startBackgroundIndexing">;
 }
 
 const CLEAR_TABLES = [
   "observations", "facts", "scenes", "projects", "tasks", "people", "decisions",
   "memory_edges", "proactive_items", "reports", "timeline_blocks", "report_selections",
   "unfinished_threads", "object_merges", "user_feedback", "model_jobs", "capture_batches", "capture_inbox",
+  "memory_embeddings",
+  "memory_embedding_queue",
 ] as const;
 
 export class DataLifecycleService {
@@ -46,7 +50,7 @@ export class DataLifecycleService {
   constructor(private readonly deps: Dependencies) {}
 
   async forgetRecent(duration: ForgetDuration) {
-    return this.exclusive(async () => {
+    return this.exclusive(() => this.withEmbeddingIndexerPaused(async () => {
       const range = duration === "today"
         ? localDayUtcRange()
         : { start: new Date(Date.now() - minutes(duration) * 60_000).toISOString(), end: new Date().toISOString() };
@@ -63,28 +67,36 @@ export class DataLifecycleService {
       })();
       const fileCleanup = await this.cleanupFiles(paths);
       return { ok: true as const, deletedObservations, deletedScreenshots: fileCleanup.deleted, fileCleanup };
-    });
+    }));
   }
 
   private deleteCaptureLedger(start: string, end: string): void {
     const matchingBatches = `
       SELECT batch_id FROM capture_batches
-      WHERE EXISTS (
-        SELECT 1 FROM json_each(capture_batches.bundle_json, '$.frames') AS frame
-        WHERE json_extract(frame.value, '$.capturedAt') >= ?
-          AND json_extract(frame.value, '$.capturedAt') <= ?
-      )`;
+      WHERE COALESCE(
+              json_extract(bundle_json, '$.capturedAtStart'),
+              json_extract(bundle_json, '$.startAt'),
+              created_at
+            ) < ?
+        AND COALESCE(
+              json_extract(bundle_json, '$.capturedAtEnd'),
+              json_extract(bundle_json, '$.endAt'),
+              updated_at
+            ) >= ?
+    `;
+
     this.deps.db.prepare(
       `DELETE FROM capture_inbox
-       WHERE (json_extract(bundle_json, '$.capturedAt') >= ? AND json_extract(bundle_json, '$.capturedAt') <= ?)
+       WHERE (captured_at >= ? AND captured_at < ?)
+          OR (json_extract(bundle_json, '$.capturedAt') >= ? AND json_extract(bundle_json, '$.capturedAt') < ?)
           OR batch_id IN (${matchingBatches})`
-    ).run(start, end, start, end);
+    ).run(start, end, start, end, end, start);
     this.deps.db.prepare(`DELETE FROM capture_batches WHERE batch_id IN (${matchingBatches})`)
-      .run(start, end);
+      .run(end, start);
   }
 
   async clearAll() {
-    return this.exclusive(async () => {
+    return this.exclusive(() => this.withEmbeddingIndexerPaused(async () => {
       const observations = this.deps.observationRepo.listByCapturedAt({ limit: 100_000 });
       const paths = observations.flatMap((item) => item.screenshotPaths);
       this.deps.db.transaction(() => {
@@ -93,7 +105,7 @@ export class DataLifecycleService {
       const fileCleanup = await this.cleanupFiles(paths, true);
       await this.deps.infographicService?.clearAllImages();
       return { ok: true as const, deletedObservations: observations.length, deletedScreenshots: fileCleanup.deleted, fileCleanup };
-    });
+    }));
   }
 
   async clearScreenshots() {
@@ -127,6 +139,18 @@ export class DataLifecycleService {
         if (wasObserving) this.deps.resumeSources();
       }
       this.active = false;
+    }
+  }
+
+  private async withEmbeddingIndexerPaused<T>(operation: () => Promise<T>): Promise<T> {
+    const indexer = this.deps.embeddingIndexerService;
+    if (!indexer) return operation();
+
+    await indexer.stopAndDrain();
+    try {
+      return await operation();
+    } finally {
+      indexer.startBackgroundIndexing();
     }
   }
 

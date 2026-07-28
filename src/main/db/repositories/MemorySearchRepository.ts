@@ -89,6 +89,7 @@ interface SearchRow {
   project_id: string | null;
   source_type: MemorySearchItem["sourceType"] | null;
   source_id: string | null;
+  rank?: number;
 }
 
 interface ObservationRow {
@@ -102,6 +103,7 @@ interface ObservationRow {
   screenshot_retention: string;
   screenshot_paths_json: string;
   user_facing_summary?: string | null;
+  exact_match_reasons?: string[];
 }
 
 interface ProjectRow {
@@ -123,26 +125,50 @@ export class MemorySearchRepository {
   search(query: string, limit = 50, offset = 0, filters: MemorySearchFilters = {}): MemorySearchResponse {
     const parsedFilters = mergeParsedTime(filters, query);
     const queryTerms = buildSearchTerms(query);
+    const trimmedQuery = query.trim().toLocaleLowerCase("zh-CN");
     const projectNames = this.projectNameMap();
     const peopleNames = this.personNameMap();
     const candidates = new Map<string, Candidate>();
 
-    const rows = this.db.prepare(`
-      SELECT object_id, object_type, title, summary, keywords, created_at,
-             project_id, source_type, source_id
-      FROM memory_search_fts
-    `).all() as SearchRow[];
-    const rowsByKey = new Map(rows.map((row) => [`${row.object_type}:${row.object_id}`, row]));
+    // 精确标识不依赖 FTS 索引。object_id 等 UNINDEXED 字段也必须可直接召回。
+    const exactRows = this.executeExactQuery(query, filters, parsedFilters);
+    const exactReasonsByKey = new Map<string, string[]>();
+    const rowsByKey = new Map<string, SearchRow>();
+    for (const row of exactRows) {
+      const key = `${row.object_type}:${row.object_id}`;
+      rowsByKey.set(key, row);
+      exactReasonsByKey.set(key, exactMatchReasons(row, trimmedQuery));
+    }
 
-    for (const row of rows) {
-      if (!this.matchesFilters(row.object_type, row.created_at, row.project_id, filters, parsedFilters, row.title, row.summary, row.keywords, peopleNames)) continue;
+    // 1. 在数据库底层执行 FTS5 MATCH + bm25 检索（带候选上限 500 条）
+    const ftsRows = this.executeFtsQuery(queryTerms, filters, parsedFilters);
+    for (const row of ftsRows) {
+      rowsByKey.set(`${row.object_type}:${row.object_id}`, row);
+    }
+
+    for (const row of rowsByKey.values()) {
+      const key = `${row.object_type}:${row.object_id}`;
+      const exactReasons = exactReasonsByKey.get(key) ?? [];
+
       const matched = scoreText(queryTerms, [
         { text: row.title, weight: 5, reason: "标题" },
         { text: row.summary, weight: 3, reason: "内容" },
         { text: row.keywords, weight: 1.5, reason: "标签或关联" },
       ]);
-      if (!matched && queryTerms.length > 0) continue;
-      const key = `${row.object_type}:${row.object_id}`;
+
+      if (!matched && exactReasons.length === 0 && queryTerms.length > 0) continue;
+
+      let relevance = matched?.score ?? 0.1;
+      const matchReasons = [...exactReasons, ...(matched?.reasons ?? [])];
+
+      if (exactReasons.includes("exact_id")) relevance += 100;
+      if (exactReasons.includes("exact_title")) relevance += 50;
+      if (exactReasons.includes("exact_alias")) relevance += 40;
+      if (exactReasons.includes("exact_filename")) relevance += 30;
+      if (row.rank !== undefined) {
+        relevance += Math.max(0, -row.rank * 0.1);
+      }
+
       candidates.set(key, {
         item: {
           id: row.object_id,
@@ -154,77 +180,95 @@ export class MemorySearchRepository {
           projectId: row.project_id,
           sourceType: row.source_type ?? undefined,
           sourceId: row.source_id,
-          relevance: matched?.score ?? 0.1,
-          matchReasons: matched?.reasons ?? [],
+          relevance,
+          matchReasons: uniqueStrings(matchReasons),
           sourceCount: row.source_id ? 1 : 0,
         },
         sourceObservationIds: row.source_type === "observation" && row.source_id ? [row.source_id] : [],
       });
     }
 
-    const observations = this.listObservations(parsedFilters, queryTerms);
-    const parentMap = this.buildObservationParents();
-    for (const observation of observations) {
-      const observationText = observationSearchText(observation);
-      const matched = scoreText(queryTerms, [
-        { text: observation.window_title, weight: 3, reason: "窗口" },
-        { text: observation.scene_summary, weight: 3, reason: "识别摘要" },
-        { text: observationText, weight: 2, reason: "识别内容" },
-      ]);
-      if (!matched && queryTerms.length > 0) continue;
-      const parents = parentMap.get(observation.id) ?? [];
-      if (parents.length === 0) {
-        if (filters.type && filters.type !== "record") continue;
-        const key = `record:${observation.id}`;
-        candidates.set(key, {
-          item: {
-            id: observation.id,
-            type: "record",
-            title: observation.user_facing_summary || observation.window_title || "屏幕记录",
-            summary: observation.scene_summary || firstVisibleSummary(observation),
-            createdAt: observation.captured_at,
-            projectId: null,
-            sourceType: "observation",
-            sourceId: observation.id,
-            relevance: matched?.score ?? 0.1,
-            matchReasons: matched?.reasons ?? ["记录"],
-            sourceCount: 1,
-          },
-          sourceObservationIds: [observation.id],
-        });
-        continue;
+    // 2. 观察数据检索与关联父级批量读取
+    const observations = this.listObservations(parsedFilters, queryTerms, query);
+    if (observations.length > 0) {
+      const parentMap = this.buildObservationParentsForObs(observations.map((o) => o.id));
+      const neededParentKeys = new Set<string>();
+      for (const parents of parentMap.values()) {
+        for (const p of parents) {
+          neededParentKeys.add(`${p.type}:${p.id}`);
+        }
       }
-      for (const parent of parents) {
-        if (filters.type && filters.type !== parent.type) continue;
-        const key = `${parent.type}:${parent.id}`;
-        const existing = candidates.get(key);
-        if (!existing) {
-          const parentRow = rowsByKey.get(key);
-          if (!parentRow) continue;
+      const parentRowsMap = this.batchGetFtsRowsByKeys(Array.from(neededParentKeys));
+
+      for (const observation of observations) {
+        const observationText = observationSearchText(observation);
+        const matched = scoreText(queryTerms, [
+          { text: observation.window_title, weight: 3, reason: "窗口" },
+          { text: observation.scene_summary, weight: 3, reason: "识别摘要" },
+          { text: observationText, weight: 2, reason: "识别内容" },
+        ]);
+        const exactReasons = observation.exact_match_reasons ?? [];
+        if (!matched && exactReasons.length === 0 && queryTerms.length > 0) continue;
+        const observationRelevance = (matched?.score ?? 0.1) + exactReasonBoost(exactReasons);
+        const observationReasons = uniqueStrings([...exactReasons, ...(matched?.reasons ?? [])]);
+        const parents = parentMap.get(observation.id) ?? [];
+        if (parents.length === 0) {
+          if (filters.type && filters.type !== "record") continue;
+          if (filters.projectId) continue;
+          const key = `record:${observation.id}`;
           candidates.set(key, {
             item: {
-              id: parentRow.object_id,
-              type: parentRow.object_type,
-              title: parentRow.title,
-              summary: parentRow.summary || undefined,
-              createdAt: parentRow.created_at,
-              projectName: parentRow.project_id ? projectNames.get(parentRow.project_id) : undefined,
-              projectId: parentRow.project_id,
-              sourceType: parentRow.source_type ?? undefined,
-              sourceId: parentRow.source_id,
-              relevance: 0.5,
-              matchReasons: ["识别内容"],
-              sourceCount: parentRow.source_id ? 1 : 0,
+              id: observation.id,
+              type: "record",
+              title: observation.user_facing_summary || observation.window_title || "屏幕记录",
+              summary: observation.scene_summary || firstVisibleSummary(observation),
+              createdAt: observation.captured_at,
+              projectId: null,
+              sourceType: "observation",
+              sourceId: observation.id,
+              relevance: observationRelevance,
+              matchReasons: observationReasons.length > 0 ? observationReasons : ["识别内容"],
+              sourceCount: 1,
             },
-            sourceObservationIds: parentRow.source_id && parentRow.source_type === "observation" ? [parentRow.source_id] : [],
+            sourceObservationIds: [observation.id],
           });
+          continue;
         }
-        const parentCandidate = candidates.get(key);
-        if (!parentCandidate) continue;
-        parentCandidate.item.relevance += (matched?.score ?? 0.1) * 0.7;
-        parentCandidate.item.matchReasons = uniqueStrings([...parentCandidate.item.matchReasons, ...(matched?.reasons ?? ["识别内容"])]);
-        parentCandidate.sourceObservationIds = uniqueStrings([...parentCandidate.sourceObservationIds, observation.id]);
-        parentCandidate.item.sourceCount = parentCandidate.sourceObservationIds.length;
+
+        for (const parent of parents) {
+          if (filters.type && filters.type !== parent.type) continue;
+          const key = `${parent.type}:${parent.id}`;
+          const parentRow = parentRowsMap.get(key);
+          if (!parentRow || !this.matchesRowFilters(parentRow, filters, parsedFilters)) continue;
+          let parentCandidate = candidates.get(key);
+          if (!parentCandidate) {
+            parentCandidate = {
+              item: {
+                id: parentRow.object_id,
+                type: parentRow.object_type,
+                title: parentRow.title,
+                summary: parentRow.summary || undefined,
+                createdAt: parentRow.created_at,
+                projectName: parentRow.project_id ? projectNames.get(parentRow.project_id) : undefined,
+                projectId: parentRow.project_id,
+                sourceType: parentRow.source_type ?? undefined,
+                sourceId: parentRow.source_id,
+                relevance: 0.5,
+                matchReasons: ["识别内容"],
+                sourceCount: parentRow.source_id ? 1 : 0,
+              },
+              sourceObservationIds: parentRow.source_id && parentRow.source_type === "observation" ? [parentRow.source_id] : [],
+            };
+            candidates.set(key, parentCandidate);
+          }
+          parentCandidate.item.relevance += observationRelevance * 0.7;
+          parentCandidate.item.matchReasons = uniqueStrings([
+            ...parentCandidate.item.matchReasons,
+            ...(observationReasons.length > 0 ? observationReasons : ["识别内容"]),
+          ]);
+          parentCandidate.sourceObservationIds = uniqueStrings([...parentCandidate.sourceObservationIds, observation.id]);
+          parentCandidate.item.sourceCount = parentCandidate.sourceObservationIds.length;
+        }
       }
     }
 
@@ -259,30 +303,39 @@ export class MemorySearchRepository {
       sources,
       relations,
       correctionType: ["fact", "task", "scene", "project", "person", "decision"].includes(ref.type)
-        ? ref.type as MemoryDetail["correctionType"]
+        ? (ref.type as MemoryDetail["correctionType"])
         : null,
     };
   }
 
-  getCandidates(refs: MemorySearchRef[]): MemorySearchItem[] {
+  getCandidates(refs: MemorySearchRef[], filters: MemorySearchFilters = {}): MemorySearchItem[] {
     const result: MemorySearchItem[] = [];
-    for (const ref of refs.slice(0, 15)) {
-      const detail = this.getDetail(ref);
-      if (!detail) continue;
-      result.push({
-        id: detail.id,
-        type: ref.type,
-        title: detail.title,
-        summary: detail.summary || undefined,
-        createdAt: detail.createdAt,
-        projectName: detail.projectName ?? undefined,
-        projectId: detail.projectId,
-        sourceType: detail.type === "record" ? "observation" : undefined,
-        sourceId: detail.type === "record" ? detail.id : undefined,
-        relevance: 1,
-        matchReasons: [],
-        sourceCount: detail.sources.length,
-      });
+    const projectNames = this.projectNameMap();
+    const peopleNames = this.personNameMap();
+    const rowsByKey = this.batchGetFtsRowsByKeys(refs.map((ref) => `${ref.type}:${ref.id}`));
+
+    for (const ref of refs) {
+      const row = rowsByKey.get(`${ref.type}:${ref.id}`);
+      if (!row || !this.matchesRowFilters(row, filters, filters)) continue;
+      const candidate: Candidate = {
+        item: {
+          id: row.object_id,
+          type: row.object_type,
+          title: row.title,
+          summary: row.summary || undefined,
+          createdAt: row.created_at,
+          projectName: row.project_id ? projectNames.get(row.project_id) : undefined,
+          projectId: row.project_id,
+          sourceType: row.source_type ?? undefined,
+          sourceId: row.source_id,
+          relevance: 1,
+          matchReasons: [],
+          sourceCount: row.source_id ? 1 : 0,
+        },
+        sourceObservationIds: row.source_type === "observation" && row.source_id ? [row.source_id] : [],
+      };
+      if (!this.matchesPersonFilter(candidate, filters.personId, peopleNames)) continue;
+      result.push(candidate.item);
     }
     return result;
   }
@@ -307,49 +360,275 @@ export class MemorySearchRepository {
     }
   }
 
-  private listObservations(filters: ParsedFilters, terms: string[]): ObservationRow[] {
+  private executeExactQuery(
+    query: string,
+    filters: MemorySearchFilters,
+    parsed: ParsedFilters
+  ): SearchRow[] {
+    const normalized = query.trim().toLocaleLowerCase("zh-CN");
+    if (!normalized || filters.type === "record") return [];
+
+    const exactConditions = ["lower(object_id) = ?", "lower(title) = ?"];
+    const exactParams: unknown[] = [normalized, normalized];
+    exactConditions.push(`(
+      object_type IN ('project', 'person')
+      AND EXISTS (
+        SELECT 1
+        FROM json_each(CASE WHEN json_valid(keywords) THEN keywords ELSE '[]' END) AS alias
+        WHERE lower(CAST(alias.value AS TEXT)) = ?
+      )
+    )`);
+    exactParams.push(normalized);
+
+    if (looksLikeFilename(normalized)) {
+      const pattern = `%${escapeLike(normalized)}%`;
+      exactConditions.push(`(
+        lower(COALESCE(title, '')) LIKE ? ESCAPE '\\'
+        OR lower(COALESCE(summary, '')) LIKE ? ESCAPE '\\'
+        OR lower(COALESCE(keywords, '')) LIKE ? ESCAPE '\\'
+      )`);
+      exactParams.push(pattern, pattern, pattern);
+    }
+
+    const conditions = [`(${exactConditions.join(" OR ")})`];
+    const params = [...exactParams];
+    if (filters.type) { conditions.push("object_type = ?"); params.push(filters.type); }
+    if (filters.projectId) { conditions.push("project_id = ?"); params.push(filters.projectId); }
+    if (parsed.timeFrom) { conditions.push("created_at >= ?"); params.push(parsed.timeFrom); }
+    if (parsed.timeTo) { conditions.push("created_at < ?"); params.push(parsed.timeTo); }
+
+    return this.db.prepare(`
+      SELECT object_id, object_type, title, summary, keywords, created_at,
+             project_id, source_type, source_id
+      FROM memory_search_fts
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY created_at DESC
+      LIMIT 100
+    `).all(...params) as SearchRow[];
+  }
+
+  private executeFtsQuery(
+    terms: string[],
+    filters: MemorySearchFilters,
+    parsed: ParsedFilters
+  ): SearchRow[] {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (filters.type) {
+      conditions.push("object_type = ?");
+      params.push(filters.type);
+    }
+    if (filters.projectId) {
+      conditions.push("project_id = ?");
+      params.push(filters.projectId);
+    }
+    if (parsed.timeFrom) {
+      conditions.push("created_at >= ?");
+      params.push(parsed.timeFrom);
+    }
+    if (parsed.timeTo) {
+      conditions.push("created_at < ?");
+      params.push(parsed.timeTo);
+    }
+
+    // 尝试构建 FTS5 MATCH
+    const ftsExpr = toFtsMatchExpression(terms);
+    if (ftsExpr) {
+      try {
+        const whereClause = ["memory_search_fts MATCH ?", ...conditions].join(" AND ");
+        const sql = `
+          SELECT object_id, object_type, title, summary, keywords, created_at,
+                 project_id, source_type, source_id, bm25(memory_search_fts) as rank
+          FROM memory_search_fts
+          WHERE ${whereClause}
+          ORDER BY bm25(memory_search_fts)
+          LIMIT 500
+        `;
+        return this.db.prepare(sql).all(ftsExpr, ...params) as SearchRow[];
+      } catch {
+        // 静默降级到 LIKE 渠道
+      }
+    }
+
+    // 只有无法构造 usable FTS 或 MATCH 执行失败时，才使用有界 LIKE 渠道。
+    // 成功执行但零结果必须直接返回，避免把 FTS 省下的全表扫描又做一遍。
+    const likeConditions = [...conditions];
+    const likeParams = [...params];
+
+    if (terms.length > 0) {
+      const searchable = "title || ' ' || summary || ' ' || keywords";
+      likeConditions.push(`(${terms.map(() => `${searchable} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+      likeParams.push(...terms.map((term) => `%${escapeLike(term)}%`));
+    }
+
+    const where = likeConditions.length ? `WHERE ${likeConditions.join(" AND ")}` : "";
+    const sql = `
+      SELECT object_id, object_type, title, summary, keywords, created_at,
+             project_id, source_type, source_id, 0 as rank
+      FROM memory_search_fts
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT 500
+    `;
+    return this.db.prepare(sql).all(...likeParams) as SearchRow[];
+  }
+
+  private listObservations(filters: ParsedFilters, terms: string[], query: string): ObservationRow[] {
     const conditions: string[] = [];
     const params: string[] = [];
     if (filters.timeFrom) { conditions.push("captured_at >= ?"); params.push(filters.timeFrom); }
     if (filters.timeTo) { conditions.push("captured_at < ?"); params.push(filters.timeTo); }
     const byId = new Map<string, ObservationRow>();
-    const ftsTerms = terms.filter((term) => Array.from(term).length >= 3);
-    if (ftsTerms.length > 0) {
-      try {
-        const ftsConditions = conditions.map((condition) => `o.${condition}`);
-        const ftsWhere = [`observation_search_fts MATCH ?`, ...ftsConditions].join(" AND ");
-        const ftsQuery = ftsTerms.map((term) => `"${term.replace(/"/g, '""')}"`).join(" OR ");
-        const rows = this.db.prepare(`SELECT o.id, o.captured_at, o.app_name, o.window_title, o.url_or_domain, o.scene_summary, o.visible_content_json, o.screenshot_retention, o.screenshot_paths_json, o.user_facing_summary FROM observation_search_fts JOIN observations o ON o.id = observation_search_fts.observation_id WHERE ${ftsWhere} ORDER BY bm25(observation_search_fts), o.captured_at DESC LIMIT 2500`).all(ftsQuery, ...params) as ObservationRow[];
-        for (const row of rows) byId.set(row.id, row);
-      } catch {
-        // FTS 表可能尚未建好或查询词触发 fts5 语法错误；
-        // 下面的 LIKE 分支是完整兜底，这里静默降级即可。
+
+    const normalized = query.trim().toLocaleLowerCase("zh-CN");
+    if (normalized) {
+      const exactConditions = [
+        "lower(id) = ?",
+        "lower(window_title) = ?",
+        "lower(COALESCE(user_facing_summary, '')) = ?",
+      ];
+      const exactParams = [normalized, normalized, normalized];
+      if (looksLikeFilename(normalized)) {
+        const pattern = `%${escapeLike(normalized)}%`;
+        exactConditions.push(
+          "lower(COALESCE(window_title, '')) LIKE ? ESCAPE '\\'",
+          "lower(COALESCE(url_or_domain, '')) LIKE ? ESCAPE '\\'",
+          "lower(COALESCE(visible_content_json, '')) LIKE ? ESCAPE '\\'"
+        );
+        exactParams.push(pattern, pattern, pattern);
+      }
+      const exactWhere = [`(${exactConditions.join(" OR ")})`, ...conditions].join(" AND ");
+      const exactRows = this.db.prepare(`
+        SELECT id, captured_at, app_name, window_title, url_or_domain, scene_summary,
+               visible_content_json, screenshot_retention, screenshot_paths_json, user_facing_summary
+        FROM observations
+        WHERE ${exactWhere}
+        ORDER BY captured_at DESC
+        LIMIT 100
+      `).all(...exactParams, ...params) as ObservationRow[];
+      for (const row of exactRows) {
+        byId.set(row.id, { ...row, exact_match_reasons: exactObservationMatchReasons(row, normalized) });
       }
     }
-    const likeConditions = [...conditions];
-    const likeParams = [...params];
-    if (terms.length > 0) {
-      const searchable = "COALESCE(user_facing_summary, '') || ' ' || scene_summary || ' ' || window_title || ' ' || app_name || ' ' || COALESCE(url_or_domain, '') || ' ' || visible_content_json";
-      likeConditions.push(`(${terms.map(() => `${searchable} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
-      likeParams.push(...terms.map((term) => `%${escapeLike(term)}%`));
+
+    const ftsExpr = toFtsMatchExpression(terms);
+    let ftsSuccess = false;
+    if (ftsExpr) {
+      try {
+        const ftsConditions = conditions.map((c) => `o.${c}`);
+        const ftsWhere = [`observation_search_fts MATCH ?`, ...ftsConditions].join(" AND ");
+        const rows = this.db.prepare(`
+          SELECT o.id, o.captured_at, o.app_name, o.window_title, o.url_or_domain,
+                 o.scene_summary, o.visible_content_json, o.screenshot_retention,
+                 o.screenshot_paths_json, o.user_facing_summary
+          FROM observation_search_fts
+          JOIN observations o ON o.id = observation_search_fts.observation_id
+          WHERE ${ftsWhere}
+          ORDER BY bm25(observation_search_fts), o.captured_at DESC
+          LIMIT 500
+        `).all(ftsExpr, ...params) as ObservationRow[];
+
+        for (const row of rows) {
+          const existing = byId.get(row.id);
+          byId.set(row.id, { ...row, exact_match_reasons: existing?.exact_match_reasons });
+        }
+        ftsSuccess = true;
+      } catch {
+        // 静默降级
+      }
     }
-    const where = likeConditions.length ? `WHERE ${likeConditions.join(" AND ")}` : "";
-    const likeRows = this.db.prepare(`SELECT id, captured_at, app_name, window_title, url_or_domain, scene_summary, visible_content_json, screenshot_retention, screenshot_paths_json, user_facing_summary FROM observations ${where} ORDER BY captured_at DESC LIMIT 2500`).all(...likeParams) as ObservationRow[];
-    for (const row of likeRows) byId.set(row.id, row);
+
+    // FTS 成功执行时不得再无条件执行 LIKE 全表兜底
+    if (!ftsSuccess) {
+      const likeConditions = [...conditions];
+      const likeParams = [...params];
+      if (terms.length > 0) {
+        const searchable = "COALESCE(user_facing_summary, '') || ' ' || scene_summary || ' ' || window_title || ' ' || app_name || ' ' || COALESCE(url_or_domain, '') || ' ' || visible_content_json";
+        likeConditions.push(`(${terms.map(() => `${searchable} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+        likeParams.push(...terms.map((term) => `%${escapeLike(term)}%`));
+      }
+      const where = likeConditions.length ? `WHERE ${likeConditions.join(" AND ")}` : "";
+      const likeRows = this.db.prepare(`
+        SELECT id, captured_at, app_name, window_title, url_or_domain, scene_summary,
+               visible_content_json, screenshot_retention, screenshot_paths_json, user_facing_summary
+        FROM observations ${where} ORDER BY captured_at DESC LIMIT 500
+      `).all(...likeParams) as ObservationRow[];
+      for (const row of likeRows) {
+        const existing = byId.get(row.id);
+        byId.set(row.id, { ...row, exact_match_reasons: existing?.exact_match_reasons });
+      }
+    }
+
     return Array.from(byId.values());
   }
 
-  private buildObservationParents(): Map<string, MemorySearchRef[]> {
+  private buildObservationParentsForObs(obsIds: string[]): Map<string, MemorySearchRef[]> {
     const map = new Map<string, MemorySearchRef[]>();
+    if (obsIds.length === 0) return map;
+
     const append = (observationId: string, ref: MemorySearchRef) => {
       const list = map.get(observationId) ?? [];
       list.push(ref);
       map.set(observationId, list);
     };
-    const facts = this.db.prepare("SELECT id, source_observation_ids_json FROM facts WHERE deleted_at IS NULL").all() as Array<{ id: string; source_observation_ids_json: string }>;
-    for (const fact of facts) for (const id of parseArray<string>(fact.source_observation_ids_json)) append(id, { id: fact.id, type: "fact" });
-    const scenes = this.db.prepare("SELECT id, observation_ids_json FROM scenes WHERE deleted_at IS NULL").all() as Array<{ id: string; observation_ids_json: string }>;
-    for (const scene of scenes) for (const id of parseArray<string>(scene.observation_ids_json)) append(id, { id: scene.id, type: "scene" });
+
+    const obsSet = new Set(obsIds);
+    // 仅按传入的 obsIds 带条件过滤查询 facts 与 scenes，消除全表扫描
+    const factLikeConditions = obsIds.map(() => "source_observation_ids_json LIKE ?").join(" OR ");
+    const factParams = obsIds.map((id) => `%"${id}"%`);
+    const factRows = this.db.prepare(
+      `SELECT id, source_observation_ids_json FROM facts WHERE deleted_at IS NULL AND (${factLikeConditions})`
+    ).all(...factParams) as Array<{ id: string; source_observation_ids_json: string }>;
+
+    for (const fact of factRows) {
+      for (const id of parseArray<string>(fact.source_observation_ids_json)) {
+        if (obsSet.has(id)) append(id, { id: fact.id, type: "fact" });
+      }
+    }
+
+    const sceneLikeConditions = obsIds.map(() => "observation_ids_json LIKE ?").join(" OR ");
+    const sceneParams = obsIds.map((id) => `%"${id}"%`);
+    const sceneRows = this.db.prepare(
+      `SELECT id, observation_ids_json FROM scenes WHERE deleted_at IS NULL AND (${sceneLikeConditions})`
+    ).all(...sceneParams) as Array<{ id: string; observation_ids_json: string }>;
+
+    for (const scene of sceneRows) {
+      for (const id of parseArray<string>(scene.observation_ids_json)) {
+        if (obsSet.has(id)) append(id, { id: scene.id, type: "scene" });
+      }
+    }
+    return map;
+  }
+
+  private batchGetFtsRowsByKeys(keys: string[]): Map<string, SearchRow> {
+    const map = new Map<string, SearchRow>();
+    if (keys.length === 0) return map;
+
+    // 按 type 分组使用 IN (...) 语句批量查找，消除 N+1 查询
+    const byType = new Map<string, string[]>();
+    for (const key of keys) {
+      const [type, id] = key.split(":");
+      if (!type || !id) continue;
+      const list = byType.get(type) ?? [];
+      list.push(id);
+      byType.set(type, list);
+    }
+
+    for (const [type, ids] of byType.entries()) {
+      if (ids.length === 0) continue;
+      const placeholders = ids.map(() => "?").join(",");
+      const rows = this.db.prepare(`
+        SELECT object_id, object_type, title, summary, keywords, created_at, project_id, source_type, source_id
+        FROM memory_search_fts
+        WHERE object_type = ? AND object_id IN (${placeholders})
+      `).all(type, ...ids) as SearchRow[];
+
+      for (const r of rows) {
+        map.set(`${r.object_type}:${r.object_id}`, r);
+      }
+    }
+
     return map;
   }
 
@@ -363,23 +642,24 @@ export class MemorySearchRepository {
     return new Map(rows.map((row) => [row.id, row.name]));
   }
 
-  private matchesFilters(type: MemorySearchType, createdAt: string, projectId: string | null, filters: MemorySearchFilters, parsed: ParsedFilters, title: string, summary: string, keywords: string, peopleNames: Map<string, string>): boolean {
-    if (filters.type && filters.type !== type) return false;
-    if (filters.projectId && filters.projectId !== projectId) return false;
-    if (parsed.timeFrom && createdAt < parsed.timeFrom) return false;
-    if (parsed.timeTo && createdAt >= parsed.timeTo) return false;
-    if (filters.personId) {
-      const personName = peopleNames.get(filters.personId);
-      if (personName && !`${title} ${summary} ${keywords}`.includes(personName)) return false;
-    }
-    return true;
-  }
-
   private matchesPersonFilter(candidate: Candidate, personId: string | undefined, peopleNames: Map<string, string>): boolean {
     if (!personId) return true;
+    if (candidate.item.type === "person" && candidate.item.id === personId) return true;
     const personName = peopleNames.get(personId);
-    if (!personName) return true;
-    return `${candidate.item.title} ${candidate.item.summary ?? ""}`.includes(personName) || candidate.item.type === "person" && candidate.item.id === personId;
+    if (!personName) return false;
+    return `${candidate.item.title} ${candidate.item.summary ?? ""}`.includes(personName);
+  }
+
+  private matchesRowFilters(
+    row: SearchRow,
+    filters: MemorySearchFilters,
+    parsed: ParsedFilters
+  ): boolean {
+    if (filters.type && row.object_type !== filters.type) return false;
+    if (filters.projectId && row.project_id !== filters.projectId) return false;
+    if (parsed.timeFrom && row.created_at < parsed.timeFrom) return false;
+    if (parsed.timeTo && row.created_at >= parsed.timeTo) return false;
+    return true;
   }
 
   private readRecord(ref: MemoryDetailRef): RecordData | null {
@@ -436,7 +716,7 @@ export class MemorySearchRepository {
     const table = tableByType[ref.type];
     if (!table) return null;
     const row = this.db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(ref.id) as Record<string, unknown> | undefined;
-    if (!row) return null;
+    if (!row || row.deleted_at != null || row.archived_at != null) return null;
     const createdAt = String(row.created_at ?? row.updated_at ?? "");
     const projectId = row.project_id ? String(row.project_id) : null;
     const sourceMeta: Pick<RecordData, "sourceObservationIds" | "sourceFactIds" | "sourceSceneIds" | "factIds"> = {
@@ -535,6 +815,14 @@ function buildSearchTerms(query: string): string[] {
 
 export function searchQueryTerms(query: string): string[] { return buildSearchTerms(query); }
 
+function toFtsMatchExpression(terms: string[]): string | null {
+  const cleanTerms = terms
+    .map((t) => t.replace(/[^\p{L}\p{N}\u3400-\u9fff]/gu, "").trim())
+    .filter((t) => t.length >= 3);
+  if (cleanTerms.length === 0) return null;
+  return cleanTerms.map((t) => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+}
+
 function scoreText(terms: string[], fields: Array<{ text: string | null | undefined; weight: number; reason: string }>): { score: number; reasons: string[] } | null {
   if (terms.length === 0) return { score: 0.1, reasons: [] };
   let score = 0;
@@ -543,7 +831,7 @@ function scoreText(terms: string[], fields: Array<{ text: string | null | undefi
     const text = (field.text ?? "").toLocaleLowerCase("zh-CN");
     const hits = terms.filter((term) => text.includes(term));
     if (hits.length > 0) {
-      score += field.weight * hits.length / Math.max(1, terms.length);
+      score += (field.weight * hits.length) / Math.max(1, terms.length);
       reasons.push(field.reason);
     }
   }
@@ -552,7 +840,66 @@ function scoreText(terms: string[], fields: Array<{ text: string | null | undefi
 
 function classifyQuality(items: MemorySearchItem[]): "strong" | "weak" | "none" {
   if (items.length === 0) return "none";
-  return items.some((item) => item.matchReasons.some((reason) => ["标题", "内容"].includes(reason))) ? "strong" : "weak";
+  const top = items[0];
+  if (
+    top.relevance >= 4.0 ||
+    top.matchReasons.some((r) => r.includes("exact") || r === "title_exact" || r === "id_exact" || r === "标题")
+  ) {
+    return "strong";
+  }
+  return items.some((item) => item.relevance >= 0.8) ? "weak" : "none";
+}
+
+function exactMatchReasons(row: SearchRow, normalizedQuery: string): string[] {
+  if (!normalizedQuery) return [];
+  const reasons: string[] = [];
+  if (row.object_id.toLocaleLowerCase("zh-CN") === normalizedQuery) reasons.push("exact_id");
+  if (row.title.toLocaleLowerCase("zh-CN") === normalizedQuery) reasons.push("exact_title");
+
+  if (row.object_type === "project" || row.object_type === "person") {
+    const aliases = parseArray<unknown>(row.keywords)
+      .map((value) => String(value).trim().toLocaleLowerCase("zh-CN"));
+    if (aliases.includes(normalizedQuery)) reasons.push("exact_alias");
+  }
+
+  if (looksLikeFilename(normalizedQuery)) {
+    const fields = [row.title, row.summary, row.keywords]
+      .map((value) => value.toLocaleLowerCase("zh-CN"));
+    if (fields.some((value) => value.includes(normalizedQuery))) reasons.push("exact_filename");
+  }
+  return uniqueStrings(reasons);
+}
+
+function exactObservationMatchReasons(row: ObservationRow, normalizedQuery: string): string[] {
+  if (!normalizedQuery) return [];
+  const reasons: string[] = [];
+  if (row.id.toLocaleLowerCase("zh-CN") === normalizedQuery) reasons.push("exact_id");
+  if (
+    row.window_title.toLocaleLowerCase("zh-CN") === normalizedQuery
+    || (row.user_facing_summary ?? "").toLocaleLowerCase("zh-CN") === normalizedQuery
+  ) {
+    reasons.push("exact_title");
+  }
+  if (looksLikeFilename(normalizedQuery)) {
+    const fields = [row.window_title, row.url_or_domain ?? "", row.visible_content_json]
+      .map((value) => value.toLocaleLowerCase("zh-CN"));
+    if (fields.some((value) => value.includes(normalizedQuery))) reasons.push("exact_filename");
+  }
+  return uniqueStrings(reasons);
+}
+
+function exactReasonBoost(reasons: string[]): number {
+  let boost = 0;
+  if (reasons.includes("exact_id")) boost += 100;
+  if (reasons.includes("exact_title")) boost += 50;
+  if (reasons.includes("exact_alias")) boost += 40;
+  if (reasons.includes("exact_filename")) boost += 30;
+  return boost;
+}
+
+function looksLikeFilename(value: string): boolean {
+  const leaf = value.split(/[\\/]/u).at(-1) ?? value;
+  return /^[^\s.][^\s]*\.[\p{L}\p{N}]{1,12}$/u.test(leaf);
 }
 
 function mergeParsedTime(filters: MemorySearchFilters, query: string): ParsedFilters {
@@ -582,7 +929,7 @@ function visibleContentItems(row: ObservationRow): string[] {
 function parseVisibleContent(json: string | undefined): MemoryVisibleContent[] {
   const parsed = parseArray<Partial<MemoryVisibleContent>>(json);
   return parsed.map((item) => ({
-    type: ["webpage", "document", "chat", "code", "spreadsheet", "design", "email", "terminal", "unknown"].includes(String(item.type)) ? item.type as MemoryVisibleContent["type"] : "unknown",
+    type: ["webpage", "document", "chat", "code", "spreadsheet", "design", "email", "terminal", "unknown"].includes(String(item.type)) ? (item.type as MemoryVisibleContent["type"]) : "unknown",
     summary: String(item.summary ?? ""),
     fullText: typeof item.fullText === "string" ? item.fullText : "",
     keyTextSnippets: Array.isArray(item.keyTextSnippets) ? item.keyTextSnippets.map(String) : [],

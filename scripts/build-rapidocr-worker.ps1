@@ -45,7 +45,9 @@ try {
     --noupx `
     --name "rapidocr-worker" `
     --collect-all "rapidocr" `
+    --collect-all "tokenizers" `
     --copy-metadata "rapidocr" `
+    --copy-metadata "tokenizers" `
     --copy-metadata "onnxruntime" `
     --hidden-import "onnxruntime.capi._pybind_state" `
     --exclude-module "tkinter" `
@@ -67,6 +69,15 @@ try {
   $builtWorker = Join-Path $builtWorkerDir "rapidocr-worker.exe"
   if (-not (Test-Path -LiteralPath $builtWorker -PathType Leaf)) {
     throw "RapidOCR worker output is missing."
+  }
+
+  $bundledEmbeddingModel = [IO.Directory]::EnumerateFiles(
+    $builtWorkerDir,
+    "model_quantized.onnx",
+    [IO.SearchOption]::AllDirectories
+  ) | Select-Object -First 1
+  if ($bundledEmbeddingModel) {
+    throw "Embedding model must remain external to the worker: $bundledEmbeddingModel"
   }
 
   # OpenCV 的视频 I/O 后端：约 30 MB，纯粹用于解码视频流。

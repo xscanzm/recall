@@ -34,6 +34,10 @@ function setup(cascade: (facts: never[], scenes: never[]) => void = vi.fn()) {
       resumeAccepting: vi.fn(() => { calls.push("accept"); }),
     },
     batchProcessor: { drain: vi.fn(async () => { calls.push("processor-drain"); }) },
+    embeddingIndexerService: {
+      stopAndDrain: vi.fn(async () => { calls.push("embedding-stop"); }),
+      startBackgroundIndexing: vi.fn(() => { calls.push("embedding-start"); }),
+    },
     isObserving: vi.fn(() => true),
     pauseSources: vi.fn(() => { calls.push("pause"); }),
     resumeSources: vi.fn(() => { calls.push("resume"); }),
@@ -46,7 +50,10 @@ describe("DataLifecycleService", () => {
   it("drains before the transaction, reports partial cleanup, and restores observation", async () => {
     const { service, calls } = setup();
     const result = await service.forgetRecent("15m");
-    expect(calls).toEqual(["pause", "capture-drain", "batch-flush", "processor-drain", "accept", "resume"]);
+    expect(calls).toEqual([
+      "pause", "capture-drain", "batch-flush", "processor-drain",
+      "embedding-stop", "embedding-start", "accept", "resume",
+    ]);
     expect(result.fileCleanup).toEqual({ status: "partial", attempted: 2, deleted: 1, failed: 1 });
   });
 
@@ -54,7 +61,7 @@ describe("DataLifecycleService", () => {
     const { service, getObservationCount, calls } = setup(() => { throw new Error("cascade failed"); });
     await expect(service.forgetRecent("15m")).rejects.toThrow("cascade failed");
     expect(getObservationCount()).toBe(1);
-    expect(calls.slice(-2)).toEqual(["accept", "resume"]);
+    expect(calls.slice(-3)).toEqual(["embedding-start", "accept", "resume"]);
   });
 
   it("deletes matching durable capture inbox and batch records", async () => {
@@ -73,5 +80,28 @@ describe("DataLifecycleService", () => {
     expect(statements).not.toContain("DELETE FROM settings");
     expect(statements).not.toContain("DELETE FROM model_configs");
     expect(statements).not.toContain("DELETE FROM privacy_rules");
+    expect(statements).toContain("DELETE FROM memory_embeddings");
+    expect(statements).toContain("DELETE FROM memory_embedding_queue");
+  });
+
+  it("stops the indexer before clearAll writes and restarts it after failure", async () => {
+    const { service, deps, calls } = setup();
+    deps.db.prepare = vi.fn((sql: string) => {
+      if (sql.includes("DELETE FROM facts")) {
+        return { run: vi.fn(() => { calls.push("db-failure"); throw new Error("delete failed"); }) };
+      }
+      return { run: vi.fn(() => { calls.push(`db:${sql.trim()}`); return { changes: 1 }; }) };
+    }) as never;
+
+    await expect(service.clearAll()).rejects.toThrow("delete failed");
+    expect(calls.indexOf("embedding-stop")).toBeLessThan(calls.indexOf("db-failure"));
+    expect(calls.slice(-3)).toEqual(["embedding-start", "accept", "resume"]);
+  });
+
+  it("does not pause embeddings when only screenshots are cleared", async () => {
+    const { service, deps } = setup();
+    await service.clearScreenshots();
+    expect(deps.embeddingIndexerService.stopAndDrain).not.toHaveBeenCalled();
+    expect(deps.embeddingIndexerService.startBackgroundIndexing).not.toHaveBeenCalled();
   });
 });

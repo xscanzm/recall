@@ -427,25 +427,205 @@ def stream_request(request: dict[str, Any]) -> Iterable[dict[str, Any]]:
     }
 
 
+class BgeEmbeddingEngine:
+    QUERY_PREFIX = "为这个句子生成表示以用于检索相关文章："
+    DIMENSION = 512
+    MAX_TOKENS = 512
+    MAX_BATCH_SIZE = 32
+
+    def __init__(self, model_dir: Path | None = None) -> None:
+        import onnxruntime as ort
+        import tokenizers
+
+        if model_dir is None:
+            model_dir = get_embedding_model_dir()
+
+        tokenizer_path = model_dir / "tokenizer.json"
+        model_path = model_dir / "model_quantized.onnx"
+
+        if not tokenizer_path.exists() or not model_path.exists():
+            raise FileNotFoundError(f"Embedding model files missing in {model_dir}")
+
+        self.tokenizer = tokenizers.Tokenizer.from_file(str(tokenizer_path))
+        self.tokenizer.enable_truncation(max_length=self.MAX_TOKENS)
+
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = ORT_INTRA_OP_THREADS
+        so.inter_op_num_threads = ORT_INTER_OP_THREADS
+        self.session = ort.InferenceSession(str(model_path), sess_options=so)
+
+    def embed(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
+        import math
+        import numpy as np
+
+        if not texts:
+            return []
+        if len(texts) > self.MAX_BATCH_SIZE:
+            raise ValueError(f"Batch size {len(texts)} exceeds max limit {self.MAX_BATCH_SIZE}")
+
+        prepared_texts = [
+            (self.QUERY_PREFIX + str(t)) if is_query else str(t)
+            for t in texts
+        ]
+
+        encodings = self.tokenizer.encode_batch(prepared_texts)
+        max_len = max((len(enc.ids) for enc in encodings), default=0)
+        max_len = min(max_len, self.MAX_TOKENS)
+        if max_len == 0:
+            return [[0.0] * self.DIMENSION for _ in texts]
+
+        batch_size = len(texts)
+        input_ids = np.zeros((batch_size, max_len), dtype=np.int64)
+        attention_mask = np.zeros((batch_size, max_len), dtype=np.int64)
+        token_type_ids = np.zeros((batch_size, max_len), dtype=np.int64)
+
+        for i, enc in enumerate(encodings):
+            length = min(len(enc.ids), max_len)
+            if length > 0:
+                input_ids[i, :length] = enc.ids[:length]
+                attention_mask[i, :length] = enc.attention_mask[:length]
+                if hasattr(enc, "type_ids") and enc.type_ids:
+                    token_type_ids[i, :length] = enc.type_ids[:length]
+
+        inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "token_type_ids": token_type_ids,
+        }
+
+        outputs = self.session.run(None, inputs)
+        last_hidden_state = outputs[0]
+
+        vectors: list[list[float]] = []
+        for i in range(batch_size):
+            cls_vector = last_hidden_state[i, 0]
+            norm = float(np.linalg.norm(cls_vector))
+            if norm == 0 or math.isnan(norm) or math.isinf(norm):
+                raise ValueError("Invalid vector output: NaN/Inf or zero norm detected")
+            normalized = (cls_vector / norm).astype(float).tolist()
+            if len(normalized) != self.DIMENSION:
+                raise ValueError(f"Vector dimension {len(normalized)} mismatch expected {self.DIMENSION}")
+            for val in normalized:
+                if math.isnan(val) or math.isinf(val):
+                    raise ValueError("NaN/Infinity found in output vector")
+            vectors.append(normalized)
+
+        return vectors
+
+
+def get_embedding_model_dir(explicit_dir: str | None = None) -> Path:
+    if explicit_dir and Path(explicit_dir).exists():
+        return Path(explicit_dir)
+
+    env_dir = os.environ.get("EMBEDDING_MODEL_DIR")
+    if env_dir and Path(env_dir).exists():
+        return Path(env_dir)
+
+    exe_dir = Path(sys.executable).resolve().parent
+    meipass = Path(getattr(sys, "_MEIPASS", "."))
+
+    candidates = [
+        # 打包态 Process Resources 路径
+        exe_dir.parent / "resources" / "embedding" / "bge-small-zh-v1.5",
+        exe_dir / "resources" / "embedding" / "bge-small-zh-v1.5",
+        exe_dir / "embedding" / "bge-small-zh-v1.5",
+        meipass / "resources" / "embedding" / "bge-small-zh-v1.5",
+        meipass / "embedding" / "bge-small-zh-v1.5",
+        # 开发态源码相对路径
+        Path(__file__).resolve().parent.parent / "embedding" / "bge-small-zh-v1.5",
+    ]
+
+    for c in candidates:
+        if c.exists() and (c / "model_quantized.onnx").exists():
+            return c
+
+    return Path(__file__).resolve().parent.parent / "embedding" / "bge-small-zh-v1.5"
+
+
+def handle_embedding_request(engine: BgeEmbeddingEngine, request: dict[str, Any]) -> dict[str, Any]:
+    request_id = request.get("id", "")
+    req_type = request.get("type", "document")
+    texts = request.get("texts")
+    if texts is None and "text" in request:
+        texts = [request["text"]]
+
+    if not isinstance(request_id, str) or not isinstance(texts, list):
+        return {
+            "id": request_id if isinstance(request_id, str) else "",
+            "available": False,
+            "errorCode": "embedding_invalid_request",
+            "vectors": [],
+        }
+
+    try:
+        is_query = (req_type == "query")
+        vectors = engine.embed([str(t) for t in texts], is_query=is_query)
+        return {
+            "id": request_id,
+            "available": True,
+            "dimension": BgeEmbeddingEngine.DIMENSION,
+            "vectors": vectors,
+        }
+    except Exception as e:
+        return {
+            "id": request_id,
+            "available": False,
+            "errorCode": f"embedding_failed: {str(e)}",
+            "vectors": [],
+        }
+
+
 def main() -> None:
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
+
+    mode = "ocr"
+    model_dir = None
+
+    if len(sys.argv) > 1:
+        for i, arg in enumerate(sys.argv[1:]):
+            if arg == "--mode" and i + 1 < len(sys.argv[1:]):
+                mode = sys.argv[i + 2]
+            elif arg == "--model-dir" and i + 1 < len(sys.argv[1:]):
+                model_dir = sys.argv[i + 2]
+
+    embedding_engine = None
+    if mode == "embedding":
+        try:
+            resolved_dir = get_embedding_model_dir(model_dir)
+            embedding_engine = BgeEmbeddingEngine(model_dir=resolved_dir)
+        except Exception as e:
+            sys.stderr.write(f"Failed to initialize embedding engine: {e}\n")
+            sys.stderr.flush()
+
     for raw_line in sys.stdin:
         try:
             request = json.loads(raw_line)
             if not isinstance(request, dict):
                 raise ValueError
-            responses = (
-                stream_request(request)
-                if request.get("responseMode") == STREAM_RESPONSE_MODE
-                else [handle_request(request)]
-            )
+            if mode == "embedding":
+                if embedding_engine is None:
+                    responses = [{
+                        "id": request.get("id", ""),
+                        "available": False,
+                        "errorCode": "embedding_engine_uninitialized",
+                        "vectors": [],
+                    }]
+                else:
+                    responses = [handle_embedding_request(embedding_engine, request)]
+            else:
+                responses = (
+                    stream_request(request)
+                    if request.get("responseMode") == STREAM_RESPONSE_MODE
+                    else [handle_request(request)]
+                )
         except Exception:
             responses = [{
                 "id": "",
                 "available": False,
-                "errorCode": "rapidocr_invalid_json",
-                "frames": [],
+                "errorCode": "rapidocr_invalid_json" if mode != "embedding" else "embedding_invalid_json",
+                "frames": [] if mode != "embedding" else [],
+                "vectors": [] if mode == "embedding" else [],
             }]
         for response in responses:
             print(

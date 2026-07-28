@@ -254,6 +254,58 @@ export class ProactiveItemRepository {
   }
 
   /**
+   * 对象合并完成后更新相关合并建议状态
+   * - 匹配 (fromId, toId) 或 (toId, fromId) 的建议标记为 confirmed
+   * - 涉及被合并已删除对象 (fromId) 的其余 pending(new) 建议标记为 done
+   * - 幂等处理，避免重复更改
+   */
+  resolveMergeSuggestionsAfterMerge(
+    objectType: string,
+    fromId: string,
+    toId: string
+  ): void {
+    const rows = this.db
+      .prepare(
+        "SELECT id, payload_json, status FROM proactive_items WHERE type = 'merge_suggestion'"
+      )
+      .all() as Array<{ id: string; payload_json: string | null; status: string }>;
+
+    for (const row of rows) {
+      if (!row.payload_json) continue;
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch {
+        // 仅窄捕获 JSON.parse 格式错误
+        continue;
+      }
+
+      if (!payload || payload.objectType !== objectType) continue;
+      const pFrom = payload.fromId;
+      const pTo = payload.toId;
+
+      const isDirectMatch =
+        (pFrom === fromId && pTo === toId) || (pFrom === toId && pTo === fromId);
+
+      const isPendingStatus = row.status === "new" || row.status === "snoozed";
+
+      if (isDirectMatch) {
+        if (isPendingStatus) {
+          const updated = this.updateStatus(row.id, "confirmed");
+          if (!updated) {
+            throw new Error(`merge_suggestion ${row.id} 更新为 confirmed 失败`);
+          }
+        }
+      } else if (isPendingStatus && (pFrom === fromId || pTo === fromId)) {
+        const updated = this.updateStatus(row.id, "done");
+        if (!updated) {
+          throw new Error(`merge_suggestion ${row.id} 更新为 done 失败`);
+        }
+      }
+    }
+  }
+
+  /**
    * 更新 proactive_item
    */
   update(id: string, patch: UpdateProactiveItemInput): ProactiveItem | null {

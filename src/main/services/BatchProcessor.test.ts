@@ -162,6 +162,58 @@ describe("BatchProcessor", () => {
     expect(secondStatus).toBe("pending");
   });
 
+  it("reserves one concurrency slot for the newest batch while backfilling oldest batches", async () => {
+    vi.spyOn(CaptureBatcher, "restoreCompressedImages").mockResolvedValue(true);
+    vi.spyOn(CaptureBatcher, "cleanupCompressedImages").mockImplementation(() => undefined);
+    const bundles = Array.from({ length: 6 }, (_, index) => ({
+      ...bundle,
+      batchId: `batch-${index + 1}`,
+      compressedImagePaths: [`image-${index + 1}.jpg`],
+    }));
+    const statuses = new Map(bundles.map((item) => [item.batchId, "pending"]));
+    const records = () => bundles
+      .filter((item) => statuses.get(item.batchId) === "pending")
+      .map((item) => ({
+        batchId: item.batchId, bundle: item, status: "pending", attempts: 0,
+        lastError: null, stages: {}, checkpoint: {},
+      }));
+    const repo = {
+      recoverRunningBatches: vi.fn(() => 0),
+      failExhaustedBatches: vi.fn(() => 0),
+      listProcessableBatches: vi.fn(records),
+      markRunning: vi.fn((batchId: string) => statuses.set(batchId, "running")),
+      updateBatchBundle: vi.fn(),
+      markSucceeded: vi.fn((batchId: string) => statuses.set(batchId, "succeeded")),
+      markFailed: vi.fn((batchId: string) => statuses.set(batchId, "failed")),
+      markStageRunning: vi.fn(),
+      markStageSucceeded: vi.fn(),
+      markStageFailed: vi.fn(),
+    };
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const startedBatchIds: string[] = [];
+    const process = vi.fn(async (inputBundle: { batchId: string }) => {
+      startedBatchIds.push(inputBundle.batchId);
+      await gate;
+      return {
+        steps: { observerExtractor: true, normalizer: { failed: 0 }, episodes: true, atoms: true, linkerSceneJudge: true },
+        errors: [],
+      };
+    });
+    const processor = new BatchProcessor(repo as never, { processBatchCaptureBundle: process } as never);
+
+    processor.start();
+    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(5));
+    expect(startedBatchIds).toEqual([
+      "batch-1", "batch-2", "batch-3", "batch-4", "batch-6",
+    ]);
+
+    release?.();
+    await processor.drain();
+    expect(process).toHaveBeenCalledTimes(6);
+    expect([...statuses.values()].every((status) => status === "succeeded")).toBe(true);
+  });
+
   it("keeps window draining within the shared batch concurrency limit", async () => {
     vi.spyOn(CaptureBatcher, "restoreCompressedImages").mockResolvedValue(true);
     vi.spyOn(CaptureBatcher, "cleanupCompressedImages").mockImplementation(() => undefined);

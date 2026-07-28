@@ -1,0 +1,12 @@
+bge-small-zh-v1.5 INT8 ONNX Model Notice
+========================================
+
+This directory contains the quantized ONNX weights and tokenizer configuration
+for the bge-small-zh-v1.5 embedding model.
+
+Original Model: BAAI/bge-small-zh-v1.5 by Beijing Academy of Artificial Intelligence.
+ONNX Quantization: Xenova/bge-small-zh-v1.5 (Transformers.js compatible).
+License: MIT License (see LICENSE file in this directory).
+Dimension: 512
+Max Tokens: 512
+Query Instruction Prefix: "为这个句子生成表示以用于检索相关文章："

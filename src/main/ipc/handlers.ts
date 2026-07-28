@@ -33,6 +33,7 @@ import type { SecretService } from "../services/SecretService";
 import type { AppSettings } from "../models/types";
 import type { SettingsService } from "../services/SettingsService";
 import type { ModelGateway } from "../services/ModelGateway";
+import type { HybridSearchService } from "../services/HybridSearchService";
 import type { DefaultModelConsentService } from "../services/DefaultModelConsentService";
 import type { PrivacyGuard } from "../services/PrivacyGuard";
 import type { ScreenshotCache } from "../services/ScreenshotCache";
@@ -142,6 +143,7 @@ export interface IpcDeps {
   modelJobRepo?: ModelJobRepository;
   dataLifecycleService?: DataLifecycleService;
   memorySearchRepo?: MemorySearchRepository;
+  hybridSearchService?: HybridSearchService;
   correctionLifecycleRepo?: CorrectionLifecycleRepository;
   projectionInvalidationProcessor?: ProjectionInvalidationProcessor;
   endOfDayReviewService?: EndOfDayReviewService;

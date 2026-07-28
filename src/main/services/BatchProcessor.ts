@@ -7,12 +7,16 @@ import { logger } from "./Logger";
 
 const MAX_ATTEMPTS = BATCH_MAX_ATTEMPTS;
 const BATCH_CONCURRENCY = 5;
+const BACKLOG_CONCURRENCY = BATCH_CONCURRENCY - 1;
+
+type BatchLane = "backlog" | "fresh" | "window";
 
 export type BatchSettlementStatus = "succeeded" | "retry_pending" | "retry_exhausted";
 
 export class BatchProcessor {
   private stopping = false;
   private readonly activeBatches = new Map<string, Promise<void>>();
+  private readonly activeBatchLanes = new Map<string, BatchLane>();
   private processPromise: Promise<void> | null = null;
 
   constructor(
@@ -85,11 +89,7 @@ export class BatchProcessor {
       for (const record of records) {
         if (availableSlots === 0) break;
         if (this.activeBatches.has(record.batchId)) continue;
-        this.repository.markRunning(record.batchId);
-        const promise = this.processOneBatch(record).finally(() => {
-          this.activeBatches.delete(record.batchId);
-        });
-        this.activeBatches.set(record.batchId, promise);
+        this.startBatch(record, "window");
         availableSlots -= 1;
       }
       const relevantIds = new Set(
@@ -112,23 +112,33 @@ export class BatchProcessor {
 
   private async processAvailable(): Promise<void> {
     while (!this.stopping) {
-      // 填满并发槽位
-      while (
-        !this.stopping &&
-        this.activeBatches.size < BATCH_CONCURRENCY
-      ) {
-        const record = this.repository.listProcessableBatches(MAX_ATTEMPTS)[0];
-        if (!record) break;
-        this.repository.markRunning(record.batchId);
-        const promise = this.processOneBatch(record).finally(() => {
-          this.activeBatches.delete(record.batchId);
-        });
-        this.activeBatches.set(record.batchId, promise);
+      const records = this.repository.listProcessableBatches(MAX_ATTEMPTS)
+        .filter((record) => !this.activeBatches.has(record.batchId));
+      let claimed = false;
+
+      // 四个槽按时间顺序回补积压；始终给最新数据保留一个槽，避免旧任务耗时过长时
+      // 今日观察与时间轴被完全饿死。
+      let backlogActive = this.countActiveLane("backlog");
+      for (const record of records) {
+        if (this.stopping || backlogActive >= BACKLOG_CONCURRENCY ||
+            this.activeBatches.size >= BATCH_CONCURRENCY) break;
+        this.startBatch(record, "backlog");
+        backlogActive += 1;
+        claimed = true;
+      }
+
+      const freshActive = this.countActiveLane("fresh");
+      if (!this.stopping && freshActive === 0 && this.activeBatches.size < BATCH_CONCURRENCY) {
+        const latest = [...records].reverse().find((record) => !this.activeBatches.has(record.batchId));
+        if (latest) {
+          this.startBatch(latest, "fresh");
+          claimed = true;
+        }
       }
 
       if (this.activeBatches.size === 0) break;
 
-      // 等待任意一个完成，然后继续填充
+      if (claimed && this.activeBatches.size < BATCH_CONCURRENCY) continue;
       await Promise.race(this.activeBatches.values());
     }
 
@@ -136,6 +146,20 @@ export class BatchProcessor {
     if (this.activeBatches.size > 0) {
       await Promise.allSettled(this.activeBatches.values());
     }
+  }
+
+  private countActiveLane(lane: BatchLane): number {
+    return [...this.activeBatchLanes.values()].filter((value) => value === lane).length;
+  }
+
+  private startBatch(record: CaptureBatchRecord, lane: BatchLane): void {
+    this.repository.markRunning(record.batchId);
+    this.activeBatchLanes.set(record.batchId, lane);
+    const promise = this.processOneBatch(record).finally(() => {
+      this.activeBatches.delete(record.batchId);
+      this.activeBatchLanes.delete(record.batchId);
+    });
+    this.activeBatches.set(record.batchId, promise);
   }
 
   private async processOneBatch(record: CaptureBatchRecord): Promise<void> {

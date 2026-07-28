@@ -15,6 +15,8 @@ const { TimelineBlockRepository } = require("../dist/main/db/repositories/Timeli
 const { TimelineGenerationWindowRepository } = require("../dist/main/db/repositories/TimelineGenerationWindowRepository");
 const { MemoryObjectRepository } = require("../dist/main/db/repositories/MemoryObjectRepository");
 const { ModelJobRepository } = require("../dist/main/db/repositories/ModelJobRepository");
+const { MemoryEmbeddingRepository } = require("../dist/main/db/repositories/MemoryEmbeddingRepository");
+const { EmbeddingIndexerService } = require("../dist/main/services/EmbeddingIndexerService");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "recall-sqlite-"));
 const migrationsDir = path.join(__dirname, "..", "src", "main", "db", "migrations");
@@ -73,6 +75,15 @@ function timelineBlock(id, sourceObservationIds, sourceSceneIds = []) {
   };
 }
 
+async function waitFor(check, message, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${message}`);
+}
+
 async function main() {
   const dbPath = path.join(root, "integration.db");
   const db = new Database(dbPath);
@@ -80,6 +91,99 @@ async function main() {
   try {
     migrate(db);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM _migrations").get().count, migrations().length);
+
+    const embeddingTriggerTime = "2026-07-28T00:00:00.000Z";
+    db.prepare(`INSERT INTO projects
+      (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(
+        "embedding-trigger-project", "Embedding trigger", "generation one", "active",
+        "[]", "[]", embeddingTriggerTime, embeddingTriggerTime,
+      );
+    assert.deepEqual(
+      db.prepare("SELECT operation, generation FROM memory_embedding_queue WHERE object_type = 'project' AND object_id = ?")
+        .get("embedding-trigger-project"),
+      { operation: "upsert", generation: 1 },
+      "new structured objects are durably queued for embedding",
+    );
+    db.prepare("UPDATE projects SET summary = ?, updated_at = ? WHERE id = ?")
+      .run("generation two", "2026-07-28T00:01:00.000Z", "embedding-trigger-project");
+    assert.equal(
+      db.prepare("SELECT generation FROM memory_embedding_queue WHERE object_type = 'project' AND object_id = ?")
+        .get("embedding-trigger-project").generation,
+      2,
+      "source updates advance the queue generation",
+    );
+    const triggerVector = Buffer.from(new Float32Array(512).buffer);
+    db.prepare(`INSERT INTO memory_embeddings
+      (object_type,object_id,model_version,content_hash,dimension,encoding,vector,updated_at)
+      VALUES ('project',?,'bge-small-zh-v1.5','trigger-hash',512,'float32',?,?)`)
+      .run("embedding-trigger-project", triggerVector, embeddingTriggerTime);
+    db.prepare("UPDATE projects SET archived_at = ?, updated_at = ? WHERE id = ?")
+      .run("2026-07-28T00:02:00.000Z", "2026-07-28T00:02:00.000Z", "embedding-trigger-project");
+    assert.equal(
+      db.prepare("SELECT COUNT(*) count FROM memory_embedding_queue WHERE object_type = 'project' AND object_id = ?")
+        .get("embedding-trigger-project").count,
+      0,
+      "soft deletion removes queued embedding work",
+    );
+    assert.equal(
+      db.prepare("SELECT COUNT(*) count FROM memory_embeddings WHERE object_type = 'project' AND object_id = ?")
+        .get("embedding-trigger-project").count,
+      0,
+      "soft deletion removes the stored vector synchronously",
+    );
+
+    db.prepare(`INSERT INTO projects
+      (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(
+        "embedding-indexer-project", "Incremental embedding", "generation one", "active",
+        "[]", "[]", embeddingTriggerTime, embeddingTriggerTime,
+      );
+    db.prepare(`INSERT INTO projects
+      (id,name,summary,status,source_fact_ids_json,source_scene_ids_json,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?)`).run(
+        "embedding-version-project", "Version rebuild", "old model vector", "active",
+        "[]", "[]", embeddingTriggerTime, embeddingTriggerTime,
+      );
+    db.prepare("DELETE FROM memory_embedding_queue WHERE object_type = 'project' AND object_id = ?")
+      .run("embedding-version-project");
+    db.prepare(`INSERT INTO memory_embeddings
+      (object_type,object_id,model_version,content_hash,dimension,encoding,vector,updated_at)
+      VALUES ('project',?,'old-model','old-hash',512,'float32',?,?)`)
+      .run("embedding-version-project", triggerVector, embeddingTriggerTime);
+
+    const embeddingRepo = new MemoryEmbeddingRepository(db);
+    const fakeEmbeddingWorker = {
+      embed: async (texts) => texts.map((text) => {
+        const vector = new Array(512).fill(0);
+        vector[0] = text.length;
+        return vector;
+      }),
+    };
+    const embeddingIndexer = new EmbeddingIndexerService(db, embeddingRepo, fakeEmbeddingWorker);
+    embeddingIndexer.startBackgroundIndexing();
+    await waitFor(
+      () => embeddingRepo.getVector("project", "embedding-indexer-project") !== null,
+      "initial embedding queue drain",
+    );
+    await waitFor(
+      () => embeddingRepo.getVector("project", "embedding-version-project")?.modelVersion === "bge-small-zh-v1.5",
+      "old model version rebuild",
+    );
+    const firstContentHash = embeddingRepo.getVector("project", "embedding-indexer-project").contentHash;
+    db.prepare("UPDATE projects SET summary = ?, updated_at = ? WHERE id = ?")
+      .run("generation two after idle", "2026-07-28T00:03:00.000Z", "embedding-indexer-project");
+    await waitFor(
+      () => embeddingRepo.getVector("project", "embedding-indexer-project")?.contentHash !== firstContentHash,
+      "incremental embedding update after idle",
+    );
+    await embeddingIndexer.stopAndDrain();
+    assert.equal(
+      db.prepare("SELECT COUNT(*) count FROM memory_embedding_queue WHERE object_id IN (?, ?)")
+        .get("embedding-indexer-project", "embedding-version-project").count,
+      0,
+      "the indexer acknowledges durable work only after vectors are stored",
+    );
 
     const modelJobs = new ModelJobRepository(db);
     const succeededJob = modelJobs.create({ id: "model-job-succeeded", type: "integration", inputJson: "{}" });
@@ -335,6 +439,30 @@ async function main() {
     assert.equal(search.total, 2);
     assert.equal(search.results.length, 1);
     assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count >= 3, true);
+    const exactIdSearch = new MemorySearchRepository(db).search("f1", 10, 0);
+    assert.equal(
+      exactIdSearch.results.some((item) => item.id === "f1" && item.matchReasons.includes("exact_id")),
+      true,
+      "an UNINDEXED object ID is an independent recall channel",
+    );
+    const exactAliasSearch = new MemorySearchRepository(db).search("Project alias", 10, 0);
+    assert.equal(
+      exactAliasSearch.results.some((item) => item.id === "candidate-project" && item.matchReasons.includes("exact_alias")),
+      true,
+      "an exact alias is recalled independently of FTS token matching",
+    );
+    db.prepare("INSERT INTO facts (id,type,content,evidence_text,importance,confidence,inferred,source_observation_ids_json,tags_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run("f-file", "note", "configuration artifact", "opened special_config.toml", 1, 1, 0, "[]", "[]", now, now);
+    const exactFilenameSearch = new MemorySearchRepository(db).search("special_config.toml", 10, 0);
+    assert.equal(
+      exactFilenameSearch.results.some((item) => item.id === "f-file" && item.matchReasons.includes("exact_filename")),
+      true,
+      "a filename in content is an independent recall channel",
+    );
+    const filteredSearch = new MemorySearchRepository(db).search("parser", 10, 0, {
+      type: "fact", projectId: "p1", timeFrom: "2026-07-11T00:00:00.000Z", timeTo: "2026-07-12T00:00:00.000Z",
+    });
+    assert.deepEqual(filteredSearch.results.map((item) => item.id), ["f1"]);
 
     insertObservation(db, "obs-search", "cap-search", now);
     db.prepare("UPDATE observations SET user_facing_summary = ?, scene_summary = ?, visible_content_json = ? WHERE id = ?")
@@ -428,11 +556,11 @@ async function main() {
 
     const exportCollections = ["observations", "facts", "scenes", "tasks", "decisions", "people", "projects", "reports"];
     const exportCounts = Object.fromEntries(exportCollections.map((table) => [table, db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count]));
-    assert.equal(exportCounts.facts, 3);
+    assert.equal(exportCounts.facts, 4);
     assert.equal(exportCounts.reports, 2);
 
     await service.clearAll();
-    for (const table of ["observations", "facts", "scenes", "projects", "reports", "capture_inbox", "capture_batches"]) {
+    for (const table of ["observations", "facts", "scenes", "projects", "reports", "capture_inbox", "capture_batches", "memory_embeddings", "memory_embedding_queue"]) {
       assert.equal(db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count, 0, `${table} cleared transactionally`);
     }
     assert.equal(db.prepare("SELECT COUNT(*) count FROM memory_search_fts").get().count, 0);
@@ -533,7 +661,7 @@ async function main() {
     timelineMigrationDb.close();
   }
 
-  console.log("SQLite integration passed: timeline windows/watermarks, admission filtering, migrations/failure preservation, model job metrics/debug lifecycle, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
+  console.log("SQLite integration passed: embedding queue triggers, timeline windows/watermarks, admission filtering, migrations/failure preservation, model job metrics/debug lifecycle, OCR geometry cleanup, inbox recovery/checkpoint/idempotency, lifecycle transactions, FTS and counts.");
 }
 
 main().finally(() => fs.rmSync(root, { recursive: true, force: true })).catch((error) => {

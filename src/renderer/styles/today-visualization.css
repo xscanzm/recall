@@ -7,6 +7,7 @@
 /* ---- 今日数据可视化带 ---- */
 .today-visualization {
   display: grid;
+  flex: 0 0 auto;
   grid-template-columns: minmax(210px, 0.9fr) minmax(380px, 1.8fr) minmax(230px, 1fr);
   gap: 12px;
   min-height: 174px;

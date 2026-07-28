@@ -30,6 +30,25 @@ import type {
   ProjectionType,
 } from "../db/repositories/CorrectionLifecycleRepository";
 import type { Fact, Scene } from "../models/types";
+import { normalizeIdentity } from "../../shared/identity";
+
+function mergeNormalizedAliases(toName: string, fromName: string, existingAliases: string[]): string[] {
+  const normTo = normalizeIdentity(toName);
+  const aliasMap = new Map<string, string>();
+  for (const alias of existingAliases) {
+    const norm = normalizeIdentity(alias);
+    if (norm && norm !== normTo && !aliasMap.has(norm)) {
+      aliasMap.set(norm, alias);
+    }
+  }
+  if (fromName && normalizeIdentity(fromName) !== normTo) {
+    const normFrom = normalizeIdentity(fromName);
+    if (!aliasMap.has(normFrom)) {
+      aliasMap.set(normFrom, fromName);
+    }
+  }
+  return Array.from(aliasMap.values());
+}
 
 /**
  * 级联标记 / 纠错 / 合并 所需的依赖
@@ -359,10 +378,8 @@ export function mergeObjects(
           new Set([...to!.sourceSceneIds, ...from!.sourceSceneIds])
         );
 
-        // 2. 合并 aliases：to.aliases + [from.name] - 去重 - 去掉 to.name 自身
-        const aliasSet = new Set<string>(to!.aliases ?? []);
-        if (fromName && fromName !== toName) aliasSet.add(fromName);
-        mergedAliases = Array.from(aliasSet).filter((a) => a && a !== toName);
+        // 2. 合并 aliases：to.aliases + [from.name] - 归一化去重 - 去掉 to.name 自身
+        mergedAliases = mergeNormalizedAliases(toName, fromName, to!.aliases ?? []);
 
         deps.memoryObjectRepo!.updateProject(toId, {
           sourceFactIds: mergedFactIds,
@@ -421,10 +438,8 @@ export function mergeObjects(
           new Set([...to!.relatedProjectIds, ...from!.relatedProjectIds])
         );
 
-        // 2. 合并 aliases
-        const aliasSet = new Set<string>(to!.aliases ?? []);
-        if (fromName && fromName !== toName) aliasSet.add(fromName);
-        mergedAliases = Array.from(aliasSet).filter((a) => a && a !== toName);
+        // 2. 合并 aliases：to.aliases + [from.name] - 归一化去重
+        mergedAliases = mergeNormalizedAliases(toName, fromName, to!.aliases ?? []);
 
         // 3. 若 to.organization 为空且 from.organization 有值，复用 from 的组织信息
         const organizationPatch = !to!.organization && from!.organization
@@ -489,6 +504,11 @@ export function mergeObjects(
         // 审计失败不阻塞合并流程，但记录
         console.warn("[mergeObjects] object_merges 审计失败:", e);
       }
+    }
+
+    // 7. 更新对应的 merge_suggestion 状态（confirmed / done）
+    if (deps.proactiveItemRepo) {
+      deps.proactiveItemRepo.resolveMergeSuggestionsAfterMerge(objectType, fromId, toId);
     }
   };
 

@@ -46,12 +46,13 @@ export function TimelineHeader({ dayMainThread, dateLabel, historical }: Timelin
       <div className="timeline-header__actions">
         {!historical && <button
           type="button"
-          className="timeline-header__icon-btn"
+          className="timeline-header__forget-btn"
           onClick={handleForgetRecent}
           aria-label="忘掉最近"
           title="忘掉最近 30 分钟"
         >
-          <Eraser size={14} />
+          <Eraser size={15} aria-hidden="true" />
+          <span>忘掉最近</span>
         </button>}
       </div>
     </header>

@@ -43,6 +43,7 @@ import type { UnfinishedThread } from "../../shared/types";
 import { getSystemTimezone, getSystemTimezoneOffset } from "../utils/timezone";
 import { normalizeIsoToZ } from "../utils/isoTime";
 import { logger } from "./Logger";
+import { normalizeIdentity } from "../../shared/identity";
 import type { MemoryObjectAdmissionService } from "./MemoryObjectAdmissionService";
 
 /**
@@ -965,10 +966,10 @@ export class LinkerSceneJudgeWorker {
       }
 
       let best: { id: string; name: string; similarity: number } | null = null;
-      const newNameBigrams = this.computeBigrams(newName.toLowerCase());
+      const newNameBigrams = this.computeBigrams(normalizeIdentity(newName));
 
       for (const candidate of candidates) {
-        const candBigrams = this.computeBigrams(candidate.name.toLowerCase());
+        const candBigrams = this.computeBigrams(normalizeIdentity(candidate.name));
         const nameSim = this.jaccardSimilarity(newNameBigrams, candBigrams);
         const factSim = this.jaccardSimilarity(
           new Set(newFactIds),

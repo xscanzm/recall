@@ -6,7 +6,10 @@ import type { MemorySearchRef } from "../../db/repositories/MemorySearchReposito
 import type { ModelCallInput } from "../../services/ModelGateway";
 
 export function registerMemorySearchHandlers(deps: IpcDeps): void {
-  handleValidated(ipcMain, "memory:search", (_event, input) => {
+  handleValidated(ipcMain, "memory:search", async (_event, input) => {
+    if (deps.hybridSearchService) {
+      return await deps.hybridSearchService.search(input.query, input.limit ?? 50, input.offset ?? 0, input.filters);
+    }
     if (!deps.memorySearchRepo) ipcFail("not_ready", "MemorySearchRepository 未初始化");
     try {
       return deps.memorySearchRepo.search(input.query, input.limit ?? 50, input.offset ?? 0, input.filters);
@@ -16,7 +19,7 @@ export function registerMemorySearchHandlers(deps: IpcDeps): void {
   });
 
   handleValidated(ipcMain, "memory:expandSearch", async (_event, input) => {
-    if (!deps.memorySearchRepo) ipcFail("not_ready", "MemorySearchRepository 未初始化");
+    if (!deps.memorySearchRepo && !deps.hybridSearchService) ipcFail("not_ready", "SearchRepository 未初始化");
     const configId = await deps.modelGateway.resolveConfigId("text");
     if (!configId) return { ok: false as const, code: "no_text_model", message: "没有可用的语言模型服务，请在设置中选择模型服务。" };
     const inputFilters = input.filters ?? {};
@@ -42,7 +45,9 @@ export function registerMemorySearchHandlers(deps: IpcDeps): void {
     if (!result.ok || !result.data) return { ok: false as const, code: "expand_failed", message: "AI 扩展暂时不可用，可重试。" };
     const terms = result.data.terms.filter((term) => term.trim()).slice(0, 12);
     const filters = { ...inputFilters, timeFrom: result.data.timeFrom ?? inputFilters.timeFrom, timeTo: result.data.timeTo ?? inputFilters.timeTo, type: result.data.type ?? inputFilters.type };
-    const search = deps.memorySearchRepo.search(terms.join(" "), 50, 0, filters);
+    const search = deps.hybridSearchService
+      ? await deps.hybridSearchService.search(terms.join(" "), 50, 0, filters)
+      : deps.memorySearchRepo!.search(terms.join(" "), 50, 0, filters);
     return { ok: true as const, expandedTerms: terms, results: search.results, total: search.total, quality: search.quality };
   });
 
@@ -78,7 +83,6 @@ export function registerMemorySearchHandlers(deps: IpcDeps): void {
       jobType: isSummary ? "memory_summary" : "memory_answer",
       jobInputJson: JSON.stringify({ mode: input.mode, question: input.question, candidateCount: candidates.length }),
       temperature: 0.2,
-      maxTokens: 1500,
     }, MemoryAskOutputSchema);
     if (!result.ok || !result.data) return { ok: false as const, code: result.errorCode ?? "model_error", message: result.errorMessage ?? (isSummary ? "总结失败" : "回答失败") };
     const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));

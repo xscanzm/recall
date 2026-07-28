@@ -13,6 +13,7 @@
 
 import type { DB } from "../Database";
 import type { Project, Task, Person, Decision } from "../../models/types";
+import { normalizeIdentity, comparePersonIdentity } from "../../../shared/identity";
 
 // ============================================================================
 // DB Row 类型
@@ -269,12 +270,13 @@ export class MemoryObjectRepository {
   }
 
   findProjectByExactIdentity(name: string): Project | null {
-    const rows = this.db.prepare("SELECT * FROM projects ORDER BY updated_at DESC").all() as ProjectRow[];
-    const normalized = name.trim().toLowerCase();
+    const rows = this.db.prepare("SELECT * FROM projects WHERE archived_at IS NULL ORDER BY updated_at DESC").all() as ProjectRow[];
+    const normalized = normalizeIdentity(name);
+    if (!normalized) return null;
     const row = rows.find((candidate) =>
-      candidate.name.trim().toLowerCase() === normalized
+      normalizeIdentity(candidate.name) === normalized
       || safeParseArray<string>(candidate.aliases_json ?? "[]")
-        .some((alias) => alias.trim().toLowerCase() === normalized)
+        .some((alias) => normalizeIdentity(alias) === normalized)
     );
     return row ? mapProjectRow(row) : null;
   }
@@ -608,14 +610,42 @@ export class MemoryObjectRepository {
     return result.changes > 0;
   }
 
-  findPersonByExactIdentity(name: string): Person | null {
-    const rows = this.db.prepare("SELECT * FROM people ORDER BY updated_at DESC").all() as PersonRow[];
-    const normalized = name.trim().toLowerCase();
-    const row = rows.find((candidate) =>
-      candidate.name.trim().toLowerCase() === normalized
-      || safeParseArray<string>(candidate.aliases_json ?? "[]")
-        .some((alias) => alias.trim().toLowerCase() === normalized)
-    );
+  findPersonByExactIdentity(
+    name: string,
+    role?: string | null,
+    organization?: string | null
+  ): Person | null {
+    const rows = this.db.prepare("SELECT * FROM people WHERE deleted_at IS NULL ORDER BY updated_at DESC").all() as PersonRow[];
+    const normalized = normalizeIdentity(name);
+    if (!normalized) return null;
+
+    const targetInfo = { name, role, organization };
+
+    const row = rows.find((candidate) => {
+      const normCandidateName = normalizeIdentity(candidate.name);
+      const aliases = safeParseArray<string>(candidate.aliases_json ?? "[]");
+
+      let matchedName: string | null = null;
+      if (normCandidateName === normalized) {
+        matchedName = candidate.name;
+      } else {
+        const matchedAlias = aliases.find((alias) => normalizeIdentity(alias) === normalized);
+        if (matchedAlias) {
+          matchedName = matchedAlias;
+        }
+      }
+
+      if (!matchedName) return false;
+
+      const comp = comparePersonIdentity(targetInfo, {
+        name: matchedName,
+        role: candidate.role,
+        organization: candidate.organization,
+      });
+
+      return comp.isSameIdentity;
+    });
+
     return row ? mapPersonRow(row) : null;
   }
 

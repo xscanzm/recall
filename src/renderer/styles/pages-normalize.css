@@ -200,25 +200,31 @@ textarea:focus,
 
 .timeline-header {
   padding-bottom: 6px;
+  /* 为右上角的结果面板展开按钮留位，避免两个操作互相遮挡。 */
+  padding-right: 88px;
 }
 
 .timeline-header__actions {
   gap: 8px;
 }
 
-.timeline-header__icon-btn {
+.timeline-header__forget-btn {
   display: inline-flex;
-  width: 34px;
+  gap: 6px;
   height: 34px;
+  padding: 0 10px;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
+  border: 1px solid var(--recall-border);
   border-radius: 8px;
-  background: transparent;
-  color: var(--recall-text-faint);
+  background: var(--recall-surface);
+  color: var(--recall-text-muted);
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
-.timeline-header__icon-btn:hover {
+.timeline-header__forget-btn:hover {
   border-color: var(--recall-danger-soft);
   background: var(--recall-danger-soft);
   color: var(--recall-danger);

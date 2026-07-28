@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 const MIGRATIONS_DIR = resolve(process.cwd(), "src/main/db/migrations");
 
 /** 当前已发布的最大迁移编号。新增迁移时同步上调此值。 */
-const HIGHEST_RELEASED_MIGRATION = 27;
+const HIGHEST_RELEASED_MIGRATION = 29;
 
 /** 历史上跳过、永久不得回填的编号。 */
 const PERMANENTLY_SKIPPED = [7];
