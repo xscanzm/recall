@@ -310,8 +310,14 @@ export interface CaptureBundle {
   recentSceneSummary?: string;
   imagePaths: string[];
   stitchedImagePath?: string;
-  /** 实际采用的截图路径；屏幕 fallback 只会持久化裁剪后的窗口区域 */
-  captureMethod?: "window" | "screen_crop_fallback";
+  /**
+   * 实际生效的采集后端；屏幕 fallback 只会持久化裁剪后的窗口区域。
+   *
+   * - window_display_media：单窗口 getDisplayMedia（默认首选，只碰目标窗口）
+   * - screen_crop_fallback：抓整屏再裁出窗口区域（需通过遮挡门禁）
+   * - window：旧的全窗口缩略图路径（会抓系统里所有窗口，默认禁用）
+   */
+  captureMethod?: "window_display_media" | "screen_crop_fallback" | "window";
   retentionPolicy: "delete_immediately" | "1h" | "6h" | "today" | "3d" | "7d";
 }
 

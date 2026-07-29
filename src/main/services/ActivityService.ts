@@ -163,6 +163,7 @@ export class ActivityService extends EventEmitter {
   private config: Required<ActivityServiceConfig>;
   private pollTimer: NodeJS.Timeout | null = null;
   private isRunning = false;
+  private pollInFlight = false;
 
   // 当前状态
   private currentWindow: ActivityWindowInfo | null = null;
@@ -252,6 +253,45 @@ export class ActivityService extends EventEmitter {
   }
 
   /**
+   * 读取当前所有打开窗口，用于遮挡判定。
+   *
+   * 返回顺序是 Z 序（最前面的在数组开头），这一点已实测确认，遮挡判定依赖它。
+   * 失败返回 null 而不是空数组：这两者含义完全不同 —— 空数组是"确认没有别的窗口"，
+   * null 是"不知道"。调用方在 null 时必须保守处理（不采），不能当成没被遮挡。
+   *
+   * active-win 的引用集中在本 service，不向外扩散。
+   */
+  async getOpenWindowsSnapshot(): Promise<ActivityWindowInfo[] | null> {
+    try {
+      const results = await activeWin.getOpenWindows();
+      if (!Array.isArray(results)) return null;
+      return results.map((result) => {
+        let appName = result.owner?.name ?? "";
+        if (!appName && result.owner?.path) {
+          appName = path.basename(result.owner.path);
+        }
+        return {
+          appName: appName || "unknown",
+          windowTitle: result.title || "",
+          urlOrDomain: "url" in result ? (result as { url?: string }).url : undefined,
+          windowId: result.id,
+          processId: result.owner?.processId,
+          bounds: result.bounds
+            ? {
+                x: result.bounds.x,
+                y: result.bounds.y,
+                width: result.bounds.width,
+                height: result.bounds.height,
+              }
+            : undefined,
+        };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 获取当前活动信号
    */
   getCurrentSignals(): ActivitySignals {
@@ -314,36 +354,43 @@ export class ActivityService extends EventEmitter {
    * - 检查 7 个触发条件
    */
   private async pollOnce(): Promise<void> {
-    if (!this.isRunning) return;
+    if (!this.isRunning || this.pollInFlight) return;
+    this.pollInFlight = true;
 
-    const window = await this.getActiveWindowInfo();
-    const idleSeconds = this.getSystemIdleSeconds();
-    const now = Date.now();
+    try {
+      const window = await this.getActiveWindowInfo();
+      if (!this.isRunning) return;
 
-    // 更新 idle 状态并检测 active <-> idle 转换（触发条件 5、6）
-    this.checkIdleTransitions(idleSeconds, now);
+      const idleSeconds = this.getSystemIdleSeconds();
+      const now = Date.now();
+      const previousWindow = this.currentWindow;
 
-    if (!window) {
-      return;
-    }
+      // 同一轮只发出一个候选：idle 边界 > 窗口变化 > 内容/输入。
+      const idleCandidate = this.checkIdleTransitions(idleSeconds, now, window);
+      if (!window) {
+        if (idleCandidate) this.emitCaptureCandidate(idleCandidate);
+        return;
+      }
 
-    // 更新当前 idle 秒数（供 checkWindowChanges 内 signals 使用）
-    this.lastIdleSeconds = idleSeconds;
+      this.lastIdleSeconds = idleSeconds;
+      const windowCandidate = this.checkWindowChanges(window, now, idleSeconds);
 
-    // 检测窗口切换和标题变化（触发条件 1、2）
-    this.checkWindowChanges(window, now, idleSeconds);
+      // 先刷新当前窗口，再构造内容候选，禁止带着旧窗口截图。
+      const windowChanged = !previousWindow || previousWindow.windowId !== window.windowId;
+      if (windowChanged) {
+        this.currentWindow = window;
+        this.currentWindowSince = now;
+      } else if (previousWindow.windowTitle !== window.windowTitle) {
+        this.currentWindow = window;
+      }
 
-    // 触发条件 3：用户输入活跃 + 窗口稳定 30 秒
-    // 触发条件 4：内容变化（间隔 >= 60 秒）
-    this.checkContentOrInputTriggers(idleSeconds, now);
-
-    // 更新当前窗口信息（若发生变化）
-    if (!this.currentWindow || this.currentWindow.windowId !== window.windowId) {
-      this.currentWindow = window;
-      this.currentWindowSince = now;
-    } else if (this.currentWindow.windowTitle !== window.windowTitle) {
-      // 标题变化但同窗口：更新 title 但保持稳定时间
-      this.currentWindow = window;
+      const contentCandidate = !idleCandidate && !windowCandidate && previousWindow
+        ? this.checkContentOrInputTriggers(idleSeconds, now)
+        : null;
+      const candidate = idleCandidate ?? windowCandidate ?? contentCandidate;
+      if (candidate) this.emitCaptureCandidate(candidate);
+    } finally {
+      this.pollInFlight = false;
     }
   }
 
@@ -352,18 +399,21 @@ export class ActivityService extends EventEmitter {
    * - 触发条件 5：active -> idle（一段工作可能结束）-> scene_boundary
    * - 触发条件 6：idle -> active（新场景开始）-> scene_boundary
    */
-  private checkIdleTransitions(idleSeconds: number, now: number): void {
+  private checkIdleTransitions(
+    idleSeconds: number,
+    now: number,
+    freshWindow: ActivityWindowInfo | null
+  ): CaptureCandidateEvent | null {
     const threshold = this.config.idleThresholdSeconds;
     const currentState: "active" | "idle" = idleSeconds >= threshold ? "idle" : "active";
 
     if (currentState === this.lastIdleState) {
-      return; // 未变化
+      return null; // 未变化
     }
 
     // 状态转换
     const previousState = this.lastIdleState;
-    const reason: CaptureTriggerReason = "scene_boundary";
-    const window = this.currentWindow;
+    const window = currentState === "active" ? freshWindow : this.currentWindow;
     this.emit(IDLE_STATE_CHANGED_EVENT, {
       from: previousState,
       to: currentState,
@@ -371,13 +421,12 @@ export class ActivityService extends EventEmitter {
     } satisfies IdleStateChangedEvent);
     if (!window) {
       this.lastIdleState = currentState;
-      return;
+      return null;
     }
 
-    // active -> idle：当前窗口仍记录的是上一个活动窗口
-    // idle -> active：当前窗口可能是新的（用户刚回来还在原窗口）
-    this.emitCaptureCandidate({
-      reason,
+    this.lastIdleState = currentState;
+    return {
+      reason: "scene_boundary",
       window,
       signals: {
         keyboardActive: currentState === "active",
@@ -386,9 +435,7 @@ export class ActivityService extends EventEmitter {
         activeWindowStableSeconds: Math.floor((now - this.currentWindowSince) / 1000),
       },
       triggeredAt: new Date(now).toISOString(),
-    });
-
-    this.lastIdleState = currentState;
+    };
   }
 
   /**
@@ -400,27 +447,29 @@ export class ActivityService extends EventEmitter {
    * 项目切换判定：active-win 不直接返回 projectId，使用 appName 作为项目代理。
    * 不同应用通常对应不同工作上下文（如 VSCode -> 浏览器），适合触发 SceneBuilder。
    */
-  private checkWindowChanges(window: ActivityWindowInfo, now: number, idleSeconds: number): void {
+  private checkWindowChanges(
+    window: ActivityWindowInfo,
+    now: number,
+    idleSeconds: number
+  ): CaptureCandidateEvent | null {
     const prev = this.currentWindow;
 
     if (!prev) {
       // 首次获取，不触发（避免启动时立即采集）
-      return;
+      return null;
     }
 
     // 用户已 idle 时跳过窗口切换/标题变化触发
     // （scene_boundary 由 checkIdleTransitions 独立处理，不在此处）
     if (idleSeconds >= this.config.idleThresholdSeconds) {
-      return;
+      return null;
     }
 
     // 触发条件 1：窗口切换
     if (prev.windowId !== window.windowId) {
-      // 重置稳定时间
-      this.currentWindowSince = now;
       // 项目切换：appName 变化视为切换到另一个项目上下文
       const projectChanged = prev.appName !== window.appName;
-      this.emitCaptureCandidate({
+      return {
         reason: projectChanged ? "project_switch" : "window_focus_changed",
         window,
         signals: {
@@ -430,13 +479,12 @@ export class ActivityService extends EventEmitter {
           activeWindowStableSeconds: 0,
         },
         triggeredAt: new Date(now).toISOString(),
-      });
-      return;
+      };
     }
 
     // 触发条件 2：标题变化
     if (prev.windowTitle !== window.windowTitle) {
-      this.emitCaptureCandidate({
+      return {
         reason: "window_title_changed",
         window,
         signals: {
@@ -446,9 +494,10 @@ export class ActivityService extends EventEmitter {
           activeWindowStableSeconds: Math.floor((now - this.currentWindowSince) / 1000),
         },
         triggeredAt: new Date(now).toISOString(),
-      });
-      return;
+      };
     }
+
+    return null;
   }
 
   /**
@@ -458,8 +507,11 @@ export class ActivityService extends EventEmitter {
    *   - 此处简化为长会话间隔触发；真实内容 hash 由 CaptureService 决定是否真正采集
    *   - 长会话：每 longSessionIntervalMinutes 分钟发出一次
    */
-  private checkContentOrInputTriggers(idleSeconds: number, now: number): void {
-    if (!this.currentWindow) return;
+  private checkContentOrInputTriggers(
+    idleSeconds: number,
+    now: number
+  ): CaptureCandidateEvent | null {
+    if (!this.currentWindow) return null;
 
     const stableSeconds = Math.floor((now - this.currentWindowSince) / 1000);
     const isInputActive = idleSeconds < 5;
@@ -470,7 +522,8 @@ export class ActivityService extends EventEmitter {
       const lastTrigger = this.lastTriggerTimeByReason.get("active_input_session") ?? 0;
       // 同一窗口内 60 秒去抖动（避免频繁触发）
       if (now - lastTrigger >= 60 * 1000) {
-        this.emitCaptureCandidate({
+        this.lastTriggerTimeByReason.set("active_input_session", now);
+        return {
           reason: "active_input_session",
           window: this.currentWindow,
           signals: {
@@ -480,17 +533,14 @@ export class ActivityService extends EventEmitter {
             activeWindowStableSeconds: stableSeconds,
           },
           triggeredAt: new Date(now).toISOString(),
-        });
-        this.lastTriggerTimeByReason.set("active_input_session", now);
-        this.lastCaptureTime = now;
-        return;
+        };
       }
     }
 
     // 触发条件 4：内容变化（间隔至少 60 秒）
     // 简化为：输入活跃 + 距上次触发 >= 60 秒 -> content_changed
     if (isInputActive && now - this.lastCaptureTime >= this.config.contentChangeMinIntervalSeconds * 1000) {
-      this.emitCaptureCandidate({
+      return {
         reason: "content_changed",
         window: this.currentWindow,
         signals: {
@@ -500,20 +550,17 @@ export class ActivityService extends EventEmitter {
           activeWindowStableSeconds: stableSeconds,
         },
         triggeredAt: new Date(now).toISOString(),
-      });
-      this.lastCaptureTime = now;
-      return;
+      };
     }
 
     // 长会话：每 longSessionIntervalMinutes 分钟，无论窗口是否变化，发出 content_changed
     // 用于"长工作会话：每 2-5 分钟采集一组关键帧"
     // 注意：用户已 idle（>= idleThresholdSeconds）时不触发，避免离开后仍截图
-    const lastContentTrigger = this.lastTriggerTimeByReason.get("content_changed") ?? 0;
     if (
       idleSeconds < this.config.idleThresholdSeconds &&
-      now - lastContentTrigger >= this.config.longSessionIntervalMinutes * 60 * 1000
+      now - this.lastCaptureTime >= this.config.longSessionIntervalMinutes * 60 * 1000
     ) {
-      this.emitCaptureCandidate({
+      return {
         reason: "content_changed",
         window: this.currentWindow,
         signals: {
@@ -523,10 +570,10 @@ export class ActivityService extends EventEmitter {
           activeWindowStableSeconds: stableSeconds,
         },
         triggeredAt: new Date(now).toISOString(),
-      });
-      this.lastTriggerTimeByReason.set("content_changed", now);
-      this.lastCaptureTime = now;
+      };
     }
+
+    return null;
   }
 
   /**
@@ -591,6 +638,8 @@ export class ActivityService extends EventEmitter {
    * - CaptureService 决定是否真正采集（PrivacyGuard 检查 + 截图）
    */
   private emitCaptureCandidate(event: CaptureCandidateEvent): void {
+    const triggeredAt = Date.parse(event.triggeredAt);
+    this.lastCaptureTime = Number.isFinite(triggeredAt) ? triggeredAt : Date.now();
     this.emit(CAPTURE_CANDIDATE_EVENT, event);
   }
 }

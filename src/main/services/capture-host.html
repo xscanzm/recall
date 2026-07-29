@@ -1,0 +1,26 @@
+<!doctype html>
+<!--
+  src/main/services/capture-host.html
+
+  隐藏抓图宿主页（WindowFrameGrabber 使用）。
+
+  这个页面本身不含任何逻辑，抓图代码由 WindowFrameGrabber 通过 executeJavaScript
+  注入（为什么不用 preload，见 WindowFrameGrabber.ts 顶部说明）。
+
+  之所以要一个真实的 file:// 页面而不是 data: / about:blank：
+  getDisplayMedia 要求 secure context，data: 与无 opener 的 about:blank
+  都是 opaque origin，会被拒；file:// 在 Chromium 里是可信来源。
+
+  位置必须与 WindowFrameGrabber 的编译产物**同目录** —— 它用
+  loadFile(path.join(__dirname, "capture-host.html")) 加载，而编译后 __dirname
+  是 dist/main/services（不是 dist/main）。scripts/copy-assets.js 按
+  src/ -> dist/ 原样镜像路径，所以这里放在 services/ 下，dev 与 prod 都不用分支。
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'" />
+    <title>recall-capture-host</title>
+  </head>
+  <body></body>
+</html>

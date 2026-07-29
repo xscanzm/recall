@@ -15,7 +15,7 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 - **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 184 MB）
 - **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-> 下载后可校验完整性：`certutil -hashfile Recall-0.5.4-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
+> 下载后可校验完整性：`certutil -hashfile Recall-0.5.5-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
 
 ---
 
@@ -52,7 +52,8 @@ RapidOCR（PP-OCRv6 Small ONNX）+ 多模态大模型双管线理解：L0 Observ
 
 ## 版本演进
 
-- **v0.5.4**（最新）：混合搜索（FTS5 trigram 词法召回 + BGE bge-small-zh-v1.5 本地 embedding 语义召回 + RRF 融合 + 静默降级，支持中文子串精确匹配与语义召回）+ 身份归一化与重复对象审计（normalizeIdentity + comparePersonIdentity + IdentityAuditService 只读审计 + 精确身份匹配 + 合并建议事务完整性）+ BatchProcessor lane 化并发（backlog/fresh/window 三 lane，始终保留 1 槽给最新数据）+ DataLifecycleService 事务安全（exclusive 清理隔离 + embedding 索引器暂停）+ TimelineHeader 新增"忘掉最近"按钮 + migration 028/029（安装包体积因内置 BGE embedding 模型增大至约 184 MB）
+- **v0.5.5**（最新）：截图采集架构重构（WindowFrameGrabber 单窗口 getDisplayMedia + WGC 捕获，替代 desktopCapturer 全窗口抓图，零 WM_PRINT 副作用，不再导致钉钉等 GPU 合成应用白屏）+ captureOcclusion 遮挡门禁（扫描线并集算法 + 35% 良性遮挡阈值 + 敏感遮挡一律跳过，防止裁到隐私）+ CaptureService 三后端降级链（window_display_media → screen_crop_fallback → 旧 window 禁用，三路不通则跳过不硬采）+ ActivityService 增强（getFreshActiveWindowInfo 双重校验 + getOpenWindowsSnapshot Z 序窗口列表）+ 退化帧检测（analyzeCaptureVisualQuality 全黑帧自动降级）
+- **v0.5.4**：混合搜索（FTS5 trigram 词法召回 + BGE bge-small-zh-v1.5 本地 embedding 语义召回 + RRF 融合 + 静默降级，支持中文子串精确匹配与语义召回）+ 身份归一化与重复对象审计（normalizeIdentity + comparePersonIdentity + IdentityAuditService 只读审计 + 精确身份匹配 + 合并建议事务完整性）+ BatchProcessor lane 化并发（backlog/fresh/window 三 lane，始终保留 1 槽给最新数据）+ DataLifecycleService 事务安全（exclusive 清理隔离 + embedding 索引器暂停）+ TimelineHeader 新增"忘掉最近"按钮 + migration 028/029（安装包体积因内置 BGE embedding 模型增大至约 184 MB）
 - **v0.5.3**：批次重试耗尽死锁修复（failExhaustedBatches 启动时把 retry-exhausted pending/running batch 落到 failed，避免卡死时间轴窗口）+ CaptureBatcher 攒批优化（固定 5 分钟定时器改为"空闲 150s + 年龄上限 10min"双约束，避免抢切近满批次）+ TimelineWindowCoordinator 三类死锁修复（跨天窗口 force 封窗 + sealing 首次排空去重 + onBatchSettled 环形等待规避）+ 窗口拖动改进（CSS app-region → IPC window:drag + PointerEvent + setPointerCapture）
 - **v0.5.2**：密钥存储迁移（keytar 原生模块 → Electron safeStorage/DPAPI，secretsMigration 幂等迁移 + 写成功才删源）+ 导航护栏（navigationGuard，BrowserWindow 导航白名单防御 prompt injection 逃逸，覆盖 window.open/will-navigate/iframe/webview 四类）+ 数据库稳健性（busy_timeout=5000ms + 迁移备份自动清理保留 2 份）+ 渲染层架构重构（global.css 拆分为按页面/组件 CSS 多文件 + store.ts 拆分为 Zustand slice 模式，对外 API 不变）+ 工程基础设施（ESLint 9 扁平配置 + 契约测试 + CI 调整）
 - **v0.5.1**：时间轴生成窗口化（TimelineWindowCoordinator，事件时间窗口状态机 collecting→sealing→ready→generating，替代固定 10 分钟增量）+ 记忆对象准入机制（MemoryObjectAdmissionService，projects/people 三态决策 promoted/candidate/rejected，基于事实证据自动评估）+ TimelineBuilderWorker 窗口化适配（TimelineBuildWindowRequest，MAX_OBSERVATIONS=2000）+ ProjectionInvalidationProcessor 窗口级重建（claimPending 状态机）+ 配套基础设施完善（shutdownRuntime/ReportScheduler/BatchProcessor/TrayService 适配）+ 测试基础设施（TimelineWindowCoordinator/MemoryObjectAdmissionService 单测 + E2E 准入流程）+ migration 026/027
@@ -72,7 +73,7 @@ RapidOCR（PP-OCRv6 Small ONNX）+ 多模态大模型双管线理解：L0 Observ
 ## 快速开始（用户视角）
 
 1. 前往 <https://recall.ppclaw.online/> 了解产品，或直接下载最新版：<https://recall-update.ppclaw.online/download/latest>。
-2. 双击安装 `Recall-0.5.4-setup.exe`，桌面会出现 **Recall** 图标。
+2. 双击安装 `Recall-0.5.5-setup.exe`，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
 5. 点击「**开始观察**」。
@@ -95,7 +96,7 @@ npm run package         # 先构建独立 OCR worker，再输出 NSIS 到 releas
 
 OCR 去重按信息层级处理：整图与分块检测结果先按位置和文字保守合并；仅解码像素完全一致的帧复用 OCR 和视觉观察；近似帧仍执行 OCR 与多模态观察，但 OCR block 变化会压缩为 delta 证据，减少提示词体积而不丢失每帧 L0 `fullText`。
 
-> 构建产物 `release/Recall-0.5.4-setup.exe` 即对应发布通道的分发物。
+> 构建产物 `release/Recall-0.5.5-setup.exe` 即对应发布通道的分发物。
 
 类型检查：
 

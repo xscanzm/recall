@@ -43,7 +43,44 @@ import type {
 import type { PrivacyGuard, PreCaptureCheckResult, PreCaptureReason } from "./PrivacyGuard";
 import type { ScreenshotCache } from "./ScreenshotCache";
 import type { SettingsService } from "./SettingsService";
+import {
+  computeOccludedRatio,
+  findVisibleOccluders,
+  MAX_BENIGN_OCCLUSION_RATIO,
+} from "./captureOcclusion";
 import { logger } from "./Logger";
+
+/**
+ * 采集后端。按安全性排序，从最安全的开始试。
+ *
+ * - window_display_media：只对目标窗口开一次捕获会话，不碰其它窗口
+ * - screen_crop_fallback：抓整屏再裁；不向任何窗口发消息，但需要确认目标没被遮挡
+ * - window：旧路径，为了拍 1 个窗口把系统里所有窗口都抓一遍，并且在 Windows 上会向
+ *   每个窗口发 WM_PRINT。默认禁用，只留作应急开关。
+ */
+export type CaptureBackend = "window_display_media" | "screen_crop_fallback" | "window";
+
+/**
+ * 单窗口抓图后端的最小接口。
+ *
+ * 用结构类型而不是直接 import WindowFrameGrabber：
+ * 1. 避免 CaptureService ↔ WindowFrameGrabber 循环依赖
+ * 2. 让单测能注入假实现，不用把 BrowserWindow / session 拖进测试的 electron mock
+ */
+export interface WindowFrameSource {
+  /** 零抓图枚举当前窗口（只要 id/name，不产生任何图像） */
+  listWindowSources(): Promise<Array<{ id: string; name: string }>>;
+  /** 抓取指定窗口的一帧，失败返回 null */
+  grab(source: { id: string; name: string }): Promise<{ png: Buffer } | null>;
+}
+
+/**
+ * 跳过采集的原因。
+ *
+ * 在 PreCaptureReason 之上就地加了两个采集侧原因，不去改 PrivacyGuard 的枚举
+ * —— 那是隐私判定的词汇表，"被别的窗口挡住了"和"没有可用的安全后端"不属于它。
+ */
+export type CaptureSkippedReason = PreCaptureReason | "occluded" | "no_safe_backend";
 
 /**
  * CaptureService 发出的事件类型
@@ -57,7 +94,7 @@ import { logger } from "./Logger";
  */
 export interface CaptureServiceEvents {
   "capture-bundle": (bundle: CaptureBundle) => void;
-  "capture-skipped": (info: { reason: PreCaptureReason; captureId?: string }) => void;
+  "capture-skipped": (info: { reason: CaptureSkippedReason; captureId?: string }) => void;
 }
 
 /**
@@ -80,7 +117,7 @@ interface CapturedFrame {
   capturedAt: Date;
   /** 来源 source id（desktopCapturer 返回） */
   sourceId: string;
-  captureMethod: "window" | "screen_crop_fallback";
+  captureMethod: CaptureBackend;
 }
 
 interface RectangleLike {
@@ -110,6 +147,17 @@ const DEGENERATE_NEAR_BLACK_RATIO = 0.99;
 const DEGENERATE_EDGE_DENSITY_MAX = 0.02;
 const FALLBACK_MIN_INFORMATION_GAIN = 8;
 const MIN_WINDOW_DISPLAY_COVERAGE = 0.9;
+const CAPTURE_REASON_PRIORITY: Record<CaptureTriggerReason, number> = {
+  manual_capture: 90,
+  daily_preflight: 80,
+  scene_boundary: 70,
+  project_switch: 60,
+  window_focus_changed: 50,
+  window_title_changed: 40,
+  active_input_session: 30,
+  content_changed: 20,
+  long_session: 10,
+};
 
 /**
  * CaptureService 配置
@@ -123,6 +171,17 @@ export interface CaptureServiceConfig {
   thumbnailWidth?: number;
   /** 缩略图最大高度，默认 1080 */
   thumbnailHeight?: number;
+  /**
+   * 是否允许退回旧的全窗口缩略图路径。默认 false。
+   *
+   * 这条路会为了拍 1 个窗口把系统里所有窗口都真实抓一遍，在 Windows 上还会向每个
+   * 窗口发 WM_PRINT 强制它们在自己的 UI 线程上同步渲染 —— 对第三方应用有可观察的
+   * 副作用（某些 GPU 合成应用会白屏直到被重新标脏）。
+   *
+   * 产品决策：前两条安全路径都走不通时**跳过这次采集**，而不是用伤害用户其它应用的
+   * 方式硬采。代码保留是为了留一个应急开关，不是留一条默认退路。
+   */
+  allowLegacyWindowThumbnailCapture?: boolean;
 }
 
 /**
@@ -136,6 +195,19 @@ const DEFAULT_CONFIG: Required<CaptureServiceConfig> = {
   frameIntervalMs: 1_000,
   thumbnailWidth: 1_920,
   thumbnailHeight: 1_080,
+  allowLegacyWindowThumbnailCapture: false,
+};
+
+/**
+ * 上报到 CaptureBundle 时的后端优先级：数字大的胜出。
+ *
+ * 多帧可能落在不同后端上。这时报告"最需要被注意到的那个" —— 也就是最偏离
+ * 首选路径的那个 —— 因为这个字段的用处是事后定位"为什么这次采集不正常"。
+ */
+const BACKEND_REPORT_PRIORITY: Record<CaptureBackend, number> = {
+  window: 3,
+  screen_crop_fallback: 2,
+  window_display_media: 1,
 };
 
 /**
@@ -162,6 +234,7 @@ export class CaptureService extends EventEmitter {
   private privacyGuard: PrivacyGuard | null = null;
   private screenshotCache: ScreenshotCache | null = null;
   private settingsService: SettingsService | null = null;
+  private windowFrameSource: WindowFrameSource | null = null;
 
   // 暂停状态：由 app.ts 通过 setPaused 更新
   private isPaused = false;
@@ -171,6 +244,9 @@ export class CaptureService extends EventEmitter {
   // 事件回调引用（用于 off）
   private captureCandidateHandler: ((event: CaptureCandidateEvent) => void) | null = null;
   private readonly activeCaptures = new Set<Promise<unknown>>();
+  private pendingCaptureCandidate: CaptureCandidateEvent | null = null;
+  private captureCandidateLoop: Promise<void> | null = null;
+  private captureTail: Promise<void> = Promise.resolve();
 
   constructor(config: CaptureServiceConfig = {}) {
     super();
@@ -185,11 +261,17 @@ export class CaptureService extends EventEmitter {
     privacyGuard: PrivacyGuard;
     screenshotCache: ScreenshotCache;
     settingsService: SettingsService;
+    /**
+     * 单窗口抓图后端。不传则首选后端不可用，直接从 screen crop 开始试。
+     * 单测里可以注入假实现。
+     */
+    windowFrameSource?: WindowFrameSource;
   }): void {
     this.activityService = deps.activityService;
     this.privacyGuard = deps.privacyGuard;
     this.screenshotCache = deps.screenshotCache;
     this.settingsService = deps.settingsService;
+    this.windowFrameSource = deps.windowFrameSource ?? null;
   }
 
   /**
@@ -230,10 +312,7 @@ export class CaptureService extends EventEmitter {
       return; // 已订阅
     }
     const handler = (event: CaptureCandidateEvent) => {
-      // 异步处理，不阻塞 EventEmitter
-      this.trackCapture(this.handleCaptureCandidate(event)).catch(() => {
-        // 单次捕获失败不阻断后续
-      });
+      this.enqueueCaptureCandidate(event);
     };
     this.captureCandidateHandler = handler;
     this.activityService.on("capture-candidate", handler);
@@ -248,6 +327,7 @@ export class CaptureService extends EventEmitter {
       this.activityService.off("capture-candidate", this.captureCandidateHandler);
     }
     this.captureCandidateHandler = null;
+    this.pendingCaptureCandidate = null;
   }
 
   async drain(): Promise<void> {
@@ -281,8 +361,50 @@ export class CaptureService extends EventEmitter {
       triggeredAt: new Date().toISOString(),
     };
 
-    const result = await this.trackCapture(this.handleCaptureCandidate(triggerEvent));
+    const result = await this.trackCapture(
+      this.runSerializedCapture(() => this.handleCaptureCandidate(triggerEvent))
+    );
     return result?.bundle ?? null;
+  }
+
+  private enqueueCaptureCandidate(event: CaptureCandidateEvent): void {
+    this.pendingCaptureCandidate = coalesceCaptureCandidate(
+      this.pendingCaptureCandidate,
+      event
+    );
+    this.startCaptureCandidateLoop();
+  }
+
+  private startCaptureCandidateLoop(): void {
+    if (this.captureCandidateLoop || !this.pendingCaptureCandidate) return;
+
+    const loop = this.drainCaptureCandidates();
+    this.captureCandidateLoop = loop;
+    this.trackCapture(loop).catch(() => {
+      // 单次捕获失败不阻断后续候选。
+    });
+    void loop.finally(() => {
+      if (this.captureCandidateLoop === loop) this.captureCandidateLoop = null;
+      this.startCaptureCandidateLoop();
+    }).catch(() => {});
+  }
+
+  private async drainCaptureCandidates(): Promise<void> {
+    while (this.pendingCaptureCandidate) {
+      const event = this.pendingCaptureCandidate;
+      this.pendingCaptureCandidate = null;
+      try {
+        await this.runSerializedCapture(() => this.handleCaptureCandidate(event));
+      } catch {
+        // 单次捕获失败不丢失已合并的后续候选。
+      }
+    }
+  }
+
+  private runSerializedCapture<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.captureTail.then(operation, operation);
+    this.captureTail = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   /**
@@ -353,10 +475,10 @@ export class CaptureService extends EventEmitter {
     }
 
     // 3. 截图活动窗口
-    const frames = await this.captureWindowFrames(event.window);
+    const { frames, skipReason } = await this.captureWindowFrames(event.window);
     if (frames.length === 0) {
-      // 截图失败（可能是权限问题或窗口已关闭）
-      this.emitCaptureSkipped("unknown");
+      // 三条后端都没拿到可用画面（或被遮挡门禁拦下），跳过这次采集
+      this.emitCaptureSkipped(skipReason ?? "unknown");
       return {
         bundle: null,
         privacyCheck: { allowed: false, reason: "unknown" },
@@ -423,9 +545,7 @@ export class CaptureService extends EventEmitter {
       },
       imagePaths: savedPaths,
       stitchedImagePath,
-      captureMethod: frames.some((frame) => frame.captureMethod === "screen_crop_fallback")
-        ? "screen_crop_fallback"
-        : "window",
+      captureMethod: pickReportedBackend(frames),
       retentionPolicy,
     };
 
@@ -459,7 +579,7 @@ export class CaptureService extends EventEmitter {
   /**
    * 发出 capture-skipped 事件
    */
-  private emitCaptureSkipped(reason: PreCaptureReason): void {
+  private emitCaptureSkipped(reason: CaptureSkippedReason): void {
     setImmediate(() => {
       try {
         this.emit("capture-skipped", { reason });
@@ -481,20 +601,24 @@ export class CaptureService extends EventEmitter {
     appName: string;
     windowTitle: string;
     windowId?: number;
-  }): Promise<CapturedFrame[]> {
+  }): Promise<{ frames: CapturedFrame[]; skipReason: CaptureSkippedReason | null }> {
     const frames: CapturedFrame[] = [];
     const frameCount = Math.max(1, Math.min(6, this.config.frameCount));
+    let skipReason: CaptureSkippedReason | null = null;
 
     for (let i = 0; i < frameCount; i++) {
       const capturedAt = new Date();
-      const frame = await this.captureSingleFrame(window);
-      if (frame) {
+      const attempt = await this.captureSingleFrame(window);
+      if (attempt.frame) {
         frames.push({
-          buffer: frame.buffer,
+          buffer: attempt.frame.buffer,
           capturedAt,
-          sourceId: frame.sourceId,
-          captureMethod: frame.captureMethod,
+          sourceId: attempt.frame.sourceId,
+          captureMethod: attempt.frame.captureMethod,
         });
+      } else if (!skipReason) {
+        // 只记第一次失败的原因：后续帧的失败大概率是同一个原因的重复
+        skipReason = attempt.skipReason;
       }
 
       // 多帧时等待间隔
@@ -503,85 +627,234 @@ export class CaptureService extends EventEmitter {
       }
     }
 
-    return frames;
+    return { frames, skipReason };
   }
 
   /**
-   * 截取单帧活动窗口
-   * - desktopCapturer.getSources({ types: ['window'] })
-   * - windowId 可用时要求 source id 与非空 windowTitle 同时匹配
-   * - windowId 不可用时仅允许非空 windowTitle 精确匹配
-   * - 匹配失败时返回 null，禁止捕获其他窗口
+   * 截取单帧活动窗口，按"对其它应用的伤害从小到大"依次尝试后端。
+   *
+   *   1. window_display_media —— 只对目标窗口开一次捕获会话
+   *   2. screen_crop_fallback —— 抓整屏再裁，先过遮挡门禁
+   *   3. window（旧全窗口缩略图）—— 默认禁用
+   *
+   * 全部走不通就跳过这次采集，不硬采。少一条记忆，好过把用户正在用的应用打白。
    */
   private async captureSingleFrame(window: {
     appName: string;
     windowTitle: string;
     windowId?: number;
   }): Promise<{
-    buffer: Buffer;
-    sourceId: string;
-    captureMethod: "window" | "screen_crop_fallback";
-  } | null> {
+    frame: { buffer: Buffer; sourceId: string; captureMethod: CaptureBackend } | null;
+    skipReason: CaptureSkippedReason | null;
+  }> {
     try {
-      const sources = await desktopCapturer.getSources({
-        types: ["window"],
-        thumbnailSize: {
-          width: this.config.thumbnailWidth,
-          height: this.config.thumbnailHeight,
-        },
-        fetchWindowIcons: false,
-      });
-
-      if (sources.length === 0) {
-        return null;
+      // ---- 后端 1：单窗口 getDisplayMedia ----
+      let primaryQuality: CaptureVisualQuality | null = null;
+      const primary = await this.captureViaWindowFrameSource(window);
+      if (primary) {
+        primaryQuality = await analyzeCaptureVisualQuality(primary.buffer);
+        if (!primaryQuality.isDegenerate) {
+          return { frame: { ...primary, captureMethod: "window_display_media" }, skipReason: null };
+        }
+        // 退化率是观测 WGC 是否真在工作的窗口：GDI 抓 GPU 合成窗口才会回全黑。
+        logger.warn({
+          jobType: "capture",
+          status: "failed",
+          errorCode: "degenerate_capture",
+          message: "degenerate_window_display_media_frame",
+        });
       }
 
-      const target = findMatchingWindowSource(sources, window);
-      if (!target) return null;
-
-      if (!target.thumbnail || target.thumbnail.isEmpty()) {
-        return null;
-      }
-
-      // 将 NativeImage 转换为 PNG buffer
-      const pngBuffer = target.thumbnail.toPNG();
-      const windowBuffer = Buffer.from(pngBuffer);
-      const windowQuality = await analyzeCaptureVisualQuality(windowBuffer);
-      if (!windowQuality.isDegenerate) {
-        return {
-          buffer: windowBuffer,
-          sourceId: target.id,
-          captureMethod: "window",
-        };
-      }
-
-      const fallback = await this.captureScreenCropFallback(window);
-      if (fallback) {
-        const fallbackQuality = await analyzeCaptureVisualQuality(fallback.buffer);
-        if (shouldUseScreenCropFallback(windowQuality, fallbackQuality)) {
-          logger.info({
-            jobType: "capture",
-            status: "succeeded",
-            message: "screen_crop_fallback_used",
-          });
-          return {
-            buffer: fallback.buffer,
-            sourceId: fallback.sourceId,
-            captureMethod: "screen_crop_fallback",
-          };
+      // ---- 后端 2：整屏裁剪（先过遮挡门禁）----
+      const gate = await this.checkScreenCropOcclusion(window);
+      if (gate.allowed) {
+        const fallback = await this.captureScreenCropFallback(window);
+        if (fallback) {
+          const fallbackQuality = await analyzeCaptureVisualQuality(fallback.buffer);
+          // 后端 1 拿到过（退化的）画面时，沿用原有的信息量比较，避免用一张更差的
+          // 裁剪图替换掉勉强可用的窗口图；后端 1 完全没出图时只要求裁剪图本身不退化。
+          const acceptable = primaryQuality
+            ? shouldUseScreenCropFallback(primaryQuality, fallbackQuality)
+            : !fallbackQuality.isDegenerate;
+          if (acceptable) {
+            logger.info({
+              jobType: "capture",
+              status: "succeeded",
+              message: "screen_crop_fallback_used",
+            });
+            return {
+              frame: { ...fallback, captureMethod: "screen_crop_fallback" },
+              skipReason: null,
+            };
+          }
         }
       }
 
+      // ---- 后端 3：旧全窗口缩略图（默认禁用）----
+      if (this.config.allowLegacyWindowThumbnailCapture) {
+        const legacy = await this.captureViaLegacyWindowThumbnail(window);
+        if (legacy) {
+          const legacyQuality = await analyzeCaptureVisualQuality(legacy.buffer);
+          if (!legacyQuality.isDegenerate) {
+            logger.warn({
+              jobType: "capture",
+              status: "succeeded",
+              errorCode: "legacy_window_thumbnail_used",
+              message: "legacy_window_thumbnail_used_touches_all_windows",
+            });
+            return { frame: { ...legacy, captureMethod: "window" }, skipReason: null };
+          }
+        }
+      }
+
+      const skipReason: CaptureSkippedReason =
+        gate.allowed || gate.reason === "unavailable" ? "no_safe_backend" : "occluded";
       logger.warn({
         jobType: "capture",
         status: "failed",
-        errorCode: "degenerate_capture",
-        message: "degenerate_window_capture_skipped",
+        errorCode: skipReason,
+        message: `capture_skipped_${skipReason}`,
       });
-      return null;
+      return { frame: null, skipReason };
+    } catch {
+      return { frame: null, skipReason: "no_safe_backend" };
+    }
+  }
+
+  /**
+   * 后端 1：零抓图枚举 + 单窗口 getDisplayMedia。
+   *
+   * 与旧路径的关键差别在枚举那一步：thumbnailSize:{0,0} 不会去抓任何窗口的画面，
+   * 目标筛选发生在**产生任何图像之前**。旧路径是先把所有窗口都抓一遍再挑目标。
+   */
+  private async captureViaWindowFrameSource(window: {
+    windowTitle: string;
+    windowId?: number;
+  }): Promise<{ buffer: Buffer; sourceId: string } | null> {
+    const source = this.windowFrameSource;
+    if (!source) return null;
+
+    try {
+      const sources = await source.listWindowSources();
+      if (sources.length === 0) return null;
+
+      // 目标定位逻辑与旧路径完全一致，不放宽
+      const target = findMatchingWindowSource(sources, window);
+      if (!target) return null;
+
+      const frame = await source.grab(target);
+      if (!frame || frame.png.length === 0) return null;
+
+      return { buffer: frame.png, sourceId: target.id };
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 后端 3：旧的全窗口缩略图路径。
+   *
+   * 保留但默认不启用。它为了拍 1 个窗口要把系统里所有窗口都真实抓一遍。
+   */
+  private async captureViaLegacyWindowThumbnail(window: {
+    windowTitle: string;
+    windowId?: number;
+  }): Promise<{ buffer: Buffer; sourceId: string } | null> {
+    const sources = await desktopCapturer.getSources({
+      types: ["window"],
+      thumbnailSize: {
+        width: this.config.thumbnailWidth,
+        height: this.config.thumbnailHeight,
+      },
+      fetchWindowIcons: false,
+    });
+    if (sources.length === 0) return null;
+
+    const target = findMatchingWindowSource(sources, window);
+    if (!target?.thumbnail || target.thumbnail.isEmpty()) return null;
+
+    return { buffer: Buffer.from(target.thumbnail.toPNG()), sourceId: target.id };
+  }
+
+  /**
+   * 整屏裁剪路径的遮挡门禁。
+   *
+   * 整屏裁剪只是"从整屏图里抠出目标窗口那块矩形"。如果那块矩形上面压着别的窗口，
+   * 抠出来的就是别人的内容 —— 既可能拍到不该拍的（密码管理器浮在上面），也会生成
+   * 一张与用户当时在看什么完全不符的截图。所以走这条路之前必须先确认那块归目标。
+   *
+   * 决策依据：
+   * - 拿不到窗口快照 / 认不出目标 → unavailable。证明不了安全就不用这条路。
+   * - 任一遮挡窗口过不了 PrivacyGuard（复用用户自己配的黑名单与敏感词）→ occluded
+   * - 遮挡面积超过 MAX_BENIGN_OCCLUSION_RATIO → occluded
+   */
+  private async checkScreenCropOcclusion(window: {
+    appName: string;
+    windowTitle: string;
+    windowId?: number;
+  }): Promise<{ allowed: true } | { allowed: false; reason: "occluded" | "unavailable" }> {
+    if (!this.activityService) return { allowed: false, reason: "unavailable" };
+
+    const snapshot = await this.activityService.getOpenWindowsSnapshot();
+    if (!snapshot) {
+      logger.warn({
+        jobType: "capture",
+        status: "failed",
+        errorCode: "occlusion_snapshot_unavailable",
+        message: "screen_crop_gate_no_window_snapshot",
+      });
+      return { allowed: false, reason: "unavailable" };
+    }
+
+    const target = findSnapshotTarget(snapshot, window);
+    if (!target?.bounds) return { allowed: false, reason: "unavailable" };
+
+    const occluders = findVisibleOccluders(
+      snapshot.map(toOcclusionWindow),
+      { id: target.windowId, bounds: target.bounds },
+      // Recall 自己的窗口不算遮挡，否则主界面/悬浮窗一挂在前面就永远采不到东西。
+      // 实测确认：Windows 上 HWND 的 owner 是 Electron **主**进程（不是 renderer
+      // 进程），所以这里用 process.pid；隐藏窗口（show:false）不会被 active-win
+      // 枚举到，抓图宿主不会污染这份快照。
+      [process.pid]
+    );
+    // null = 目标不在 Z 序里，说明快照与实际不一致，同样是"证明不了"
+    if (!occluders) return { allowed: false, reason: "unavailable" };
+
+    if (this.privacyGuard) {
+      for (const occluder of occluders) {
+        const check = this.privacyGuard.checkBeforeCapture({
+          appName: occluder.appName,
+          windowTitle: occluder.windowTitle,
+          urlOrDomain: occluder.urlOrDomain,
+          isPaused: false,
+          isLocked: false,
+        });
+        if (!check.allowed) {
+          logger.warn({
+            jobType: "capture",
+            status: "failed",
+            errorCode: "occluded_by_sensitive_window",
+            // 不记录窗口标题，只记命中原因
+            message: `screen_crop_gate_sensitive_occluder: ${check.reason}`,
+          });
+          return { allowed: false, reason: "occluded" };
+        }
+      }
+    }
+
+    const ratio = computeOccludedRatio(target.bounds, occluders);
+    if (ratio > MAX_BENIGN_OCCLUSION_RATIO) {
+      logger.warn({
+        jobType: "capture",
+        status: "failed",
+        errorCode: "occluded",
+        message: `screen_crop_gate_occlusion_ratio: ${ratio.toFixed(2)}`,
+      });
+      return { allowed: false, reason: "occluded" };
+    }
+
+    return { allowed: true };
   }
 
   private async captureScreenCropFallback(window: {
@@ -734,6 +1007,25 @@ export class CaptureService extends EventEmitter {
   }
 }
 
+export function coalesceCaptureCandidate(
+  pending: CaptureCandidateEvent | null,
+  incoming: CaptureCandidateEvent
+): CaptureCandidateEvent {
+  if (!pending) return incoming;
+
+  const pendingWindowId = pending.window.windowId;
+  const incomingWindowId = incoming.window.windowId;
+  const sameWindow = pendingWindowId !== undefined && incomingWindowId !== undefined
+    ? pendingWindowId === incomingWindowId
+    : pending.window.appName === incoming.window.appName
+      && pending.window.windowTitle === incoming.window.windowTitle;
+
+  if (!sameWindow) return incoming;
+  return CAPTURE_REASON_PRIORITY[incoming.reason] >= CAPTURE_REASON_PRIORITY[pending.reason]
+    ? incoming
+    : pending;
+}
+
 export async function analyzeCaptureVisualQuality(
   buffer: Buffer
 ): Promise<CaptureVisualQuality> {
@@ -880,6 +1172,60 @@ function findMatchingDisplaySource<T extends { display_id: string }>(
   const match = sources.find((source) => source.display_id === String(displayId));
   if (match) return match;
   return displayCount === 1 && sources.length === 1 ? sources[0] : undefined;
+}
+
+/**
+ * 多帧可能落在不同后端上。这里报告"最偏离首选路径"的那个 —— 这个字段的用处是
+ * 事后定位"为什么这次采集不正常"，报最好的那个会把问题藏起来。
+ */
+function pickReportedBackend(frames: readonly CapturedFrame[]): CaptureBackend {
+  let reported: CaptureBackend = "window_display_media";
+  for (const frame of frames) {
+    if (BACKEND_REPORT_PRIORITY[frame.captureMethod] > BACKEND_REPORT_PRIORITY[reported]) {
+      reported = frame.captureMethod;
+    }
+  }
+  return reported;
+}
+
+/**
+ * 在窗口快照里认出目标窗口。
+ *
+ * 定位严格度与 findMatchingWindowSource 保持一致：有 windowId 就必须 id 与标题同时
+ * 匹配；没有 id 时只接受非空标题的精确匹配。宁可认不出（退回 unavailable、不采），
+ * 也不要认错窗口然后按错误的矩形去判断遮挡。
+ */
+function findSnapshotTarget(
+  snapshot: readonly ActivityWindowInfo[],
+  window: { windowTitle: string; windowId?: number }
+): ActivityWindowInfo | undefined {
+  const title = window.windowTitle.trim();
+  if (!title) return undefined;
+
+  if (window.windowId !== undefined) {
+    return snapshot.find(
+      (candidate) => candidate.windowId === window.windowId && candidate.windowTitle.trim() === title
+    );
+  }
+  return snapshot.find((candidate) => candidate.windowTitle.trim() === title);
+}
+
+function toOcclusionWindow(info: ActivityWindowInfo): {
+  id?: number;
+  processId?: number;
+  appName: string;
+  windowTitle: string;
+  urlOrDomain?: string;
+  bounds?: RectangleLike;
+} {
+  return {
+    id: info.windowId,
+    processId: info.processId,
+    appName: info.appName,
+    windowTitle: info.windowTitle,
+    urlOrDomain: info.urlOrDomain,
+    bounds: info.bounds,
+  };
 }
 
 function isSameActivityWindow(

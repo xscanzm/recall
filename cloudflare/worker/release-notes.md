@@ -1,3 +1,73 @@
+## v0.5.5 — 截图采集架构重构（单窗口捕获 + 遮挡门禁 + 三后端降级链）
+
+本次版本重构截图采集管线，从"为了拍 1 个窗口打扰整个系统"改为"只碰目标窗口、不打扰任何第三方应用"。旧方案 `desktopCapturer` 为了抓 1 个窗口会对系统里每个顶层窗口发 `WM_PRINT` 强制同步渲染，导致钉钉等 GPU 合成应用偶发白屏；新方案用 `getDisplayMedia` + Windows Graphics Capture 只读 DWM 合成表面，零副作用，并加上遮挡门禁杜绝错误/越权采集。
+
+### 新增功能
+
+#### 1. WindowFrameGrabber（单窗口 getDisplayMedia 捕获）
+
+替代旧的 `desktopCapturer.captureWindow` 全窗口抓图，只触及目标窗口：
+
+- **零抓图枚举**：`thumbnailSize:{0,0}` 只取 id/name 不产图像，目标筛选发生在产生任何图像之前
+- **getDisplayMedia + WGC**：用 `getDisplayMedia` 对那一个窗口开捕获会话，底层走 Windows.Graphics.Capture（DWM 读现成合成表面，不发任何 `WM_PRINT`），从根上消除对第三方应用的副作用
+- **隐藏 BrowserWindow 抓图宿主**：1×1 隐藏窗口通过 `setDisplayMediaRequestHandler` 把"用户选哪个窗口"替换成我们指定的 source，不弹系统选择器；宿主页 `capture-host.html` 必须是 `file://` 协议（`data:`/`about:blank` 是 opaque origin 会被 getDisplayMedia 拒绝）
+- **Chromium feature 开关**：`app.ts` 启用 `AllowWgcWindowCapturer`（走 WGC）+ 关闭 `AllowWgcWindowZeroHz`（避免静止内容不产新帧导致超时）
+- 抓图脚本通过 `executeJavaScript` 注入宿主页（主进程 tsconfig 无 DOM lib，不值得为 40 行脚本给整个项目加 DOM lib）
+
+#### 2. captureOcclusion（遮挡门禁）
+
+纯函数模块，服务于 screen crop 兜底路径，防止目标窗口被遮挡时裁到错误内容或隐私泄露：
+
+- **`findVisibleOccluders`**：拿 `active-win.getOpenWindows()` 的 Z 序，只把 Z 序严格在目标之前的窗口算作遮挡；排除自身进程、最小化窗口（Windows -32000 哨兵坐标）、零面积窗口；目标不在列表返回 `null`（保守不采）
+- **`computeOccludedRatio`**：扫描线算矩形**并集**面积（不是简单累加，避免两个互相重叠的遮挡窗口把比例算过 1）
+- **`MAX_BENIGN_OCCLUSION_RATIO = 0.35`**：良性遮挡容忍上限；敏感遮挡（过不了 PrivacyGuard）一律跳过，不看比例
+
+### 改进
+
+#### 3. CaptureService 三后端降级链
+
+从单一抓图路径改为按"对第三方应用的伤害面从小到大"排序的三后端降级链：
+
+| 优先级 | 后端 | 行为 | 默认 |
+|---|---|---|---|
+| 1 | `window_display_media` | 单窗口 getDisplayMedia，只碰目标 | 启用 |
+| 2 | `screen_crop_fallback` | 抓整屏再裁，需先过遮挡门禁 | 启用 |
+| 3 | `window`（旧全窗口缩略图） | 把系统里所有窗口都抓一遍 + WM_PRINT | **禁用**，只留应急开关 |
+
+关键新增方法：
+- `captureSingleFrame`：依次试三条后端
+- `captureViaWindowFrameSource`：调用 `WindowFrameSource` 接口（结构类型，避免循环依赖 + 测试可注入假实现）
+- `checkScreenCropOcclusion`：screen crop 前的遮挡门禁
+- `analyzeCaptureVisualQuality`：检测全黑退化帧（nearBlackRatio / luminanceStdDev / edgeDensity），对付 GDI 抓 GPU 合成窗口返回全黑
+- `shouldUseScreenCropFallback`：信息量比较，决定是否用裁剪图替换退化的窗口图
+- `coalesceCaptureCandidate` + `runSerializedCapture`：候选合并 + 串行化
+- 新增 `CaptureBackend` 类型 + `captureMethod` 字段落到 `CaptureBundle`；新增 `occluded` / `no_safe_backend` 两个 skip reason
+- `pickReportedBackend`：多帧落在不同后端时报告"最偏离首选"的那个，便于事后定位问题
+
+**核心产品决策**：三条路都走不通时**跳过这次采集**，而不是用伤害用户其它应用的方式硬采——"少一条记忆，好过把用户正在用的应用打白"。
+
+#### 4. ActivityService 增强
+
+新增两个方法直接服务截图采集：
+
+- `getFreshActiveWindowInfo()`：屏幕裁剪 fallback 在捕获前后各调用一次，防止窗口切换后裁到其他应用（双重校验：bounds 一致 + windowId/title 一致）
+- `getOpenWindowsSnapshot()`：返回 Z 序窗口列表给遮挡判定用；严格区分 null（"不知道"必须保守不采）与空数组（"确认没别的窗口"）
+- `ActivityWindowInfo` 新增 `bounds`、`processId` 字段
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 新增单元测试：
+  - `CaptureService.test.ts`：守住"对第三方窗口的伤害面"不变量——首选后端只碰目标；整屏裁剪必须先证明矩形归自己；旧路径默认走不到；遮挡门禁四类场景全覆盖
+  - `captureOcclusion.test.ts`：扫描线并集算法边界情况（互相重叠、完全重合、不相交、最小化、零面积、阈值边界 0.34/0.36）
+  - `WindowFrameGrabber.assets.test.ts`：钉住宿主页与加载方的同目录契约
+  - `ActivityService.test.ts`：新增活动服务测试
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.4 — 混合搜索（FTS5 trigram + BGE 本地 embedding）+ 身份归一化与重复对象审计
 
 本次版本聚焦记忆搜索能力升级与对象身份治理：搜索从单一 LIKE 全表扫描升级为 FTS5 trigram 词法召回 + BGE 本地 embedding 语义召回的双路混合检索，支持中文子串精确匹配与"意思相近但字面不同"的语义召回；同时引入身份归一化工具与只读审计服务，解决历史数据中同名不同人或同人异名的问题。

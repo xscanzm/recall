@@ -48,6 +48,7 @@ import { DefaultModelConsentService } from "./services/DefaultModelConsentServic
 import { InstallationIdentityService } from "./services/InstallationIdentityService";
 import { ActivityService } from "./services/ActivityService";
 import { CaptureService } from "./services/CaptureService";
+import { WindowFrameGrabber } from "./services/WindowFrameGrabber";
 import { PrivacyGuard } from "./services/PrivacyGuard";
 import { ScreenshotCache } from "./services/ScreenshotCache";
 import { getModelJobQueue, type ModelJobQueue } from "./services/ModelJobQueue";
@@ -91,6 +92,46 @@ import { installNavigationGuards, type NavigationPolicy } from "./services/navig
 import type { Report } from "./models/types";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
+
+// ============================================================================
+// Chromium 抓图后端选择（Windows）
+//
+// 必须在 app.whenReady() 之前执行，命令行开关在 Chromium 初始化后再改无效，
+// 所以放在模块顶层而不是任何 ready 回调里。
+//
+// 为什么要动这个：Windows 上 Chromium 默认用 GDI PrintWindow(PW_RENDERFULLCONTENT)
+// 抓窗口，它会向目标窗口发 WM_PRINT/WM_PRINTCLIENT，在**对方进程的 UI 线程**上
+// 强制同步渲染一次。对钉钉这类 Chromium 套壳 + GPU 合成 + DirectComposition 的应用，
+// 它不真正伺服 WM_PRINT，被打后合成表面可能停在空白态，直到窗口被标脏才重绘 ——
+// 表现就是"偶发白屏，切一下窗口就好"。Windows.Graphics.Capture 走 DWM 读现成的
+// 合成表面，不发任何消息给目标窗口，从根上消除这个副作用。
+//
+// 现有那套 analyzeCaptureVisualQuality 全黑退化检测 + screen crop 兜底，正是为了
+// 对付 GDI 抓 GPU 合成窗口返回全黑 —— 它的存在本身就说明我们一直跑在 GDI 路径上。
+//
+// feature 名不是猜的：从 Electron 32.3.3 二进制里 grep 出来确认存在。
+// flag 是否真生效也不靠猜：生效时 stderr 会出现 wgc_capture_session.cc 的日志。
+// ============================================================================
+
+/**
+ * 合并式追加 Chromium feature 开关。
+ *
+ * 不能直接 appendSwitch("enable-features", x)：这个 API 是覆盖语义，第二次调用会
+ * 冲掉第一次的值（也会冲掉用户/打包脚本从命令行传进来的值）。所以先读回来再合并。
+ */
+function appendChromiumFeatures(switchName: "enable-features" | "disable-features", names: string[]): void {
+  const existing = app.commandLine.getSwitchValue(switchName);
+  const merged = new Set(existing ? existing.split(",").filter(Boolean) : []);
+  for (const name of names) merged.add(name);
+  app.commandLine.appendSwitch(switchName, [...merged].join(","));
+}
+
+if (process.platform === "win32") {
+  appendChromiumFeatures("enable-features", ["AllowWgcWindowCapturer", "AllowWgcScreenCapturer"]);
+  // zero-Hz 模式下静止内容不产新帧，我们只抓单帧会一直等不到 frame 回调而超时。
+  // 显式关掉，不依赖 Chromium 版本间的默认值差异。
+  appendChromiumFeatures("disable-features", ["AllowWgcWindowZeroHz", "AllowWgcScreenZeroHz"]);
+}
 
 // ============================================================================
 // 应用退出标志
@@ -157,6 +198,7 @@ let defaultModelConsentRequested = false;
 
 let activityService: ActivityService | null = null;
 let captureService: CaptureService | null = null;
+let windowFrameGrabber: WindowFrameGrabber | null = null;
 let privacyGuard: PrivacyGuard | null = null;
 let screenshotCache: ScreenshotCache | null = null;
 // 提升到模块级，让 startObserving 等函数能访问（原为 whenReady 内局部变量）
@@ -554,7 +596,15 @@ app.whenReady().then(async () => {
 
   // 先让窗口完成一次绘制。大库迁移备份和后台修复不能再表现为白屏。
   mainWindow = createMainWindow({ deferRendererLoad: true });
-  await loadStartupPage(mainWindow);
+  try {
+    await loadStartupPage(mainWindow);
+  } catch (error) {
+    // 启动占位页不是主体 UI；单独失败时继续加载真实 renderer。
+    console.warn(
+      "Recall startup placeholder failed to load:",
+      error instanceof Error ? error.message : String(error)
+    );
+  }
 
   // 初始化数据库与服务
   const db = getDatabase();
@@ -629,12 +679,18 @@ app.whenReady().then(async () => {
   });
 
   // CaptureService：注入所有依赖
+  //
+  // windowFrameSource 是首选采集后端：只对目标窗口开一次捕获会话，不去碰系统里
+  // 其它窗口。它走不通时 CaptureService 会依次降级到整屏裁剪（带遮挡门禁），
+  // 两条都不通就跳过这次采集 —— 不退回会打扰其它应用的旧全窗口路径。
+  windowFrameGrabber = new WindowFrameGrabber();
   captureService = new CaptureService();
   captureService.setDependencies({
     activityService,
     privacyGuard,
     screenshotCache,
     settingsService,
+    windowFrameSource: windowFrameGrabber,
   });
 
   // -------- M4 Pipeline 初始化 --------
@@ -1110,6 +1166,10 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   shutdownStarted = true;
   logger.info({ message: "Recall app quitting" });
+  // 抓图宿主是个隐藏 BrowserWindow，先关掉它再走 runtime 关停，避免残留窗口
+  // 让 window-all-closed / before-quit 的时序变复杂。
+  windowFrameGrabber?.dispose();
+  windowFrameGrabber = null;
   void shutdownRuntime({
     reportScheduler,
     timelineWindowCoordinator,
