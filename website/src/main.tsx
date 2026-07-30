@@ -115,7 +115,7 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.5.5</p>
+            <p className="eyebrow"><span /> Windows 公开测试版 · 0.5.6</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
@@ -196,7 +196,7 @@ function App() {
         <section className="before-section" id="before">
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 184 MB，版本 0.5.5。</small></p>
+            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 184 MB，版本 0.5.6。</small></p>
             <p><span>02</span><b>自带默认模型服务</b><small>开箱即用，首次启动可接受 Recall 代理的默认模型服务；也可在设置中切换为自配模型。</small></p>
             <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
           </div>
@@ -209,7 +209,7 @@ function App() {
               <p>一天会过去。</p>
               <h2>但你走过的路，<br />可以留下回声。</h2>
               <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-              <small>Windows x64 · v0.5.5 · 默认模型服务已配置</small>
+              <small>Windows x64 · v0.5.6 · 默认模型服务已配置</small>
             </div>
             <CommunityQr />
           </div>

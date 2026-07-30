@@ -1,3 +1,39 @@
+## v0.5.6 — 更新下载分片 + 断点续传（解决国内 R2 大文件下载不稳定）
+
+本次版本聚焦解决用户反馈的"更新失败"问题：国内访问 Cloudflare R2 下载 180MB+ 安装包时连接不稳定，旧的流式下载一旦中断就必须从头开始，导致更新成功率低。新方案用 HTTP Range 请求分片下载 + 断点续传，中断后可从断点继续，显著提升大文件下载稳定性。
+
+### 改进
+
+#### 1. UpdateService 分片 + 断点续传下载
+
+重写 `downloadUpdate` 方法，从单次流式下载改为分片 + 断点续传：
+
+- **HEAD 探测**：下载前先发 HEAD 请求探测服务器是否支持 `Accept-Ranges: bytes`，支持则走分片路径，不支持则回退到原流式下载（保证兼容性）
+- **分片下载**：每片 4MB，使用 HTTP Range 请求 `bytes=start-end`，只下载该范围的数据
+- **断点续传**：每片下载成功后立即追加写入 `.part` 文件并更新 `.meta.json` 元数据（记录 version/sha256/bytesTotal/bytesDownloaded）；进程中断后下次启动从断点继续，无需从头下载
+- **单片超时保护**：单片 30 秒超时（`AbortController`），超时自动重试，避免单个分片卡死整个下载
+- **单片重试**：单片最多重试 5 次，退避 1s/2s/4s/8s/16s
+- **整体轮次**：最多 6 轮断点续传，每轮从上次中断处继续；连续 20 片失败则中止
+- **元数据严格校验**：`readDownloadMeta` 校验 version/sha256/chunkSize/bytesTotal 与 `.part` 实际大小一致性，脏断点自动丢弃重下
+- **整体 SHA256 校验**：下载完成后校验最终文件 SHA256，不匹配则清理所有产物并失败
+
+#### 2. 文件布局与清理策略
+
+- **文件布局**：
+  - `updates/Recall-{version}-setup.exe` — 最终安装包
+  - `updates/Recall-{version}-setup.exe.part` — 下载中分片合并文件
+  - `updates/Recall-{version}-setup.exe.meta.json` — 断点续传元数据
+- **`cleanupIncompleteDownloads` 语义调整**：只清理 `.tmp`（流式回退产物），**保留** `.part` + `.meta.json` 供断点续传；下次启动 `readDownloadMeta` 会校验 `.part` 一致性，脏断点自动丢弃重下
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
+以下为历史版本发布说明：
+
 ## v0.5.5 — 截图采集架构重构（单窗口捕获 + 遮挡门禁 + 三后端降级链）
 
 本次版本重构截图采集管线，从"为了拍 1 个窗口打扰整个系统"改为"只碰目标窗口、不打扰任何第三方应用"。旧方案 `desktopCapturer` 为了抓 1 个窗口会对系统里每个顶层窗口发 `WM_PRINT` 强制同步渲染，导致钉钉等 GPU 合成应用偶发白屏；新方案用 `getDisplayMedia` + Windows Graphics Capture 只读 DWM 合成表面，零副作用，并加上遮挡门禁杜绝错误/越权采集。
