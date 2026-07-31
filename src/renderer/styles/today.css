@@ -179,6 +179,96 @@
   margin-top: 4px;
 }
 
+/* ============ macOS 权限引导横幅 ============ */
+.mac-perm-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  margin: 0;
+  background: linear-gradient(135deg, #fff8e1 0%, #fff3c4 100%);
+  border-bottom: 1px solid #f0c040;
+  color: #5d4400;
+  font-size: 13px;
+}
+
+.mac-perm-banner__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.mac-perm-banner__title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: #5d4400;
+}
+
+.mac-perm-banner__desc ul {
+  margin: 4px 0 4px 18px;
+  padding: 0;
+}
+
+.mac-perm-banner__desc li {
+  margin: 2px 0;
+  line-height: 1.5;
+}
+
+.mac-perm-banner__hint {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  color: #7a5c1a;
+}
+
+.mac-perm-banner__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.mac-perm-banner__btn {
+  padding: 6px 12px;
+  border: 1px solid #d0a020;
+  border-radius: 4px;
+  background: #fff;
+  color: #5d4400;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.mac-perm-banner__btn:hover:not(:disabled) {
+  background: #fff3c4;
+}
+
+.mac-perm-banner__btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mac-perm-banner__btn--primary {
+  background: #f0a020;
+  color: #fff;
+  border-color: #d08800;
+}
+
+.mac-perm-banner__btn--primary:hover:not(:disabled) {
+  background: #d08800;
+}
+
+.mac-perm-banner__btn--ghost {
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  padding: 2px 8px;
+  color: #7a5c1a;
+  line-height: 1;
+}
+
 .today-report-entry {
   display: flex;
   justify-content: space-between;

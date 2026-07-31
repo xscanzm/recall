@@ -1,8 +1,21 @@
 // 从 R2 读取更新清单（manifest.json）的工具
 
 /**
+ * 单平台产物
+ */
+export interface PlatformArtifact {
+  /** 下载路径（相对站点根），如 "/download/Recall-0.1.2-setup.exe" */
+  downloadUrl: string;
+  /** 安装包 SHA256（小写十六进制） */
+  sha256: string;
+}
+
+/**
  * 更新清单数据结构
  * 与客户端约定：以下字段都必须存在
+ *
+ * 兼容性：保留顶层 downloadUrl/sha256 字段供旧版 Windows 客户端回退使用，
+ * 新版客户端按 platform 字段选择对应产物。
  */
 export interface UpdateManifest {
   /** 版本号，如 "0.1.2" */
@@ -15,6 +28,13 @@ export interface UpdateManifest {
   releaseNotes: string;
   /** 发布时间（ISO 8601，UTC，如 "2024-12-31T10:00:00Z"） */
   publishedAt: string;
+  /** 按平台分发的产物（可选，旧 manifest 不存在时客户端回退到顶层 downloadUrl） */
+  platforms?: {
+    win?: PlatformArtifact;
+    mac?: PlatformArtifact;
+    macArm64?: PlatformArtifact;
+    macX64?: PlatformArtifact;
+  };
 }
 
 /**

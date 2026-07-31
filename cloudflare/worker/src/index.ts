@@ -869,10 +869,13 @@ export default {
         return jsonResponse(manifest);
       }
 
-      // ─── GET /api/check?currentVersion=x.y.z ─────────
+      // ─── GET /api/check?currentVersion=x.y.z&platform=win|mac&arch=arm64|x64 ─
       // 对比版本，返回是否有更新及更新详情
+      // platform 参数可选：客户端传 platform=darwin 时优先返回 mac 产物
       if (path === "/api/check") {
         const currentVersion = url.searchParams.get("currentVersion");
+        const platform = url.searchParams.get("platform");
+        const arch = url.searchParams.get("arch");
         const manifest = await readManifest(env.RELEASES);
 
         // manifest 不存在时按无更新返回
@@ -897,6 +900,18 @@ export default {
           );
         }
 
+        // 按平台选择产物：mac 客户端传 platform=darwin 时用 mac 产物，否则回退顶层（Windows）
+        const isMacClient = platform === "darwin" || platform === "mac";
+        const platformArtifact = isMacClient
+          ? (arch === "x64"
+            ? (manifest.platforms?.macX64 ?? manifest.platforms?.mac ?? null)
+            : arch === "arm64"
+              ? (manifest.platforms?.macArm64 ?? manifest.platforms?.mac ?? null)
+              : (manifest.platforms?.mac ?? manifest.platforms?.macArm64 ?? null))
+          : (manifest.platforms?.win ?? null);
+        const downloadUrl = platformArtifact?.downloadUrl ?? manifest.downloadUrl;
+        const sha256 = platformArtifact?.sha256 ?? manifest.sha256;
+
         const cmp = compareVersions(currentVersion, manifest.version);
         const hasUpdate = cmp < 0;
         const date = currentDateKey();
@@ -908,8 +923,8 @@ export default {
           hasUpdate,
           currentVersion,
           latestVersion: manifest.version,
-          downloadUrl: manifest.downloadUrl,
-          sha256: manifest.sha256,
+          downloadUrl,
+          sha256,
           releaseNotes: manifest.releaseNotes,
           publishedAt: manifest.publishedAt,
         });

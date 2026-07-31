@@ -25,6 +25,14 @@ import { renderSimpleMarkdown } from "../utils/simpleMarkdown";
 import currentReleaseNotes from "../../../cloudflare/worker/release-notes.md?raw";
 
 /**
+ * 平台检测：用于在 UI 文案中区分 Windows / macOS
+ * - navigator.userAgent 在 Electron renderer 中保留平台标识
+ * - Mac 的 userAgent 包含 "Macintosh"，Windows 包含 "Windows"
+ */
+const IS_MAC = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
+const PLATFORM_LABEL = IS_MAC ? "macOS" : "Windows";
+
+/**
  * 截图保留策略选项（spec 行 2344-2352）
  */
 const RETENTION_OPTIONS: Array<{
@@ -204,7 +212,7 @@ export function SettingsPage() {
     } catch (err) {
       setActionMessage({
         kind: "err",
-        text: err instanceof Error ? err.message : "读取 Windows 自启动设置失败",
+        text: err instanceof Error ? err.message : `读取${PLATFORM_LABEL}自启动设置失败`,
       });
     } finally {
       setLaunchAtLoginLoading(false);
@@ -289,13 +297,13 @@ export function SettingsPage() {
       if (result.ok) {
         setLaunchAtLogin(result.enabled);
       } else {
-        setActionMessage({ kind: "err", text: "保存 Windows 自启动设置失败" });
+        setActionMessage({ kind: "err", text: `保存${PLATFORM_LABEL}自启动设置失败` });
       }
     } catch (err) {
       setLaunchAtLogin(previous);
       setActionMessage({
         kind: "err",
-        text: err instanceof Error ? err.message : "保存 Windows 自启动设置失败",
+        text: err instanceof Error ? err.message : `保存${PLATFORM_LABEL}自启动设置失败`,
       });
     } finally {
       setLaunchAtLoginSaving(false);
@@ -729,9 +737,9 @@ export function SettingsPage() {
               disabled={launchAtLoginLoading || launchAtLoginSaving}
             />
             <div className="settings-section__toggle-text">
-              <span className="settings-section__toggle-label">登录 Windows 后自动启动 Recall</span>
+              <span className="settings-section__toggle-label">登录 {PLATFORM_LABEL} 后自动启动 Recall</span>
               <p className="settings-section__hint">
-                适合早测长期使用。开启后应用随 Windows 登录启动，并按上方观察设置决定是否自动恢复观察。
+                适合早测长期使用。开启后应用随 {PLATFORM_LABEL} 登录启动，并按上方观察设置决定是否自动恢复观察。
               </p>
             </div>
           </label>

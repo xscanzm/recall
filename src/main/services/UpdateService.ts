@@ -15,6 +15,7 @@ import { app, net, shell } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { logger } from "./Logger";
 import type { SettingsService } from "./SettingsService";
 import type {
@@ -239,7 +240,12 @@ export class UpdateService {
     const currentVersion = app.getVersion();
 
     try {
-      const url = `${UPDATE_WORKER_URL}/api/check?currentVersion=${encodeURIComponent(currentVersion)}`;
+      const platform = process.platform === "darwin" ? "darwin" : "win";
+      const params = new URLSearchParams({ currentVersion, platform });
+      if (platform === "darwin") {
+        params.set("arch", process.arch === "arm64" ? "arm64" : "x64");
+      }
+      const url = `${UPDATE_WORKER_URL}/api/check?${params.toString()}`;
       const response = await net.fetch(url, {
         headers: {
           Accept: "application/json",
@@ -338,8 +344,24 @@ export class UpdateService {
     }
 
     const updatesDir = getUpdatesDir();
+    // 文件扩展名按平台 + downloadUrl 推断：
+    // - Windows: NSIS 安装包，固定 .exe
+    // - macOS: electron-builder 产物可能是 .dmg 或 .zip；优先从 downloadUrl 推断，
+    //   缺省回退 .dmg（与 electron-builder mac dmg target 一致）
     const isWin = process.platform === "win32";
-    const ext = isWin ? ".exe" : ".dmg";
+    let ext: string;
+    if (isWin) {
+      ext = ".exe";
+    } else {
+      const urlLower = info.downloadUrl.toLowerCase();
+      if (urlLower.endsWith(".zip")) {
+        ext = ".zip";
+      } else if (urlLower.endsWith(".dmg")) {
+        ext = ".dmg";
+      } else {
+        ext = ".dmg";
+      }
+    }
     const installerPath = path.join(
       updatesDir,
       `Recall-${info.latestVersion}-installer${ext}`
@@ -744,8 +766,15 @@ export class UpdateService {
 
   /**
    * 启动安装程序并退出当前应用
-   * - shell.openPath 触发 NSIS 安装向导（oneClick=false 配置）
-   * - 成功后 app.quit() 退出当前实例，让安装程序接管
+   *
+   * 平台差异：
+   * - Windows：shell.openPath 触发 NSIS 安装向导（oneClick=false 配置）
+   * - macOS：electron-builder 产物是 .dmg / .zip，没有 NSIS 那种"自动覆盖安装"流程。
+   *   - .dmg：用 `open` 挂载，Finder 会弹出窗口显示 Recall.app + Applications 文件夹快捷方式，
+   *     用户拖拽完成安装（mac 应用分发的标准交互）
+   *   - .zip：用 `open` 在 Finder 中打开所在目录，提示用户手动解压拖拽
+   *   - 安装需要用户手动操作，所以这里只挂载/打开，不立即 app.quit()，
+   *     让用户先完成拖拽再手动退出 Recall（避免用户拖拽时源 app 已退出导致困惑）
    */
   async installAndQuit(installerPath: string): Promise<void> {
     this.status = { state: "installing" };
@@ -771,6 +800,56 @@ export class UpdateService {
       message: `launching installer: ${installerPath}`,
     });
 
+    const isMac = process.platform === "darwin";
+
+    if (isMac) {
+      // macOS：DMG 挂载 / ZIP 在 Finder 中打开
+      const ext = path.extname(installerPath).toLowerCase();
+      try {
+        if (ext === ".dmg") {
+          // open 命令挂载 DMG，Finder 自动弹出拖拽窗口
+          await this.spawnAsync("open", [installerPath]);
+          logger.info({
+            jobType: "update_install",
+            status: "succeeded",
+            message: `DMG mounted: ${installerPath}，请将 Recall.app 拖到 Applications 文件夹完成安装`,
+          });
+        } else {
+          // .zip 或其他：在 Finder 中打开所在目录，让用户手动解压拖拽
+          await this.spawnAsync("open", ["-R", installerPath]);
+          logger.info({
+            jobType: "update_install",
+            status: "succeeded",
+            message: `installer revealed in Finder: ${installerPath}，请手动解压并拖到 Applications`,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.status = {
+          state: "error",
+          message,
+          code: "installer_launch_failed",
+        };
+        logger.error({
+          jobType: "update_install",
+          status: "failed",
+          errorCode: "installer_launch_failed",
+          message,
+        });
+        throw new Error(`failed to launch installer: ${message}`);
+      }
+
+      // macOS 不立即退出：用户需要在 Recall 仍在运行时完成拖拽安装，
+      // 新版本 .app 覆盖 /Applications/Recall.app 后，下次启动自然就是新版。
+      // 如果立即 quit，用户拖拽时 Recall 主窗口已消失，体验更困惑。
+      // 状态保持 "installing"：语义上安装确实在进行（等待用户拖拽），
+      // UI 可据此提示"请将 Recall.app 拖到 Applications 文件夹完成安装"。
+      // 旧的 downloaded 状态需要 info 字段，installAndQuit 入口时 lastCheckInfo
+      // 可能为 null（极端边界），保留 installing 避免类型/空值问题。
+      return;
+    }
+
+    // Windows：shell.openPath 启动 NSIS 安装向导
     const result = await shell.openPath(installerPath);
     if (result) {
       // openPath 返回非空字符串表示失败
@@ -790,6 +869,20 @@ export class UpdateService {
 
     // 安装程序已启动，退出当前应用
     app.quit();
+  }
+
+  /**
+   * 简单的 spawn 包装为 Promise（仅用于 macOS open 命令）
+   */
+  private spawnAsync(command: string, args: string[]): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, { stdio: "ignore" });
+      child.once("error", reject);
+      child.once("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`${command} exited with code ${code}`));
+      });
+    });
   }
 
   /**

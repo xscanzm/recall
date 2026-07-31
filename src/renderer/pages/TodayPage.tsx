@@ -31,6 +31,7 @@ import { WorkReportPreviewModal } from "./today/WorkReportPreviewModal";
 import { friendlyDateLabel, isWorkCategory, todayDateKey } from "./today/helpers";
 import { TodayVisualizationBand } from "./today/TodayVisualizationBand";
 import { MemoryDetailPage, type MemoryDetailRef } from "./MemoryDetailPage";
+import { MacPermissionBanner } from "../components/MacPermissionBanner";
 import type { TimelineBlockCategory } from "../../shared/types";
 
 export function TodayPage() {
@@ -212,31 +213,40 @@ export function TodayPage() {
 
   // ---- 完整三栏布局 ----
 
+  // macOS 权限未授予时显示引导横幅（不阻断布局，但醒目提示）
+  const macPermBanner =
+    appStatus.macPermissions && appStatus.macPermissions.permissionsChecked ? (
+      <MacPermissionBanner macPermissions={appStatus.macPermissions} />
+    ) : null;
+
   return (
-    <TodayPageLayout
-      todayPageData={todayPageData}
-      todayPageLoading={todayPageLoading}
-      todayPageError={todayPageError}
-      todayPageDateKey={todayPageDateKey}
-      viewMode={viewMode}
-      onViewModeChange={setViewMode}
-      onlyWork={onlyWork}
-      onOnlyWorkChange={setOnlyWork}
-      searchKeyword={searchKeyword}
-      onSearchKeywordChange={handleSearchKeywordChange}
-      categoryFilter={categoryFilter}
-      onCategoryFilterChange={handleCategoryFilterChange}
-      onKeywordSelect={handleKeywordSelect}
-      ignoredBlockIds={ignoredBlockIds}
-      workReportSelectionMode={workReportSelectionMode}
-      previewModalOpen={previewModalOpen}
-      sidePanelDrawerOpen={sidePanelDrawerOpen}
-      onToggleDrawer={() => setSidePanelDrawerOpen(!sidePanelDrawerOpen)}
-      onRetry={handleRetry}
-      onGoSettings={handleGoSettings}
-      onOpenDetail={(id) => setSelectedDetail({ id, type: "timeline" })}
-      onOpenWindow={handleOpenWindow}
-    />
+    <>
+      {macPermBanner}
+      <TodayPageLayout
+        todayPageData={todayPageData}
+        todayPageLoading={todayPageLoading}
+        todayPageError={todayPageError}
+        todayPageDateKey={todayPageDateKey}
+        viewMode={viewMode}
+        onViewModeChange={setViewMode}
+        onlyWork={onlyWork}
+        onOnlyWorkChange={setOnlyWork}
+        searchKeyword={searchKeyword}
+        onSearchKeywordChange={handleSearchKeywordChange}
+        categoryFilter={categoryFilter}
+        onCategoryFilterChange={handleCategoryFilterChange}
+        onKeywordSelect={handleKeywordSelect}
+        ignoredBlockIds={ignoredBlockIds}
+        workReportSelectionMode={workReportSelectionMode}
+        previewModalOpen={previewModalOpen}
+        sidePanelDrawerOpen={sidePanelDrawerOpen}
+        onToggleDrawer={() => setSidePanelDrawerOpen(!sidePanelDrawerOpen)}
+        onRetry={handleRetry}
+        onGoSettings={handleGoSettings}
+        onOpenDetail={(id) => setSelectedDetail({ id, type: "timeline" })}
+        onOpenWindow={handleOpenWindow}
+      />
+    </>
   );
 }
 

@@ -1122,7 +1122,18 @@ export function registerIpcHandlers(deps: IpcDeps): void {
 
   // macOS 专属支持 handlers
   ipcMain.handle("mac:checkPermissions", async () => {
-    return { ok: true as const, data: macPermissionsService.checkPermissions() };
+    const data = macPermissionsService.checkPermissions();
+    // 同步更新 AppStatus 并推送给 renderer，让权限引导横幅能刷新
+    if (data.isMac) {
+      deps.setStatus({
+        macPermissions: {
+          screenCaptureGranted: data.screenCaptureGranted,
+          accessibilityGranted: data.accessibilityGranted,
+          permissionsChecked: true,
+        },
+      });
+    }
+    return { ok: true as const, data };
   });
 
   ipcMain.handle("mac:openSystemSettings", async (_event, input: unknown) => {

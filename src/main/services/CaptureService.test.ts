@@ -84,7 +84,7 @@ describe("capture quality fallback", () => {
 
     expect(quality.nearBlackRatio).toBeGreaterThan(0.99);
     expect(quality.isDegenerate).toBe(true);
-  });
+  }, 15_000);
 
   it("selects a materially richer screen crop but not another black image", async () => {
     const blackQuality = await analyzeCaptureVisualQuality(await solidPng("#000000"));

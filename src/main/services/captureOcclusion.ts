@@ -51,12 +51,17 @@ export const MAX_BENIGN_OCCLUSION_RATIO = 0.35;
 /**
  * Windows 给最小化窗口的哨兵坐标是 (-32000, -32000)。
  * 用一个比它宽松的阈值判断，避免依赖精确值。
+ *
+ * macOS 上 active-win 对 minimized 窗口通常返回 width=0/height=0
+ * （会被下面的尺寸判断拦截），但某些版本可能返回离屏坐标，
+ * 这个阈值同样能覆盖。双平台安全。
  */
 const MINIMIZED_COORDINATE_THRESHOLD = -30000;
 
 /** 最小化 / 无效尺寸的窗口不参与遮挡判定 */
 function isRenderableWindow(bounds: OcclusionRect | undefined): bounds is OcclusionRect {
   if (!bounds) return false;
+  // macOS minimized 常返回 0 尺寸；Windows minimized 返回 -32000 哨兵坐标
   if (bounds.width <= 0 || bounds.height <= 0) return false;
   if (bounds.x <= MINIMIZED_COORDINATE_THRESHOLD || bounds.y <= MINIMIZED_COORDINATE_THRESHOLD) {
     return false;

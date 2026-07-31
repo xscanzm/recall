@@ -85,6 +85,15 @@ class MemoryD1 {
   }
 }
 
+class MemoryBucket {
+  constructor(private readonly manifest: string) {}
+
+  async get(key: string): Promise<unknown> {
+    if (key !== "manifest.json") return null;
+    return { text: async () => this.manifest };
+  }
+}
+
 function env(overrides: Record<string, unknown> = {}) {
   return {
     STATS: new MemoryKv(),
@@ -142,6 +151,36 @@ describe("default model proxy", () => {
     ), env({ DEFAULT_LANGUAGE_API_KEY: undefined }), { waitUntil: vi.fn() } as never);
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toEqual({ error: "capability-unavailable" });
+  });
+});
+
+describe("update artifact selection", () => {
+  const manifest = JSON.stringify({
+    version: "0.5.8",
+    downloadUrl: "/download/Recall-0.5.8-setup.exe",
+    sha256: "a".repeat(64),
+    releaseNotes: "notes",
+    publishedAt: "2026-07-31T00:00:00.000Z",
+    platforms: {
+      win: { downloadUrl: "/download/Recall-0.5.8-setup.exe", sha256: "a".repeat(64) },
+      mac: { downloadUrl: "/download/Recall-0.5.8-mac-arm64.dmg", sha256: "b".repeat(64) },
+      macArm64: { downloadUrl: "/download/Recall-0.5.8-mac-arm64.dmg", sha256: "b".repeat(64) },
+      macX64: { downloadUrl: "/download/Recall-0.5.8-mac-x64.dmg", sha256: "c".repeat(64) },
+    },
+  });
+
+  it.each([
+    ["arm64", "/download/Recall-0.5.8-mac-arm64.dmg", "b".repeat(64)],
+    ["x64", "/download/Recall-0.5.8-mac-x64.dmg", "c".repeat(64)],
+  ])("selects the %s macOS artifact", async (arch, downloadUrl, sha256) => {
+    const response = await worker.fetch(
+      new Request(`https://recall-update.ppclaw.online/api/check?currentVersion=0.5.7&platform=darwin&arch=${arch}`),
+      env({ RELEASES: new MemoryBucket(manifest) }) as never,
+      { waitUntil: vi.fn() } as never,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ downloadUrl, sha256 });
   });
 });
 

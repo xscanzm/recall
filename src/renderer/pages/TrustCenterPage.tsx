@@ -15,6 +15,14 @@
 
 import { useAppStore } from "../state/store";
 
+/**
+ * 平台检测：用于在卡片 3 区分 Windows / macOS 的系统安全存储后端
+ * - Windows：DPAPI
+ * - macOS：Keychain
+ */
+const IS_MAC = typeof navigator !== "undefined" && /Macintosh|Mac OS X/i.test(navigator.userAgent);
+const SECRET_BACKEND = IS_MAC ? "macOS Keychain" : "Windows DPAPI";
+
 export function TrustCenterPage() {
   const setPage = useAppStore((s) => s.setPage);
 
@@ -84,7 +92,7 @@ export function TrustCenterPage() {
             Recall 可以使用默认模型服务，也可以直连你配置的视觉、语言或多模态模型。自己的 API Key 保存在系统安全存储中，不写入数据库。
           </p>
           <ul className="trust-card__list">
-            <li>API Key 由系统安全存储加密（Windows 上是 DPAPI），密文单独存放在数据目录的 secrets.json</li>
+            <li>API Key 由系统安全存储加密（{SECRET_BACKEND}），密文单独存放在数据目录的 secrets.json</li>
             <li>不会进入 SQLite 数据库，导出或备份数据库不会带走 Key</li>
             <li>不会出现在 renderer 进程内存或日志中</li>
             <li>测试失败时不显示完整 key（main 进程已 sanitize）</li>

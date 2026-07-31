@@ -99,13 +99,60 @@ function generateManifest(options = {}) {
   const outputPath = path.resolve(
     options.outputPath ?? process.env.OUTPUT_PATH ?? "cloudflare/worker/manifest.release.json",
   );
+
+  // Windows 产物（顶层字段，兼容旧客户端）
+  const winDownloadUrl = `/download/Recall-${version}-setup.exe`;
+
+  // macOS 产物（可选，通过 MAC_SHA256 / MAC_FILENAME 环境变量传入）
+  // 支持 universal（单一文件）或分架构（arm64/x64）两种打包模式
+  const macSha256 = options.macSha256 ?? process.env.MAC_SHA256;
+  const macFilename = options.macFilename ?? process.env.MAC_FILENAME;
+  const macArm64Sha256 = options.macArm64Sha256 ?? process.env.MAC_ARM64_SHA256;
+  const macArm64Filename = options.macArm64Filename ?? process.env.MAC_ARM64_FILENAME;
+  const macX64Sha256 = options.macX64Sha256 ?? process.env.MAC_X64_SHA256;
+  const macX64Filename = options.macX64Filename ?? process.env.MAC_X64_FILENAME;
+
   const manifest = {
     version,
-    downloadUrl: `/download/Recall-${version}-setup.exe`,
+    downloadUrl: winDownloadUrl,
     sha256: sha256.toLowerCase(),
     releaseNotes,
     publishedAt,
   };
+
+  // 按 platforms 字段补充 mac 产物（新版客户端按 platform=darwin 读取）
+  // 优先级：universal 单文件 > 分架构
+  const platforms = {};
+  platforms.win = { downloadUrl: winDownloadUrl, sha256: sha256.toLowerCase() };
+
+  if (macSha256 && macFilename) {
+    if (!SHA256_PATTERN.test(macSha256)) {
+      throw new Error("macSha256 must contain exactly 64 hexadecimal characters");
+    }
+    platforms.mac = {
+      downloadUrl: `/download/${macFilename}`,
+      sha256: macSha256.toLowerCase(),
+    };
+  } else if (macArm64Sha256 || macArm64Filename || macX64Sha256 || macX64Filename) {
+    if (!macArm64Sha256 || !macArm64Filename || !macX64Sha256 || !macX64Filename) {
+      throw new Error("mac arm64 and x64 artifacts must provide both filename and sha256");
+    }
+    if (!SHA256_PATTERN.test(macArm64Sha256) || !SHA256_PATTERN.test(macX64Sha256)) {
+      throw new Error("mac arm64 and x64 sha256 values must contain exactly 64 hexadecimal characters");
+    }
+    // mac 是旧客户端未携带 arch 时的兼容回退，默认使用 arm64。
+    platforms.mac = {
+      downloadUrl: `/download/${macArm64Filename}`,
+      sha256: macArm64Sha256.toLowerCase(),
+    };
+    platforms.macArm64 = platforms.mac;
+    platforms.macX64 = {
+      downloadUrl: `/download/${macX64Filename}`,
+      sha256: macX64Sha256.toLowerCase(),
+    };
+  }
+
+  manifest.platforms = platforms;
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);

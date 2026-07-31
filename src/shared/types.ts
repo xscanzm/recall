@@ -26,6 +26,17 @@ export interface AppStatus {
     | "reporting"
     | "error";
   lastError?: string;
+  /**
+   * macOS 权限状态（仅 darwin 平台有意义，其他平台为 undefined）
+   * - screenCaptureGranted: 屏幕录制权限，未授予时截图采集全部失败
+   * - accessibilityGranted: 辅助功能权限，影响 active-win 窗口信息获取
+   * - permissionsChecked: 启动时是否已完成首次检查（避免 UI 闪烁）
+   */
+  macPermissions?: {
+    screenCaptureGranted: boolean;
+    accessibilityGranted: boolean;
+    permissionsChecked: boolean;
+  };
 }
 
 /**

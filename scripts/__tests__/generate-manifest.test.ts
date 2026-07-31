@@ -40,8 +40,71 @@ describe("generateManifest", () => {
       sha256: "a".repeat(64),
       releaseNotes: "# Recall 0.4.4\n\n- Test release\n",
       publishedAt: "2026-07-22T10:00:00.000Z",
+      // 新版 manifest 总是写入 platforms.win（顶层 downloadUrl/sha256 兼容旧客户端）
+      platforms: {
+        win: {
+          downloadUrl: "/download/Recall-0.4.4-setup.exe",
+          sha256: "a".repeat(64),
+        },
+      },
     });
     expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toEqual(manifest);
+  });
+
+  it("writes platforms.mac when MAC_SHA256 / MAC_FILENAME are provided", () => {
+    const manifest = generateManifest({
+      version: "0.4.4",
+      sha256: "A".repeat(64),
+      notesPath,
+      outputPath,
+      packagePath,
+      releaseTag: "v0.4.4",
+      publishedAt: "2026-07-22T10:00:00Z",
+      macSha256: "B".repeat(64),
+      macFilename: "Recall-0.4.4-mac-arm64.dmg",
+    });
+
+    expect(manifest.platforms).toEqual({
+      win: {
+        downloadUrl: "/download/Recall-0.4.4-setup.exe",
+        sha256: "a".repeat(64),
+      },
+      mac: {
+        downloadUrl: "/download/Recall-0.4.4-mac-arm64.dmg",
+        sha256: "b".repeat(64),
+      },
+    });
+  });
+
+  it("writes both macOS architecture artifacts for a split release", () => {
+    const manifest = generateManifest({
+      version: "0.4.4",
+      sha256: "A".repeat(64),
+      notesPath,
+      outputPath,
+      packagePath,
+      releaseTag: "v0.4.4",
+      publishedAt: "2026-07-22T10:00:00Z",
+      macArm64Sha256: "B".repeat(64),
+      macArm64Filename: "Recall-0.4.4-mac-arm64.dmg",
+      macX64Sha256: "C".repeat(64),
+      macX64Filename: "Recall-0.4.4-mac-x64.dmg",
+    });
+
+    expect(manifest.platforms).toMatchObject({
+      mac: {
+        downloadUrl: "/download/Recall-0.4.4-mac-arm64.dmg",
+        sha256: "b".repeat(64),
+      },
+      macArm64: {
+        downloadUrl: "/download/Recall-0.4.4-mac-arm64.dmg",
+        sha256: "b".repeat(64),
+      },
+      macX64: {
+        downloadUrl: "/download/Recall-0.4.4-mac-x64.dmg",
+        sha256: "c".repeat(64),
+      },
+    });
   });
 
   it.each(["v0.4.4", "01.2.3", "1.2", "1.2.3-"])(

@@ -1,6 +1,6 @@
 {
   "name": "recall",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "回声 Recall - 主动型桌面上下文记忆助理",
   "main": "dist/main/app.js",
   "author": "Recall Contributors",
@@ -21,13 +21,16 @@
     "build:main": "node -e \"const fs=require('fs'); for (const target of ['dist/main','dist/shared','dist/.tsbuildinfo.prod']) fs.rmSync(target,{recursive:true,force:true})\" && node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.node.prod.json && node scripts/copy-assets.js",
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
-    "build:ocr-worker": "pwsh -NoProfile -File scripts/build-rapidocr-worker.ps1",
+    "build:ocr-worker": "node scripts/build-ocr-worker.js",
+    "build:ocr-worker:win": "pwsh -NoProfile -File scripts/build-rapidocr-worker.ps1",
+    "build:ocr-worker:mac": "bash scripts/build-rapidocr-worker.sh",
     "verify:ocr-worker": "node scripts/verify-rapidocr-worker.js",
     "verify:embedding-worker": "python scripts/verify-embedding-worker.py",
     "verify:packaged-embedding-worker": "python scripts/verify-embedding-worker.py --target exe --win-unpacked release/win-unpacked",
     "eval:retrieval": "npm run build:main && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/eval-retrieval.js",
     "profile:ocr-worker": "node scripts/profile-rapidocr-worker.js",
     "package": "npm run build:ocr-worker && npm run verify:embedding-worker -- --target exe && npm run build && electron-builder --win && npm run verify:packaged-embedding-worker",
+    "package:mac": "npm run build:ocr-worker:mac && npm run build && npx electron-builder --mac",
     "typecheck:main": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.node.json --noEmit",
     "typecheck:renderer": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.web.json --noEmit",
     "typecheck": "npm run typecheck:main && npm run typecheck:renderer",
@@ -76,6 +79,9 @@
     "vitest": "^2.1.9",
     "wait-on": "^8.0.1"
   },
+  "optionalDependencies": {
+    "dmg-license": "1.0.11"
+  },
   "build": {
     "appId": "com.recall.app",
     "productName": "Recall",
@@ -112,6 +118,7 @@
       }
     ],
     "icon": "resources/icons/icon.ico",
+    "afterSign": "build/after-sign-mac.js",
     "win": {
       "target": [
         {
@@ -143,8 +150,18 @@
       ],
       "category": "public.app-category.productivity",
       "artifactName": "Recall-${version}-mac-${arch}.${ext}",
+      "icon": "resources/icons/icon.png",
       "hardenedRuntime": false,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "identity": null,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Recall 需要辅助功能权限以识别当前活动应用，用于构建您的活动记忆。",
+        "NSScreenCaptureUsageDescription": "Recall 需要屏幕录制权限以捕获当前活动窗口，用于构建您的活动记忆。所有数据仅本地存储。",
+        "NSCameraUsageDescription": "Recall 不使用摄像头，此条目仅为系统兼容性保留。",
+        "LSMinimumSystemVersion": "12.0.0"
+      }
     },
     "dmg": {
       "title": "Recall ${version}",

@@ -1,22 +1,20 @@
 name: Release
 
-# 触发条件：推送 v*.*.* 格式的 tag（如 v0.2.0、v1.0.3）
-# 标准发布流程：本地改版本号 → git tag → git push --tags → Actions 自动构建+上传 R2
 on:
   push:
     tags:
       - "v*.*.*"
 
-# 防止并发发布
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
-  contents: write  # 用于创建 GitHub Release
+  contents: write
 
 jobs:
-  build-and-publish:
+  windows-build:
+    name: 构建 Windows 安装包
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -25,13 +23,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - name: Setup Python for RapidOCR worker
         uses: actions/setup-python@v5
         with:
@@ -40,85 +36,29 @@ jobs:
           cache-dependency-path: |
             resources/ocr/requirements.txt
             resources/ocr/requirements-build.txt
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Read version from package.json
-        id: version
+      - name: Validate release tag
         shell: pwsh
         run: |
           $version = node -p "require('./package.json').version"
-          $expectedTag = "v$version"
-          if ($env:GITHUB_REF_NAME -ne $expectedTag) {
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
             throw "Release tag $env:GITHUB_REF_NAME does not match package version $version"
           }
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "filename=Recall-$version-setup.exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "Released version: $version"
-
-      - name: Build & package NSIS installer
+      - name: Build Windows installer
         run: npm run package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Calculate SHA256
-        id: sha
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath "release/${{ steps.version.outputs.filename }}").Hash.ToLowerInvariant()
-          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "SHA256: $hash"
-
-      - name: Generate manifest.json
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          SHA256: ${{ steps.sha.outputs.sha256 }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          NOTES_PATH: cloudflare/worker/release-notes.md
-          OUTPUT_PATH: cloudflare/worker/manifest.release.json
-        run: node scripts/generate-manifest.js
-
-      - name: Upload installer to Cloudflare R2
-        working-directory: cloudflare/worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler r2 object put "recall-releases/${{ steps.version.outputs.filename }}" --file="../../release/${{ steps.version.outputs.filename }}"
-
-      - name: Upload manifest.json to Cloudflare R2
-        working-directory: cloudflare/worker
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler r2 object put "recall-releases/manifest.json" --file="manifest.release.json"
-
-      - name: Verify deployment
-        env:
-          WORKER_URL: https://recall-update.ppclaw.online
-        run: |
-          Write-Host "Verifying deployment..."
-          $response = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
-          Write-Host "Latest version on R2: $($response.version)"
-          Write-Host "SHA256: $($response.sha256)"
-          if ($response.version -ne "${{ steps.version.outputs.version }}") {
-            Write-Host "ERROR: Version mismatch! Expected ${{ steps.version.outputs.version }}, got $($response.version)"
-            exit 1
-          }
-          Write-Host "✓ Deployment verified"
-
-      - name: Upload installer to GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: release/Recall-${{ steps.version.outputs.version }}-setup.exe
-          body_path: cloudflare/worker/release-notes.md
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: windows-release
+          path: release/Recall-*-setup.exe
+          if-no-files-found: error
+          retention-days: 7
 
-  build-mac-release:
-    name: 构建与发布 macOS DMG (Apple Silicon & Intel)
+  mac-build:
+    name: 构建 macOS DMG 与 ZIP
     runs-on: macos-latest
     timeout-minutes: 35
     env:
@@ -128,13 +68,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - name: Setup Python for RapidOCR worker
         uses: actions/setup-python@v5
         with:
@@ -143,29 +81,147 @@ jobs:
           cache-dependency-path: |
             resources/ocr/requirements.txt
             resources/ocr/requirements-build.txt
-
       - name: Install dependencies
         run: npm ci
-
-      - name: Build macOS RapidOCR Worker
+      - name: Build macOS RapidOCR worker
         run: bash scripts/build-rapidocr-worker.sh
-
       - name: Build main and renderer
         run: npm run build
-
       - name: Build macOS DMG and ZIP
         run: npx electron-builder --mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
-      - name: Upload macOS artifacts to GitHub Release
+  publish:
+    name: 发布 R2 manifest 与 GitHub Release
+    needs: [windows-build, mac-build]
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      CI: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: release
+      - name: Install Worker release dependencies
+        working-directory: cloudflare/worker
+        run: npm ci
+      - name: Read version and calculate SHA256 values
+        id: release
+        shell: pwsh
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Release tag $env:GITHUB_REF_NAME does not match package version $version"
+          }
+
+          $files = @(
+            @{ Name = "windows"; Path = "release/Recall-$version-setup.exe" },
+            @{ Name = "macArm64"; Path = "release/Recall-$version-mac-arm64.dmg" },
+            @{ Name = "macX64"; Path = "release/Recall-$version-mac-x64.dmg" }
+          )
+          foreach ($file in $files) {
+            if (-not (Test-Path -LiteralPath $file.Path)) {
+              throw "Missing release artifact: $($file.Path)"
+            }
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.Path).Hash.ToLowerInvariant()
+            "$($file.Name)Sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Publishing version $version"
+      - name: Generate release manifest
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA256: ${{ steps.release.outputs.windowsSha256 }}
+          MAC_ARM64_SHA256: ${{ steps.release.outputs.macArm64Sha256 }}
+          MAC_ARM64_FILENAME: Recall-${{ steps.release.outputs.version }}-mac-arm64.dmg
+          MAC_X64_SHA256: ${{ steps.release.outputs.macX64Sha256 }}
+          MAC_X64_FILENAME: Recall-${{ steps.release.outputs.version }}-mac-x64.dmg
+          RELEASE_TAG: ${{ github.ref_name }}
+          NOTES_PATH: cloudflare/worker/release-notes.md
+          OUTPUT_PATH: cloudflare/worker/manifest.release.json
+        run: node scripts/generate-manifest.js
+      - name: Upload release artifacts to Cloudflare R2
+        working-directory: cloudflare/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        shell: pwsh
+        run: |
+          $version = "${{ steps.release.outputs.version }}"
+          $files = @(
+            "Recall-$version-setup.exe",
+            "Recall-$version-mac-arm64.dmg",
+            "Recall-$version-mac-x64.dmg",
+            "Recall-$version-mac-arm64.zip",
+            "Recall-$version-mac-x64.zip"
+          )
+          foreach ($file in $files) {
+            npx wrangler r2 object put "recall-releases/$file" --file="../../release/$file"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to upload $file" }
+          }
+      - name: Upload manifest to Cloudflare R2
+        working-directory: cloudflare/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler r2 object put "recall-releases/manifest.json" --file=manifest.release.json
+      - name: Verify deployed manifest and architecture routing
+        shell: pwsh
+        env:
+          WORKER_URL: https://recall-update.ppclaw.online
+        run: |
+          $latest = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
+          $version = "${{ steps.release.outputs.version }}"
+          if ($latest.version -ne $version) {
+            throw "R2 manifest version mismatch: expected $version, got $($latest.version)"
+          }
+          $checks = @(
+            @{ Query = "platform=win"; Expected = "/download/Recall-$version-setup.exe" },
+            @{ Query = "platform=darwin&arch=arm64"; Expected = "/download/Recall-$version-mac-arm64.dmg" },
+            @{ Query = "platform=darwin&arch=x64"; Expected = "/download/Recall-$version-mac-x64.dmg" }
+          )
+          foreach ($check in $checks) {
+            $result = Invoke-RestMethod -Uri "$env:WORKER_URL/api/check?currentVersion=0.0.0&$($check.Query)" -UseBasicParsing
+            if ($result.latestVersion -ne $version -or $result.downloadUrl -ne $check.Expected) {
+              throw "Routing verification failed for $($check.Query): $($result | ConvertTo-Json -Compress)"
+            }
+          }
+          Write-Host "R2 manifest and Windows/macOS architecture routing verified"
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release/*.dmg
-            release/*.zip
+            release/Recall-${{ steps.release.outputs.version }}-setup.exe
+            release/Recall-${{ steps.release.outputs.version }}-mac-arm64.dmg
+            release/Recall-${{ steps.release.outputs.version }}-mac-x64.dmg
+            release/Recall-${{ steps.release.outputs.version }}-mac-arm64.zip
+            release/Recall-${{ steps.release.outputs.version }}-mac-x64.zip
+          body_path: cloudflare/worker/release-notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

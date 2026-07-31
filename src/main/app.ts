@@ -89,6 +89,7 @@ import { UpdateService } from "./services/UpdateService";
 import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
 import { shutdownRuntime } from "./services/shutdownRuntime";
 import { installNavigationGuards, type NavigationPolicy } from "./services/navigationGuard";
+import { macPermissionsService } from "./services/MacPermissionsService";
 import type { Report } from "./models/types";
 
 // 本项目 tsconfig 编译为 CommonJS，__dirname 在编译产物中可用
@@ -1115,6 +1116,33 @@ app.whenReady().then(async () => {
   // 启动时自动恢复观察：用于 Windows 登录自启动后的后台连续记忆。
   if (settingsService.getAll().observation.enabled) {
     startObserving();
+  }
+
+  // macOS 权限检查：屏幕录制权限未授予时截图采集全失败，必须显式告知用户。
+  // 不在此处弹系统对话框（macOS 屏幕录制权限无法代码触发申请，只能引导用户去系统设置），
+  // 仅把状态写入 AppStatus 推送给 renderer，由 UI 显示权限引导。
+  if (process.platform === "darwin") {
+    try {
+      const perm = macPermissionsService.checkPermissions();
+      setStatus({
+        macPermissions: {
+          screenCaptureGranted: perm.screenCaptureGranted,
+          accessibilityGranted: perm.accessibilityGranted,
+          permissionsChecked: true,
+        },
+      });
+      if (!perm.screenCaptureGranted) {
+        logger.warn({
+          message: "macOS 屏幕录制权限未授予，截图采集将不可用，需引导用户授权",
+        });
+      }
+    } catch (err) {
+      logger.warn({
+        status: "failed",
+        errorCode: "mac_permission_check_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   // AppStatus 变化时主动推送给 renderer，并刷新托盘菜单
