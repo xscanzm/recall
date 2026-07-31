@@ -20,6 +20,8 @@ jobs:
     env:
       CI: "1"
       ELECTRON_DISABLE_GPU: "1"
+      GYP_MSVS_VERSION: "2022"
+      npm_config_msvs_version: "2022"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +38,10 @@ jobs:
           cache-dependency-path: |
             resources/ocr/requirements.txt
             resources/ocr/requirements-build.txt
+      - name: Setup MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Install dependencies
         run: npm ci
       - name: Validate release tag
