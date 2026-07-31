@@ -146,16 +146,17 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parent.parent
     py_worker = repo_root / "resources" / "ocr" / "rapidocr_worker.py"
+    exe_name = "rapidocr-worker.exe" if sys.platform == "win32" else "rapidocr-worker"
     if args.packaged_root:
         packaged_root = args.packaged_root.resolve()
         resources_dir = packaged_root / "resources"
-        exe_worker = resources_dir / "ocr" / "rapidocr-worker" / "rapidocr-worker.exe"
+        exe_worker = resources_dir / "ocr" / "rapidocr-worker" / exe_name
         model_dir = resources_dir / "embedding" / "bge-small-zh-v1.5"
         worker_dir = exe_worker.parent
         if not packaged_root.is_dir():
             raise VerificationError(f"Packaged root does not exist: {packaged_root}")
     else:
-        exe_worker = repo_root / "resources" / "ocr" / "rapidocr-worker" / "rapidocr-worker.exe"
+        exe_worker = repo_root / "resources" / "ocr" / "rapidocr-worker" / exe_name
         model_dir = repo_root / "resources" / "embedding" / "bge-small-zh-v1.5"
         worker_dir = exe_worker.parent
 
