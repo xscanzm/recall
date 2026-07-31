@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
+    env: {
+      TZ: "Asia/Shanghai",
+    },
     include: ["src/main/**/*.test.ts", "src/renderer/**/*.test.ts", "scripts/**/*.test.ts"],
     coverage: {
       provider: "v8",

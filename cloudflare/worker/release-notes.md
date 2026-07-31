@@ -1,3 +1,11 @@
+## v0.5.8 — macOS CI 时区与测试全量修复
+
+本次版本修复了 macOS 云端 CI 测试问题：
+- 统一测试时区与单测环境配置（`TZ: Asia/Shanghai`）；
+- 修复 `EmbeddingWorkerClient.test.ts` 在 macOS 平台下的可执行文件名模拟判定。
+
+---
+
 ## v0.5.7 — macOS 客户端完整支持 + 免证书解隔离助手 + GitHub Actions 云端打包
 
 本次版本正式发布 macOS 客户端支持，提供全平台原生 Worker 编译支持、macOS 屏幕录制/辅助功能权限引导、DMG 免证书解隔离安装助手及 GitHub Actions 自动云端打包流程。

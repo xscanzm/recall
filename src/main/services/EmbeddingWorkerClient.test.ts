@@ -50,7 +50,8 @@ afterEach(() => {
 describe("EmbeddingWorkerClient", () => {
   it("resolves the packaged worker directly below process.resourcesPath/ocr", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "recall-embedding-client-"));
-    const worker = path.join(root, "ocr", "rapidocr-worker", "rapidocr-worker.exe");
+    const exeName = process.platform === "win32" ? "rapidocr-worker.exe" : "rapidocr-worker";
+    const worker = path.join(root, "ocr", "rapidocr-worker", exeName);
     const model = path.join(root, "embedding", "bge-small-zh-v1.5");
     fs.mkdirSync(path.dirname(worker), { recursive: true });
     fs.mkdirSync(model, { recursive: true });

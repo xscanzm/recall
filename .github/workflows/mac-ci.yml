@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 30
     env:
       CI: "1"
+      TZ: "Asia/Shanghai"
       ELECTRON_DISABLE_GPU: "1"
     steps:
       - uses: actions/checkout@v4
