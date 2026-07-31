@@ -195,27 +195,45 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler r2 object put "recall-releases/manifest.json" --file=manifest.release.json
+      - name: Deploy update Worker
+        working-directory: cloudflare/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
       - name: Verify deployed manifest and architecture routing
         shell: pwsh
         env:
           WORKER_URL: https://recall-update.ppclaw.online
         run: |
-          $latest = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
           $version = "${{ steps.release.outputs.version }}"
-          if ($latest.version -ne $version) {
-            throw "R2 manifest version mismatch: expected $version, got $($latest.version)"
-          }
           $checks = @(
             @{ Query = "platform=win"; Expected = "/download/Recall-$version-setup.exe" },
             @{ Query = "platform=darwin&arch=arm64"; Expected = "/download/Recall-$version-mac-arm64.dmg" },
             @{ Query = "platform=darwin&arch=x64"; Expected = "/download/Recall-$version-mac-x64.dmg" }
           )
-          foreach ($check in $checks) {
-            $result = Invoke-RestMethod -Uri "$env:WORKER_URL/api/check?currentVersion=0.0.0&$($check.Query)" -UseBasicParsing
-            if ($result.latestVersion -ne $version -or $result.downloadUrl -ne $check.Expected) {
-              throw "Routing verification failed for $($check.Query): $($result | ConvertTo-Json -Compress)"
+          $verified = $false
+          for ($attempt = 1; $attempt -le 6; $attempt++) {
+            try {
+              $latest = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
+              if ($latest.version -ne $version) {
+                throw "R2 manifest version mismatch: expected $version, got $($latest.version)"
+              }
+              foreach ($check in $checks) {
+                $result = Invoke-RestMethod -Uri "$env:WORKER_URL/api/check?currentVersion=0.0.0&$($check.Query)" -UseBasicParsing
+                if ($result.latestVersion -ne $version -or $result.downloadUrl -ne $check.Expected) {
+                  throw "Routing verification failed for $($check.Query): $($result | ConvertTo-Json -Compress)"
+                }
+              }
+              $verified = $true
+              break
+            } catch {
+              if ($attempt -eq 6) { throw }
+              Write-Host "Verification attempt $attempt failed: $($_.Exception.Message). Retrying..."
+              Start-Sleep -Seconds 10
             }
           }
+          if (-not $verified) { throw "Worker verification did not complete" }
           Write-Host "R2 manifest and Windows/macOS architecture routing verified"
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
