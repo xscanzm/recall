@@ -15,7 +15,7 @@ permissions:
 jobs:
   windows-build:
     name: 构建 Windows 安装包
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
     env:
       CI: "1"
