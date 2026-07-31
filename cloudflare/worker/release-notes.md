@@ -1,3 +1,27 @@
+## v0.5.7 — macOS 客户端完整支持 + 免证书解隔离助手 + GitHub Actions 云端打包
+
+本次版本正式发布 macOS 客户端支持，提供全平台原生 Worker 编译支持、macOS 屏幕录制/辅助功能权限引导、DMG 免证书解隔离安装助手及 GitHub Actions 自动云端打包流程。
+
+### 新增与改进
+
+#### 1. macOS 免证书解隔离安装助手
+- **DMG 一键修复脚本**：资源中加入可执行 Bash 脚本 `双击修复安装.command`，解决非商业签名应用在 macOS 上被提示“应用已损坏，无法打开”的问题，自动解除 `com.apple.quarantine` 隔离属性。
+- **文档与官网支持**：README 与官网新增 macOS 下载入口及 Mac 初次安装权限解锁说明。
+
+#### 2. macOS 权限与隐私系统适配
+- **`MacPermissionsService`**：支持检测 macOS 屏幕录制 (`Screen Capture`) 和辅助功能 (`Accessibility`) 权限状态，并提供一键跳转系统隐私设置面板接口。
+
+#### 3. Worker 跨平台运行与进程清理
+- 适配 macOS 上无 `.exe` 扩展名的二进制 Worker 可执行文件（`rapidocr-worker`）查找与运行机制；
+- 增强 POSIX 进程树清理 (`process.kill(-pid)`)，确保应用退出或引擎终止时 Mac 平台常驻 Worker 无残留；
+- 新增 `scripts/build-rapidocr-worker.sh` macOS 平台 Worker 打包脚本。
+
+#### 4. GitHub Actions 自动云端打包 (CI/CD)
+- 新增 `.github/workflows/mac-ci.yml` CI 检查，确保 Mac 环境下的打包构建与单测契约持续通过；
+- 更新 `.github/workflows/release.yml` 发布流程，当发布 Tag 时自动在 `macos-latest` 机器上编译产出 Apple Silicon (`arm64`) 与 Intel (`x64`) 的 macOS `.dmg` 与 `.zip` 镜像并关联提交到 GitHub Release。
+
+---
+
 ## v0.5.6 — 更新下载分片 + 断点续传（解决国内 R2 大文件下载不稳定）
 
 本次版本聚焦解决用户反馈的"更新失败"问题：国内访问 Cloudflare R2 下载 180MB+ 安装包时连接不稳定，旧的流式下载一旦中断就必须从头开始，导致更新成功率低。新方案用 HTTP Range 请求分片下载 + 断点续传，中断后可从断点继续，显著提升大文件下载稳定性。
