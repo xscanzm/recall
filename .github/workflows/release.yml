@@ -207,14 +207,15 @@ jobs:
             @{ Query = "platform=darwin&arch=x64"; Expected = "/download/Recall-$version-mac-x64.dmg" }
           )
           $verified = $false
-          for ($attempt = 1; $attempt -le 6; $attempt++) {
+          for ($attempt = 1; $attempt -le 18; $attempt++) {
             try {
-              $latest = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest" -UseBasicParsing
+              $probe = "$env:GITHUB_RUN_ID-$attempt-$([guid]::NewGuid().ToString('N'))"
+              $latest = Invoke-RestMethod -Uri "$env:WORKER_URL/api/latest?releaseCheck=$probe" -UseBasicParsing
               if ($latest.version -ne $version) {
                 throw "R2 manifest version mismatch: expected $version, got $($latest.version)"
               }
               foreach ($check in $checks) {
-                $result = Invoke-RestMethod -Uri "$env:WORKER_URL/api/check?currentVersion=0.0.0&$($check.Query)" -UseBasicParsing
+                $result = Invoke-RestMethod -Uri "$env:WORKER_URL/api/check?currentVersion=0.0.0&$($check.Query)&releaseCheck=$probe" -UseBasicParsing
                 if ($result.latestVersion -ne $version -or $result.downloadUrl -ne $check.Expected) {
                   throw "Routing verification failed for $($check.Query): $($result | ConvertTo-Json -Compress)"
                 }
@@ -222,7 +223,7 @@ jobs:
               $verified = $true
               break
             } catch {
-              if ($attempt -eq 6) { throw }
+              if ($attempt -eq 18) { throw $_ }
               Write-Host "Verification attempt $attempt failed: $($_.Exception.Message). Retrying..."
               Start-Sleep -Seconds 10
             }
