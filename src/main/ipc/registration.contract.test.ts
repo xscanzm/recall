@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const EXPECTED_INVOKE_CHANNEL_COUNT = 83;
+const EXPECTED_INVOKE_CHANNEL_COUNT = 85;
 
 /**
  * handleValidated 覆盖率地板（棘轮）。

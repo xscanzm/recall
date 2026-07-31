@@ -93,11 +93,7 @@ export async function submitDefaultMultimodalJob(
   const inputObjectKey = `${PAYLOAD_PREFIX}${jobId}.json`;
   const now = new Date().toISOString();
   const expiresAt = new Date(Date.now() + JOB_TTL_MS).toISOString();
-  const body = {
-    ...sanitizedBody,
-    stream: true,
-    stream_options: { include_usage: true },
-  };
+  const body = { ...sanitizedBody };
 
   await env.MODEL_JOB_PAYLOADS.put(inputObjectKey, JSON.stringify(body), {
     httpMetadata: { contentType: "application/json" },
@@ -262,6 +258,20 @@ async function consumeOne(
     return;
   }
 
+  let requestBody: Record<string, unknown>;
+  try {
+    requestBody = await new Response(inputObject.body).json() as Record<string, unknown>;
+  } catch (error) {
+    await finalizeFailure(
+      env,
+      job.id,
+      "response_invalid",
+      `异步任务输入不是有效 JSON: ${safeErrorMessage(error)}`
+    );
+    message.ack();
+    return;
+  }
+
   const upstreamApiKey = env.DEFAULT_MULTIMODAL_API_KEY?.trim();
   if (!upstreamApiKey) {
     await finalizeFailure(env, job.id, "auth_error", "Recall 默认多模态服务暂时不可用");
@@ -278,9 +288,9 @@ async function consumeOne(
       headers: {
         Authorization: `Bearer ${upstreamApiKey}`,
         "Content-Type": "application/json",
-        Accept: "text/event-stream",
+        Accept: requestBody.stream === true ? "text/event-stream" : "application/json",
       },
-      body: inputObject.body,
+      body: JSON.stringify(requestBody),
     });
     result = await readUpstreamCompletion(upstream);
   } catch (error) {

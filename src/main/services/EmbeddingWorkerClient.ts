@@ -199,11 +199,14 @@ export class EmbeddingWorkerClient {
       modelDir = path.join(resourcesPath, "embedding", "bge-small-zh-v1.5");
     }
 
+    const exeName = process.platform === "win32" ? "rapidocr-worker.exe" : "rapidocr-worker";
+
     if (this.workerPath && fs.existsSync(this.workerPath)) {
-      const args = this.workerPath.endsWith(".exe")
+      const isExe = this.workerPath.endsWith(".exe") || (process.platform !== "win32" && !this.workerPath.endsWith(".py"));
+      const args = isExe
         ? ["--mode", "embedding", "--model-dir", modelDir]
         : [this.workerPath, "--mode", "embedding", "--model-dir", modelDir];
-      const cmd = this.workerPath.endsWith(".exe") ? this.workerPath : "python";
+      const cmd = isExe ? this.workerPath : "python";
       return { cmd, args, modelDir };
     }
 
@@ -213,7 +216,7 @@ export class EmbeddingWorkerClient {
         resourcesPath,
         "ocr",
         "rapidocr-worker",
-        "rapidocr-worker.exe"
+        exeName
       );
       if (fs.existsSync(packagedExe)) {
         return {
@@ -224,8 +227,8 @@ export class EmbeddingWorkerClient {
       }
     }
 
-    // 本地开发态构建出的 rapidocr-worker.exe
-    const builtExe = path.join(repoRoot, "resources", "ocr", "rapidocr-worker", "rapidocr-worker.exe");
+    // 本地开发态构建出的 rapidocr-worker 可执行文件
+    const builtExe = path.join(repoRoot, "resources", "ocr", "rapidocr-worker", exeName);
     if (fs.existsSync(builtExe)) {
       return {
         cmd: builtExe,

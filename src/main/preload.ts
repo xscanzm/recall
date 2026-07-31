@@ -58,6 +58,13 @@ const recallApi = {
     update: (input: IpcRequest<"settings:update">) => invokeValidated(ipcRenderer, "settings:update", input),
   },
 
+  // -------------------- mac --------------------
+  mac: {
+    checkPermissions: () => ipcRenderer.invoke("mac:checkPermissions"),
+    openSystemSettings: (privacyType: "screen" | "accessibility") =>
+      ipcRenderer.invoke("mac:openSystemSettings", { privacyType }),
+  },
+
   endOfDayReview: {
     get: <T>(): Promise<T | null> => ipcRenderer.invoke("endOfDayReview:get"),
     viewToday: (): Promise<{ ok: true }> => ipcRenderer.invoke("endOfDayReview:viewToday"),

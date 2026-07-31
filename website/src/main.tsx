@@ -115,13 +115,26 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows 公开测试版 · 0.5.6</p>
+            <p className="eyebrow"><span /> Windows & macOS 支持 · v0.5.6</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
-            <div className="hero-actions"><DownloadLink /><a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a></div>
+            <div className="hero-actions">
+              <DownloadLink />
+              <a className="button button--secondary" href="https://github.com/xscanzm/recall/releases/latest" target="_blank" rel="noreferrer">
+                <Download size={18} strokeWidth={1.8} />
+                <span>下载 macOS 版 (DMG)</span>
+              </a>
+              <a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a>
+            </div>
             <CommunityQr hero />
-            <p className="hero-meta"><Laptop size={15} /> Windows x64 · 约 184 MB <span /> 默认模型服务已配置</p>
+            <p className="hero-meta">
+              <Laptop size={15} /> Windows x64 & macOS (Apple Silicon / Intel) <span /> 默认模型服务已配置
+              <br />
+              <small style={{ opacity: 0.8, marginTop: "4px", display: "inline-block" }}>
+                💡 Mac 首次打开提示“应用已损坏”？在 DMG 内运行内置的【双击修复安装.command】脚本即可自动解锁。
+              </small>
+            </p>
           </div>
           <AppPreview />
         </section>

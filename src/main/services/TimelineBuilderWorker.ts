@@ -130,7 +130,6 @@ export class TimelineBuilderWorker {
           sourceCompleteness: request.sourceCompleteness,
         }),
         maxTokens: TIMELINE_MAX_TOKENS,
-        streaming: true,
       }, TimelineBuilderOutputSchema),
     });
 

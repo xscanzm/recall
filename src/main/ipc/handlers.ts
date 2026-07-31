@@ -10,6 +10,7 @@
 // M0 实现：app:getStatus 完整实现；其余 channel 返回安全空状态占位，
 // 后续 Milestone 逐步填充真实业务逻辑。
 
+import { macPermissionsService } from "../services/MacPermissionsService";
 import { ipcMain, BrowserWindow } from "electron";
 import type { AppStatus } from "../../shared/types";
 import { isInvokeChannel } from "./channels";
@@ -1117,6 +1118,20 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       const message = err instanceof Error ? err.message : String(err);
       return { ok: false as const, error: message, code: "unknown_error" };
     }
+  });
+
+  // macOS 专属支持 handlers
+  ipcMain.handle("mac:checkPermissions", async () => {
+    return { ok: true as const, data: macPermissionsService.checkPermissions() };
+  });
+
+  ipcMain.handle("mac:openSystemSettings", async (_event, input: unknown) => {
+    const parsed = z.object({ privacyType: z.enum(["screen", "accessibility"]) }).safeParse(input);
+    if (!parsed.success) {
+      return { ok: false as const, error: "invalid privacy type", code: "schema_invalid" };
+    }
+    const success = await macPermissionsService.openSystemSettings(parsed.data.privacyType);
+    return { ok: true as const, data: { success } };
   });
 
   // -------------------- 白名单校验 --------------------

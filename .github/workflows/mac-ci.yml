@@ -1,0 +1,42 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+concurrency:
+  group: mac-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac-check:
+    name: macOS 完整构建与单元测试
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      CI: "1"
+      ELECTRON_DISABLE_GPU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            resources/ocr/requirements.txt
+            resources/ocr/requirements-build.txt
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - name: 构建 macOS 编译产物与包装
+        run: |
+          bash scripts/build-rapidocr-worker.sh
+          npm run build
+          npx electron-builder --mac --dir

@@ -147,8 +147,12 @@ export class TrayService {
       try {
         const icon = nativeImage.createFromPath(iconPath);
         if (!icon.isEmpty()) {
-          // Windows 托盘推荐 16x16 或 32x32
-          return icon.resize({ width: 16, height: 16 });
+          // Windows 托盘推荐 16x16 或 32x32，macOS 开启 template 模式适应深浅主题
+          const resized = icon.resize({ width: 16, height: 16 });
+          if (process.platform === "darwin") {
+            resized.setTemplateImage(true);
+          }
+          return resized;
         }
       } catch {
         // 加载失败，使用程序化生成的图标

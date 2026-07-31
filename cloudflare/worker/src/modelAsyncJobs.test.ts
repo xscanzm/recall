@@ -122,9 +122,9 @@ describe("default multimodal async jobs", () => {
     const payload = JSON.parse([...r2.values.values()][0]!);
     expect(payload).toMatchObject({
       model: "fixed-model",
-      stream: true,
-      stream_options: { include_usage: true },
     });
+    expect(payload.stream).toBeUndefined();
+    expect(payload.stream_options).toBeUndefined();
     expect(JSON.stringify([...db.jobs.values()])).not.toContain("hello");
   });
 

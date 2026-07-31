@@ -338,9 +338,11 @@ export class UpdateService {
     }
 
     const updatesDir = getUpdatesDir();
+    const isWin = process.platform === "win32";
+    const ext = isWin ? ".exe" : ".dmg";
     const installerPath = path.join(
       updatesDir,
-      `Recall-${info.latestVersion}-setup.exe`
+      `Recall-${info.latestVersion}-installer${ext}`
     );
     const partPath = installerPath + ".part";
     const metaPath = installerPath + ".meta.json";

@@ -472,7 +472,9 @@ function buildStreamResult(
 function createDefaultSpawner(config: RapidOcrServiceConfig): SpawnWorker {
   return () => {
     const workerPath = config.workerPath ?? resolveWorkerPath();
-    const isExecutable = path.extname(workerPath).toLowerCase() === ".exe";
+    const isExecutable =
+      path.extname(workerPath).toLowerCase() === ".exe" ||
+      (process.platform !== "win32" && !workerPath.endsWith(".py"));
     const command = isExecutable
       ? workerPath
       : config.pythonExecutable ?? process.env.RECALL_PYTHON_PATH ?? "python";
@@ -487,7 +489,15 @@ function createDefaultSpawner(config: RapidOcrServiceConfig): SpawnWorker {
 
 function terminateWorkerProcessTree(worker: ChildProcessWithoutNullStreams): void {
   if (process.platform !== "win32" || !worker.pid) {
-    worker.kill();
+    if (worker.pid) {
+      try {
+        process.kill(-worker.pid, "SIGTERM");
+      } catch {
+        worker.kill();
+      }
+    } else {
+      worker.kill();
+    }
     return;
   }
   const killer = spawn(
@@ -509,18 +519,19 @@ function resolveWorkerPath(): string {
   const configured = process.env.RECALL_RAPIDOCR_WORKER_PATH?.trim();
   if (configured) return path.resolve(configured);
   const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const exeName = process.platform === "win32" ? "rapidocr-worker.exe" : "rapidocr-worker";
   const packagedExecutable = resourcesPath
-    ? path.join(resourcesPath, "ocr", "rapidocr-worker", "rapidocr-worker.exe")
+    ? path.join(resourcesPath, "ocr", "rapidocr-worker", exeName)
     : "";
   if (packagedExecutable && fs.existsSync(packagedExecutable)) return packagedExecutable;
   const developmentExecutable = path.resolve(
     __dirname,
-    "../../../resources/ocr/rapidocr-worker/rapidocr-worker.exe"
+    `../../../resources/ocr/rapidocr-worker/${exeName}`
   );
   if (fs.existsSync(developmentExecutable)) return developmentExecutable;
   const legacyExecutable = path.resolve(
     __dirname,
-    "../../../resources/ocr/rapidocr-worker.exe"
+    `../../../resources/ocr/${exeName}`
   );
   if (fs.existsSync(legacyExecutable)) return legacyExecutable;
   return path.resolve(__dirname, "../../../resources/ocr/rapidocr_worker.py");

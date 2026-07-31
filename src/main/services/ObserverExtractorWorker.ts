@@ -463,7 +463,6 @@ export class ObserverExtractorWorker {
               jobInputJson,
               maxTokens: 16_384,
               timeoutMs: 240_000, // 批次模式多图，需要更长超时（普通模式保持 120s）
-              streaming: true,
               background: {
                 idempotencyKey: `observer_extractor_batch:${batchBundle.batchId}`,
               },
@@ -596,7 +595,6 @@ export class ObserverExtractorWorker {
               jobInputJson,
               maxTokens: 16_384,
               timeoutMs: 240_000,
-              streaming: true,
               background: {
                 idempotencyKey: `observer_batch:${batchBundle.batchId}`,
               },

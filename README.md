@@ -11,11 +11,15 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 ## 直接下载（用户版）
 
-- **官网**：<https://recall.ppclaw.online/>（含产品介绍与演示）
-- **下载最新版**：<https://recall-update.ppclaw.online/download/latest>（自动更新通道，Windows x64 NSIS 安装包，约 184 MB）
+- **官网**：<https://recall.ppclaw.online/>（含产品介绍与 macOS / Windows 客户端下载）
+- **Windows 下载**：<https://recall-update.ppclaw.online/download/latest>（Windows x64 NSIS 安装包）
+- **macOS 下载**：<https://github.com/xscanzm/recall/releases/latest>（支持 Apple Silicon `arm64` 与 Intel `x64` DMG 包）
 - **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-> 下载后可校验完整性：`certutil -hashfile Recall-0.5.6-setup.exe SHA256`，与 [GitHub Release](https://github.com/xscanzm/recall/releases/latest) 页面公布的 SHA-256 比对。
+> 💡 **macOS 首次安装提示“应用已损坏，无法打开”解决指南**：
+> 由于未购买 Apple 商业证书签名，macOS 会对从网络下载的应用标记隔离。解决办法：
+> 1. **推荐（一键修复）**：打开安装包 `.dmg`，将 `Recall.app` 拖入【应用程序】文件夹后，双击运行 DMG 内内置的 **`双击修复安装.command`** 脚本。
+> 2. **手动修复**：打开 Mac 终端执行命令：`sudo xattr -rd com.apple.quarantine /Applications/Recall.app` 即可解锁。
 
 ---
 
