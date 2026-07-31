@@ -94,9 +94,9 @@ jobs:
       - name: Build main and renderer
         run: npm run build
       - name: Build macOS x64 DMG and ZIP
-        run: npx electron-builder --mac --x64 --publish never
+        run: npx electron-builder --mac dmg:x64 zip:x64 --publish never
       - name: Build macOS arm64 DMG and ZIP
-        run: npx electron-builder --mac --arm64 --publish never
+        run: npx electron-builder --mac dmg:arm64 zip:arm64 --publish never
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
