@@ -34,6 +34,50 @@ const UPDATE_WORKER_URL =
   process.env.RECALL_UPDATE_WORKER_URL || "https://recall-update.ppclaw.online";
 
 /**
+ * 更新下载 host 白名单（P1，见 .omo/plans/codebase-audit.md todo 6）
+ *
+ * 允许集合：
+ * - 默认 UPDATE_WORKER_URL 的 host：recall-update.ppclaw.online
+ *   （与上方 UPDATE_WORKER_URL 默认值保持同步，改动需两处一致）
+ * - 通过 RECALL_UPDATE_WORKER_URL 配置的 worker host（与默认不同时追加）
+ *
+ * 其余一律拒绝（fail-closed）；URL 无法解析返回 false，不抛出。
+ * 相对路径（如 "/download/x"）由调用方先拼接为完整 URL 再校验——本函数
+ * 只接受绝对 URL。
+ */
+const DEFAULT_UPDATE_HOST = "recall-update.ppclaw.online";
+
+function parseUpdateHost(url: string): string | null {
+  try {
+    return new URL(url).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+const ALLOWED_UPDATE_HOSTS: ReadonlySet<string> = (() => {
+  const hosts = new Set<string>([DEFAULT_UPDATE_HOST]);
+  const configured = parseUpdateHost(UPDATE_WORKER_URL);
+  if (configured) hosts.add(configured);
+  return hosts;
+})();
+
+/**
+ * 校验更新下载 URL 的 host 是否在允许集合内
+ * - 仅允许默认 worker host 与配置的 UPDATE_WORKER_URL host
+ * - 无法解析的 URL（含裸相对路径）一律返回 false
+ */
+export function isAllowedUpdateHost(url: string): boolean {
+  const host = parseUpdateHost(url);
+  return host !== null && ALLOWED_UPDATE_HOSTS.has(host);
+}
+
+/** 提取 host 用于错误信息/日志——只记 host，绝不记完整 URL（防敏感路径泄漏） */
+function hostOf(url: string): string {
+  return parseUpdateHost(url) ?? "unknown";
+}
+
+/**
  * 下载目录：与 logs/ 同级
  */
 function getUpdatesDir(): string {
@@ -419,6 +463,24 @@ export class UpdateService {
     const fullUrl = info.downloadUrl.startsWith("http")
       ? info.downloadUrl
       : `${UPDATE_WORKER_URL}${info.downloadUrl}`;
+
+    // P1 主机白名单：相对路径已解析到允许的 worker 上，绝对 URL 必须落在
+    // 允许 host 集合内；拒绝时只报/只记 host，绝不记录完整 URL。
+    if (!isAllowedUpdateHost(fullUrl)) {
+      const host = hostOf(fullUrl);
+      this.status = {
+        state: "error",
+        message: `download host not allowed: ${host}`,
+        code: "host_not_allowed",
+      };
+      logger.error({
+        jobType: "update_download",
+        status: "failed",
+        errorCode: "host_not_allowed",
+        message: `download host not allowed: ${host}`,
+      });
+      throw new Error(`download host not allowed: ${host}`);
+    }
 
     // 2. HEAD 探测是否支持 Range 请求
     let supportsRange = false;
