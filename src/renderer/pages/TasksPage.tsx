@@ -18,7 +18,7 @@
 // - 不出现"检测到用户未完成任务"等技术化文案
 // - 不使用 emoji
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   Clock,
@@ -164,6 +164,13 @@ export function TasksPage() {
   const [selectedDetail, setSelectedDetail] = useState<MemoryDetailRef | null>(null);
   // 改项目入口（预留）：当前仅提示，spec 允许后置
   const [projectHintId, setProjectHintId] = useState<string | null>(null);
+  const projectHintTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (projectHintTimer.current !== null) window.clearTimeout(projectHintTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (isReady) {
@@ -187,7 +194,7 @@ export function TasksPage() {
   const handleChangeProject = (id: string) => {
     // 预留入口：当前仅提示用户功能尚在规划
     setProjectHintId(id);
-    window.setTimeout(() => setProjectHintId(null), 2400);
+    projectHintTimer.current = window.setTimeout(() => setProjectHintId(null), 2400);
   };
   const handleViewSource = (thread: UnfinishedThread) => {
     setSourceDialog({ thread });

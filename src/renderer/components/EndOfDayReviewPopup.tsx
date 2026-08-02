@@ -19,7 +19,13 @@ export function EndOfDayReviewPopup() {
   const paused = useRef(false);
 
   useEffect(() => {
-    void getIpc().endOfDayReview.get<EndOfDayReview>().then(setReview);
+    void getIpc()
+      .endOfDayReview.get<EndOfDayReview>()
+      .then(setReview)
+      .catch((err) => {
+        // 收工回顾加载失败：保持弹窗隐藏（与无数据时一致），仅记录错误
+        console.error("加载收工回顾失败:", err);
+      });
     const timer = window.setInterval(() => {
       if (!paused.current) setRemaining((value) => Math.max(0, value - 250));
     }, 250);

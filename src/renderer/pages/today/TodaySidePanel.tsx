@@ -9,7 +9,7 @@
 // 6. 工作日报（WorkReportSection）
 // 7. 明天接着做（TomorrowSection）
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Clock, Copy, Pencil, RefreshCw, FileText, Edit3 } from "lucide-react";
 import type { TodayPageData, PersonalReview, WorkReport } from "../../../shared/types";
 import { useAppStore } from "../../state/store";
@@ -381,6 +381,13 @@ function WorkReportSection({
   const setPage = useAppStore((s) => s.setPage);
   const setReportsTab = useAppStore((s) => s.setReportsTab);
   const [copied, setCopied] = useState(false);
+  const copyHintTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (copyHintTimer.current !== null) window.clearTimeout(copyHintTimer.current);
+    };
+  }, []);
 
   const reportableCount = todayPageData
     ? todayPageData.timelineBlocks.filter(
@@ -393,7 +400,7 @@ function WorkReportSection({
     try {
       await navigator.clipboard.writeText(report.plainText);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+      copyHintTimer.current = window.setTimeout(() => setCopied(false), 1800);
     } catch (err) {
       console.error("复制失败:", err);
     }

@@ -564,13 +564,28 @@ export function SettingsPage() {
    */
   const handleSaveDebug = async () => {
     setDebugSaving(true);
-    await updateSettings({
-      debug: {
-        enabled: debugEnabled,
-        verboseModelIO: debugVerboseModelIO,
-      },
-    });
-    setDebugSaving(false);
+    setActionMessage(null);
+    try {
+      const result = await updateSettings({
+        debug: {
+          enabled: debugEnabled,
+          verboseModelIO: debugVerboseModelIO,
+        },
+      });
+      if (!result.ok) {
+        setActionMessage({
+          kind: "err",
+          text: result.error ?? "保存调试设置失败",
+        });
+      }
+    } catch (err) {
+      setActionMessage({
+        kind: "err",
+        text: err instanceof Error ? err.message : "保存调试设置失败",
+      });
+    } finally {
+      setDebugSaving(false);
+    }
   };
 
   // 按模型类型分组

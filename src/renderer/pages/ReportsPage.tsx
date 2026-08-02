@@ -453,13 +453,24 @@ export function ReportsPage() {
   const handleSaveReportRequirements = async (
     nextRequirements: ReportRequirements
   ) => {
-    const result = await getIpc().settings.update({ reportRequirements: nextRequirements });
-    const savedRequirements = normalizeReportRequirements(
-      result.settings.reportRequirements
-    );
-    setReportRequirements(savedRequirements);
-    setCopyHint("报告要求已保存");
-    setTimeout(() => setCopyHint(null), 2000);
+    try {
+      const result = await getIpc().settings.update({
+        reportRequirements: nextRequirements,
+      });
+      if (!result.ok) {
+        useAppStore.setState({ reportsError: "保存报告要求失败" });
+        return;
+      }
+      const savedRequirements = normalizeReportRequirements(
+        result.settings.reportRequirements
+      );
+      setReportRequirements(savedRequirements);
+      setCopyHint("报告要求已保存");
+      setTimeout(() => setCopyHint(null), 2000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      useAppStore.setState({ reportsError: message });
+    }
   };
 
   // 删除我的复盘某条目（unfinished / worthRemembering）

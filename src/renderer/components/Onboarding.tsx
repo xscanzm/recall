@@ -45,6 +45,7 @@ export function Onboarding(props: OnboardingProps) {
   const [visionConfigured, setVisionConfigured] = useState(false);
   const [languageConfigured, setLanguageConfigured] = useState(false);
   const [multimodalConfigured, setMultimodalConfigured] = useState(false);
+  const [defaultServiceError, setDefaultServiceError] = useState<string | null>(null);
 
   // store 状态和动作
   const modelConfigs = useAppStore((s) => s.modelConfigs);
@@ -127,12 +128,24 @@ export function Onboarding(props: OnboardingProps) {
   };
 
   const handleUseDefaultModelService = async () => {
-    await updateSettings({
-      defaultModelService: {
-        consent: "pending",
-        acceptedAt: null,
-      },
-    });
+    try {
+      const result = await updateSettings({
+        defaultModelService: {
+          consent: "pending",
+          acceptedAt: null,
+        },
+      });
+      if (!result.ok) {
+        setDefaultServiceError(result.error ?? "保存默认模型服务设置失败");
+        return;
+      }
+    } catch (err) {
+      setDefaultServiceError(
+        err instanceof Error ? err.message : "保存默认模型服务设置失败"
+      );
+      return;
+    }
+    setDefaultServiceError(null);
     setStep("privacy");
   };
 
@@ -184,6 +197,9 @@ export function Onboarding(props: OnboardingProps) {
         {renderProgress()}
 
         <div className="onboarding__content">
+          {defaultServiceError && (
+            <p className="onboarding__status-banner is-error">{defaultServiceError}</p>
+          )}
           {step === "welcome" && (
             <WelcomeStep
               onNext={() => setStep("multimodal")}
@@ -458,6 +474,11 @@ export function Onboarding(props: OnboardingProps) {
           background-color: var(--recall-bg);
           color: var(--recall-text-muted);
           border: 1px solid var(--recall-border);
+        }
+        .onboarding__status-banner.is-error {
+          background-color: rgba(211, 47, 47, 0.08);
+          color: var(--recall-danger);
+          border: 1px solid var(--recall-danger);
         }
         .onboarding__privacy-summary {
           background-color: var(--recall-bg);
