@@ -7,6 +7,9 @@
 //    传 async 函数会提前提交、永不回滚、测试假绿）；
 // 3. 级联失败 → 整个事务回滚 + 结构化错误（带 code），不再吞错返回成功；
 // 4. deleteImage（异步副作用）在事务提交之后执行，绝不在事务内触发。
+//
+// todo-24 后：memory:deleteObject 经 handleValidated 注册（包装器为 async），
+// 本测试改为 await 包装器返回的 Promise，断言语义不变。
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => ({
@@ -132,12 +135,12 @@ function registerAndGetHandler(deps: IpcDeps) {
     .mocked(ipcMain.handle)
     .mock.calls.find(([channel]) => channel === "memory:deleteObject");
   expect(registered).toBeDefined();
-  return registered![1] as (event: unknown, input: unknown) => unknown;
+  return registered![1] as (event: unknown, input: unknown) => Promise<unknown>;
 }
 
-function captureError(fn: () => unknown): Error | null {
+async function captureRejection(fn: () => Promise<unknown>): Promise<Error | null> {
   try {
-    fn();
+    await fn();
     return null;
   } catch (err) {
     return err instanceof Error ? err : new Error(String(err));
@@ -151,11 +154,11 @@ beforeEach(() => {
 });
 
 describe("memory:deleteObject transaction wrapper", () => {
-  it("deletes a fact inside a sync transaction and returns ok", () => {
+  it("deletes a fact inside a sync transaction and returns ok", async () => {
     const { deps, tx, deleteImage } = buildDeps();
     const handler = registerAndGetHandler(deps);
 
-    const result = handler(trustedEvent(), { id: "fact-1", type: "fact" });
+    const result = await handler(trustedEvent(), { id: "fact-1", type: "fact" });
 
     expect(result).toEqual({ ok: true });
     expect(deps.factRepo!.softDelete).toHaveBeenCalledWith("fact-1");
@@ -165,25 +168,25 @@ describe("memory:deleteObject transaction wrapper", () => {
     expect(deleteImage).toHaveBeenCalledWith("report-1");
   });
 
-  it("passes a synchronous (non-async) function to db.transaction", () => {
+  it("passes a synchronous (non-async) function to db.transaction", async () => {
     const { deps, tx } = buildDeps();
     const handler = registerAndGetHandler(deps);
 
-    handler(trustedEvent(), { id: "task-1", type: "task" });
+    await handler(trustedEvent(), { id: "task-1", type: "task" });
 
     // makeTxDb 在注册时断言 fn.constructor.name === "Function"（async 为 "AsyncFunction"）
     expect(tx.log).toEqual(["tx:begin", "tx:commit"]);
     expect(deps.memoryObjectRepo!.softDeleteTask).toHaveBeenCalledWith("task-1");
   });
 
-  it("rolls back the whole transaction and throws a structured error when cascade fails", () => {
+  it("rolls back the whole transaction and throws a structured error when cascade fails", async () => {
     const { deps, tx, mocks } = buildDeps();
     mocks.reportRepo.markStaleMany.mockImplementation(() => {
       throw new Error("cascade boom");
     });
     const handler = registerAndGetHandler(deps);
 
-    const err = captureError(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
+    const err = await captureRejection(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
 
     expect(err).not.toBeNull();
     expect((err as Error & { code?: string }).code).toBe("delete_cascade_failed");
@@ -194,35 +197,35 @@ describe("memory:deleteObject transaction wrapper", () => {
     expect(deps.infographicService!.deleteImage).not.toHaveBeenCalled();
   });
 
-  it("rolls back and reports not_found when the object is missing", () => {
+  it("rolls back and reports not_found when the object is missing", async () => {
     const { deps, tx, mocks } = buildDeps();
     mocks.factRepo.softDelete.mockReturnValue(false);
     const handler = registerAndGetHandler(deps);
 
-    const err = captureError(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
+    const err = await captureRejection(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
 
     expect((err as Error & { code?: string }).code).toBe("not_found");
     expect(tx.rollbacks).toBe(1);
   });
 
-  it("fails with not_ready when db is unavailable", () => {
+  it("fails with not_ready when db is unavailable", async () => {
     const { deps } = buildDeps();
     (deps as { db?: unknown }).db = undefined;
     const handler = registerAndGetHandler(deps);
 
-    const err = captureError(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
+    const err = await captureRejection(() => handler(trustedEvent(), { id: "fact-1", type: "fact" }));
 
     expect((err as Error & { code?: string }).code).toBe("not_ready");
   });
 
-  it("deletes task/person/decision/project without cascade or deleteImage", () => {
+  it("deletes task/person/decision/project without cascade or deleteImage", async () => {
     const { deps, tx, deleteImage } = buildDeps();
     const handler = registerAndGetHandler(deps);
 
-    expect(handler(trustedEvent(), { id: "task-1", type: "task" })).toEqual({ ok: true });
-    expect(handler(trustedEvent(), { id: "person-1", type: "person" })).toEqual({ ok: true });
-    expect(handler(trustedEvent(), { id: "decision-1", type: "decision" })).toEqual({ ok: true });
-    expect(handler(trustedEvent(), { id: "project-1", type: "project" })).toEqual({ ok: true });
+    expect(await handler(trustedEvent(), { id: "task-1", type: "task" })).toEqual({ ok: true });
+    expect(await handler(trustedEvent(), { id: "person-1", type: "person" })).toEqual({ ok: true });
+    expect(await handler(trustedEvent(), { id: "decision-1", type: "decision" })).toEqual({ ok: true });
+    expect(await handler(trustedEvent(), { id: "project-1", type: "project" })).toEqual({ ok: true });
 
     expect(deps.memoryObjectRepo!.softDeleteTask).toHaveBeenCalledWith("task-1");
     expect(deps.memoryObjectRepo!.softDeletePerson).toHaveBeenCalledWith("person-1");

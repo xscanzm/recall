@@ -234,6 +234,131 @@ const proactiveItem = z.object({
   payloadJson: z.string().nullable().optional(),
 });
 
+/** 与 shared/types.ts ModelConfig 对齐。 */
+const modelConfig = z.object({
+  id: z.string(),
+  kind: z.enum(["vision", "language", "multimodal"]),
+  providerName: z.string(),
+  endpoint: z.string(),
+  model: z.string(),
+  optionsJson: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+/** 与 shared/types.ts EndOfDayReview / EndOfDayReviewItem 对齐。 */
+const endOfDayReviewItem = z.object({
+  id: z.string(),
+  text: z.string(),
+  sourceType: z.enum(["timeline_block", "unfinished_thread"]),
+});
+const endOfDayReview = z.object({
+  dateKey: z.string(),
+  completed: z.array(endOfDayReviewItem),
+  attention: z.array(endOfDayReviewItem),
+  empty: z.boolean(),
+});
+
+/** 与 main/models/schemas.ts ModelTestConnectionInputSchema 对齐。 */
+const modelTestConnectionInput = z.object({
+  kind: z.enum(["vision", "language", "multimodal"]),
+  endpoint: z.string().url(),
+  model: z.string().min(1),
+  // API Key 不进入 renderer/SQLite/日志：测试连接时通过临时字段传入 main 进程
+  apiKey: z.string().min(1),
+});
+
+/** 与 main/models/schemas.ts ModelSaveConfigInputSchema 对齐。 */
+const modelSaveConfigInput = z.object({
+  id: z.string().min(1).optional(),
+  kind: z.enum(["vision", "language", "multimodal"]),
+  providerName: z.string().min(1).max(120),
+  endpoint: z.string().url(),
+  model: z.string().min(1).max(120),
+  apiKey: z.string().min(1).optional(),
+  enabled: z.boolean().optional(),
+  // Phase 7：可选字段，留空时使用模型默认值（写入 options_json）
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().int().min(1).optional(),
+});
+
+/** 与 main/models/schemas.ts MemoryUpdateFactInputSchema 对齐。 */
+const memoryUpdateFactInput = z.object({
+  id: z.string().min(1),
+  content: z.string().max(5000).optional(),
+  importance: z.number().min(0).max(1).optional(),
+  status: z
+    .enum(["open", "in_progress", "likely_done", "done", "blocked", "unknown"])
+    .optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+/** 与 main/models/schemas.ts MemoryUpdateTaskInputSchema 对齐。 */
+const memoryUpdateTaskInput = z.object({
+  id: z.string().min(1),
+  title: z.string().max(200).optional(),
+  status: z
+    .enum([
+      "open",
+      "in_progress",
+      "likely_done",
+      "done",
+      "blocked",
+      "needs_confirmation",
+    ])
+    .optional(),
+  projectId: z.string().nullable().optional(),
+  summary: z.string().max(2000).nullable().optional(),
+});
+
+/** 与 main/models/schemas.ts MemoryUpdatePersonInputSchema 对齐。 */
+const memoryUpdatePersonInput = z.object({
+  id: z.string().min(1),
+  name: z.string().max(200).optional(),
+  role: z.string().max(200).nullable().optional(),
+  organization: z.string().max(200).nullable().optional(),
+  relationship: z.string().max(200).nullable().optional(),
+  summary: z.string().max(2000).nullable().optional(),
+});
+
+/** 与 main/models/schemas.ts UserFeedbackInputSchema 对齐。 */
+const userFeedbackInput = z.object({
+  targetType: z.enum(["fact", "task", "scene", "project", "person", "decision", "reminder"]),
+  targetId: z.string().min(1),
+  feedbackType: z.enum([
+    "content_wrong",
+    "not_important",
+    "wrong_project",
+    "task_done",
+    "not_a_task",
+    "do_not_record",
+    "sensitive_delete",
+  ]),
+  note: z.string().max(1000).optional(),
+  /** 可选：更新对象字段（不覆盖 source ids） */
+  patch: z.record(z.string(), z.unknown()).optional(),
+});
+
+/** 与 main/models/schemas.ts MergeObjectsInputSchema 对齐。 */
+const mergeObjectsInput = z.object({
+  objectType: z.enum(["project", "task", "person", "decision"]),
+  fromId: z.string().min(1),
+  toId: z.string().min(1),
+  reason: z.string().max(500).optional(),
+});
+
+/** 与 main/models/schemas.ts DebugListJobsInputSchema / DebugRelatedRecordsInputSchema 对齐。 */
+const debugListJobsInput = z.object({
+  startAt: z.string(),
+  endAt: z.string(),
+  limit: z.number().int().min(1).max(1000).optional(),
+});
+const debugRelatedRecordsInput = z.object({
+  createdAt: z.string(),
+  windowSeconds: z.number().int().min(1).max(300).optional(),
+});
+
 export const ipcContracts = {
   "app:getStatus": { request: z.undefined(), response: AppStatusSchema },
   "app:startObserving": { request: z.undefined(), response: AppStatusSchema },
@@ -253,6 +378,32 @@ export const ipcContracts = {
   "window:close": { request: z.undefined(), response: z.object({ ok: z.literal(true) }) },
   "settings:get": { request: z.undefined(), response: appSettings },
   "settings:update": { request: appSettingsPatch, response: z.object({ ok: z.literal(true), settings: appSettings }) },
+  "model:testConnection": {
+    request: modelTestConnectionInput,
+    response: z.union([
+      z.object({ ok: z.literal(true) }),
+      z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
+    ]),
+  },
+  "model:defaultConsent:resolve": {
+    request: z.object({ accepted: z.boolean() }),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "model:listConfigs": {
+    request: z.object({
+      kind: z.enum(["vision", "language", "multimodal"]).optional(),
+      enabled: z.boolean().optional(),
+    }).optional(),
+    response: z.array(modelConfig),
+  },
+  "model:saveConfig": {
+    request: modelSaveConfigInput,
+    response: z.object({ ok: z.literal(true), config: modelConfig, warning: z.string().optional() }),
+  },
+  "model:deleteConfig": {
+    request: z.object({ id: z.string().min(1) }),
+    response: z.object({ ok: z.boolean() }),
+  },
   "privacy:listRules": { request: z.undefined(), response: z.array(privacyRule) },
   "privacy:addRule": {
     request: z.object({
@@ -343,11 +494,158 @@ export const ipcContracts = {
       z.object({ ok: z.literal(false), code: z.string(), message: z.string() }),
     ]),
   },
+  "memory:listToday": {
+    request: z.undefined(),
+    response: z.object({
+      observations: z.array(z.unknown()),
+      facts: z.array(z.unknown()),
+      scenes: z.array(z.unknown()),
+      tasks: z.array(z.unknown()),
+      decisions: z.array(z.unknown()),
+      people: z.array(z.unknown()),
+      projects: z.array(z.unknown()),
+    }),
+  },
+  "memory:updateFact": {
+    request: memoryUpdateFactInput,
+    response: z.object({ ok: z.literal(true), fact: z.unknown() }),
+  },
+  "memory:updateTask": {
+    request: memoryUpdateTaskInput,
+    response: z.object({ ok: z.literal(true), task: z.unknown() }),
+  },
+  "memory:updatePerson": {
+    request: memoryUpdatePersonInput,
+    response: z.object({ ok: z.literal(true), person: z.unknown() }),
+  },
+  "memory:deleteObject": {
+    request: z.object({
+      id: z.string().min(1),
+      type: z.enum(["fact", "task", "scene", "project", "person", "decision"]),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "memory:createUserFeedback": {
+    request: userFeedbackInput,
+    response: z.object({ ok: z.literal(true), feedback: z.unknown() }),
+  },
+  "memory:getProjectDetail": {
+    request: z.object({ id: z.string().min(1) }),
+    response: z.object({
+      project: z.unknown(),
+      facts: z.array(z.unknown()),
+      scenes: z.array(z.unknown()),
+      tasks: z.array(z.unknown()),
+      decisions: z.array(z.unknown()),
+      people: z.array(z.unknown()),
+      recentReports: z.array(z.unknown()),
+    }),
+  },
+  "memory:getPersonDetail": {
+    request: z.object({ id: z.string().min(1) }),
+    response: z.object({
+      person: z.unknown(),
+      relatedProjects: z.array(z.unknown()),
+      relatedScenes: z.array(z.unknown()),
+      relatedTasks: z.array(z.unknown()),
+      relatedFacts: z.array(z.unknown()),
+    }),
+  },
+  "memory:mergeObjects": {
+    request: mergeObjectsInput,
+    response: z.object({ ok: z.literal(true), merged: z.unknown() }),
+  },
+  "memory:listMergeSuggestions": {
+    request: z.object({
+      status: z.enum(["new", "confirmed", "ignored", "all"]).optional(),
+      limit: z.number().int().min(1).max(500).optional(),
+    }).optional(),
+    response: z.object({ ok: z.literal(true), items: z.array(proactiveItem) }),
+  },
+  "memory:rejectMergeSuggestion": {
+    request: z.object({ id: z.string().min(1) }),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "memory:listAllAliases": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true), projects: z.array(z.unknown()), people: z.array(z.unknown()) }),
+  },
+  "memory:listPeople": {
+    request: z.object({
+      includeDeleted: z.boolean().optional(),
+      admissionStatus: z.enum(["promoted", "candidate", "rejected"]).optional(),
+      includeNonPromoted: z.boolean().optional(),
+    }).optional(),
+    response: z.object({ ok: z.literal(true), people: z.array(z.unknown()) }),
+  },
+  "memory:listProjects": {
+    request: z.object({
+      includeArchived: z.boolean().optional(),
+      admissionStatus: z.enum(["promoted", "candidate", "rejected"]).optional(),
+      includeNonPromoted: z.boolean().optional(),
+    }).optional(),
+    response: z.object({ ok: z.literal(true), projects: z.array(z.unknown()) }),
+  },
+  "memory:reviewAdmission": {
+    request: z.object({
+      objectType: z.enum(["project", "person"]),
+      id: z.string().min(1),
+      decision: z.enum(["promote", "reject", "restore"]),
+    }),
+    response: z.object({ ok: z.literal(true) }),
+  },
   "capture:forgetRecent": { request: z.object({ duration: z.enum(["15m", "30m", "1h", "today", "all"]) }), response: lifecycleSuccess },
   "screenshot:clear": { request: z.undefined(), response: lifecycleSuccess },
   "data:export": { request: z.object({ includeScreenshots: z.boolean().optional() }).default({}), response: z.union([z.object({ ok: z.literal(true), export: dataExport }), operationFailure]) },
   "data:clearAll": { request: z.undefined(), response: z.union([lifecycleSuccess, operationFailure]) },
   "data:getCacheSize": { request: z.undefined(), response: z.object({ ok: z.literal(true), bytes: z.number().nonnegative(), fileCount: z.number().int().nonnegative() }) },
+  "debug:listJobs": {
+    request: debugListJobsInput,
+    response: z.union([
+      z.object({ ok: z.literal(true), data: z.array(z.unknown()) }),
+      z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+    ]),
+  },
+  "debug:getJobDetails": {
+    request: z.object({ jobId: z.string().min(1) }),
+    response: z.union([
+      z.object({ ok: z.literal(true), data: z.unknown() }),
+      z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+    ]),
+  },
+  "debug:getRelatedRecords": {
+    request: debugRelatedRecordsInput,
+    response: z.union([
+      z.object({
+        ok: z.literal(true),
+        data: z.object({
+          observations: z.array(z.unknown()),
+          facts: z.array(z.unknown()),
+          scenes: z.array(z.unknown()),
+          proactiveItems: z.array(z.unknown()),
+        }),
+      }),
+      z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+    ]),
+  },
+  "mac:checkPermissions": {
+    request: z.undefined(),
+    response: z.object({
+      ok: z.literal(true),
+      data: z.object({
+        isMac: z.boolean(),
+        screenCaptureGranted: z.boolean(),
+        accessibilityGranted: z.boolean(),
+      }),
+    }),
+  },
+  "mac:openSystemSettings": {
+    request: z.object({ privacyType: z.enum(["screen", "accessibility"]) }),
+    response: z.union([
+      z.object({ ok: z.literal(true), data: z.object({ success: z.boolean() }) }),
+      z.object({ ok: z.literal(false), error: z.string(), code: z.string().optional() }),
+    ]),
+  },
   "timeline:build": { request: dateKey, response: ipcResult(z.unknown()) },
   "timeline:reorganizeDay": { request: dateKey, response: ipcResult(z.unknown()) },
   "timeline:get": { request: dateKey, response: ipcResult(z.array(TodayTimelineProjectionSchema)) },
@@ -422,6 +720,26 @@ export const ipcContracts = {
     response: z.object({ ok: z.literal(true) }),
   },
   "reports:notification:open": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "endOfDayReview:get": {
+    request: z.undefined(),
+    response: endOfDayReview.nullable(),
+  },
+  "endOfDayReview:viewToday": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "endOfDayReview:snooze": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "endOfDayReview:dismiss": {
+    request: z.undefined(),
+    response: z.object({ ok: z.literal(true) }),
+  },
+  "endOfDayReview:expired": {
     request: z.undefined(),
     response: z.object({ ok: z.literal(true) }),
   },

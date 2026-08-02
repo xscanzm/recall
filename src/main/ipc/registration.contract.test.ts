@@ -11,8 +11,14 @@ const EXPECTED_INVOKE_CHANNEL_COUNT = 85;
  * 目的是让"新加 raw ipcMain.handle"在 review 之外还有一道自动拦截。
  *
  * 2026-07 基线：41 个已迁移。
+ * 2026-08 todo-24：handlers.ts 剩余 33 个裸 ipcMain.handle 全部迁出
+ * （endOfDayReview×5 / reports:notification×3 / model×5 / memory×15 / debug×3 / mac×2），
+ * 其中 30 个此前无契约的 channel 已在 ipcContracts.ts 补契约并走 handleValidated
+ * （3 个 reports:notification 契约原已存在），总数抬至 74。
+ * 注：reports:getImage 已有契约但仍在 reportsHandlers.ts 以裸 ipcMain.handle 注册，
+ * 不在本计数内（留待后续迁移）。
  */
-const MIN_VALIDATED_CHANNELS = 41;
+const MIN_VALIDATED_CHANNELS = 74;
 
 function extractChannels(source: string, pattern: RegExp): Set<string> {
   return new Set(Array.from(source.matchAll(pattern), (match) => match[1]));
