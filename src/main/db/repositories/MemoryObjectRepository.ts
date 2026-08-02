@@ -14,6 +14,7 @@
 import type { DB } from "../Database";
 import type { Project, Task, Person, Decision } from "../../models/types";
 import { normalizeIdentity, comparePersonIdentity } from "../../../shared/identity";
+import { assertObjectTable } from "../sqlIdentifiers";
 
 // ============================================================================
 // DB Row 类型
@@ -847,7 +848,7 @@ export class MemoryObjectRepository {
    * reason: 'source_deleted' / 'needs_review' / 'ok'
    */
   markOrphaned(type: "project" | "task" | "decision", id: string, reason: string): boolean {
-    const table = type === "project" ? "projects" : type === "task" ? "tasks" : "decisions";
+    const table = assertObjectTable(type === "project" ? "projects" : type === "task" ? "tasks" : "decisions");
     const result = this.db
       .prepare(`UPDATE ${table} SET orphan_status = ?, updated_at = ? WHERE id = ?`)
       .run(reason, new Date().toISOString(), id);
@@ -930,7 +931,7 @@ export class MemoryObjectRepository {
     id: string,
     factId: string
   ): boolean {
-    const table = type === "project" ? "projects" : type === "task" ? "tasks" : type === "person" ? "people" : "decisions";
+    const table = assertObjectTable(type === "project" ? "projects" : type === "task" ? "tasks" : type === "person" ? "people" : "decisions");
     const row = this.db
       .prepare(`SELECT source_fact_ids_json FROM ${table} WHERE id = ?`)
       .get(id) as { source_fact_ids_json: string } | undefined;

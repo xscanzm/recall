@@ -8,6 +8,7 @@
 
 import type { DB } from "../Database";
 import type { MemoryEdge, CreateMemoryEdgeInput } from "../../models/types";
+import { assertObjectTable } from "../sqlIdentifiers";
 
 interface MemoryEdgeRow {
   id: string;
@@ -95,7 +96,8 @@ export class MemoryEdgeRepository {
   private validateEndpoint(type: string, id: string): void {
     const table = ENDPOINT_TABLES[type];
     if (!table) return;
-    const found = this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ?`).get(id);
+    const safeTable = assertObjectTable(table);
+    const found = this.db.prepare(`SELECT 1 FROM ${safeTable} WHERE id = ?`).get(id);
     if (!found) throw new Error(`memory edge ${type} endpoint does not exist: ${id}`);
   }
 
