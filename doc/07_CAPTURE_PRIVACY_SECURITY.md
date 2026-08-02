@@ -191,10 +191,17 @@ MVP 可支持 JSON 导出：
 - 包含 observations/facts/scenes/tasks/projects/reports。
 - 包含导出时间和版本。
 
-## 不做云端
+## 云端边界
 
-MVP 不建设 Recall 云端。  
-模型调用直接从用户本机到用户配置的模型 endpoint。
+Recall 提供明确的云端能力边界，以下内置云端能力（全部托管于 `recall-update.ppclaw.online` 的 Cloudflare Worker + R2 + D1）：
+
+- **默认模型代理**：`/api/model/language` 与 `/api/model/multimodal`（`src/main/services/ModelTargets.ts:7,21,34`）。使用「Recall 默认模型服务」时，prompts 与截图（data URL 形式）会经过 Recall 的代理转发到上游模型；该服务默认开启，用户可在设置中改用自配 endpoint 或关闭。
+- **异步多模态任务暂存**：走默认模型异步队列的任务体（含截图 data URL）会临时存放到 Recall 的 Cloudflare R2，最长 2 小时 TTL 后自动清理（`cloudflare/worker/src/modelAsyncJobs.ts:66,98-101`）。
+- **匿名用量统计**：使用默认模型服务时，Worker 会记录每安装实例的元数据统计——经 HMAC 哈希的安装 ID、任务类型、客户端版本与调用计数，存于 D1（`cloudflare/worker/src/stats.ts:288-304`），不保存原始提示词、截图或模型回答。
+- **报告信息图代理**：`/api/infographic/generate`（`src/main/services/InfographicService.ts:13-14`），桌面端只把报告摘要转发生成信息图。
+- **更新检查与安装包分发**：`/api/check`、`/api/latest` 与安装包下载（`src/main/services/UpdateService.ts:33-34`），并上报版本统计。
+
+用户自配的模型 endpoint 仍直接从用户本机连接，不经过 Recall 服务器。
 
 ## 信任中心必须展示
 
