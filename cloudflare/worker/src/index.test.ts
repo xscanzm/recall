@@ -3,6 +3,7 @@ import worker from "./index";
 import {
   getDefaultModelInstallationStats,
   getDefaultModelStatsHistory,
+  hmacInstallationId,
   recordDefaultModelCall,
 } from "./stats";
 
@@ -34,13 +35,45 @@ class MemoryD1 {
   readonly dailyInstallations = new Set<string>();
   readonly installations = new Map<string, { total_calls: number; successes: number; failures: number; language_calls: number; multimodal_calls: number; first_seen_at: string; last_seen_at: string; client_version: string }>();
   readonly installationTasks = new Map<string, number>();
+  readonly rateLimits = new Map<string, number>();
+  readonly jobs = new Map<string, Record<string, unknown>>();
 
   prepare(sql: string) {
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- 下面的 async 方法是对象字面量方法，不共享外层 this
     const self = this;
     return {
       bind(...args: unknown[]) {
-        return { sql, args };
+        return {
+          sql,
+          args,
+          async first<T>(): Promise<T | null> {
+            if (sql.includes("model_proxy_rate_limits")) {
+              // 等价于 D1 的原子自增：同步读改写由 JS 单线程串行化，无丢失
+              const [day, ip] = args as [string, string];
+              const key = `${String(day)}\u0000${String(ip)}`;
+              const n = (self.rateLimits.get(key) ?? 0) + 1;
+              self.rateLimits.set(key, n);
+              return { n } as T;
+            }
+            if (sql.includes("FROM default_multimodal_jobs")) {
+              const [jobId, installationHash, now] = args as [string, string, string];
+              const job = self.jobs.get(jobId);
+              if (!job || job.installation_hash !== installationHash || String(job.expires_at) <= String(now)) return null;
+              return job as T;
+            }
+            return null;
+          },
+          async run() {
+            if (sql.includes("default_multimodal_jobs") && sql.includes("SET delivered_at")) {
+              const job = self.jobs.get(String(args[0]));
+              if (job) job.delivered_at = String(args[0]);
+            }
+            if (sql.includes("DELETE FROM default_multimodal_jobs")) {
+              self.jobs.delete(String(args[0]));
+            }
+            return { success: true };
+          },
+        };
       },
       async all<T>() {
         if (sql.includes("FROM model_daily_stats")) {
@@ -98,6 +131,7 @@ function env(overrides: Record<string, unknown> = {}) {
   return {
     STATS: new MemoryKv(),
     RELEASES: {},
+    MODEL_STATS: new MemoryD1(),
     DEFAULT_LANGUAGE_API_KEY: "worker-secret",
     DEFAULT_LANGUAGE_API_URL: "https://upstream.example",
     DEFAULT_LANGUAGE_MODEL: "fixed-language-model",
@@ -118,6 +152,23 @@ function modelRequest(path: string, body: Record<string, unknown>): Request {
       "X-Recall-Client-Version": "0.4.4",
     },
     body: JSON.stringify(body),
+  });
+}
+
+function modelRequestWithIp(path: string, body: Record<string, unknown>, ip: string): Request {
+  const request = modelRequest(path, body);
+  request.headers.set("CF-Connecting-IP", ip);
+  return request;
+}
+
+function statusPollRequest(jobId: string, ip: string): Request {
+  return new Request(`https://recall-update.ppclaw.online/api/model/multimodal/jobs/${jobId}`, {
+    headers: {
+      "X-Recall-Installation-Id": "123e4567-e89b-42d3-a456-426614174000",
+      "X-Recall-Task-Type": "vision",
+      "X-Recall-Client-Version": "0.4.4",
+      "CF-Connecting-IP": ip,
+    },
   });
 }
 
@@ -213,6 +264,149 @@ describe("default model statistics", () => {
     expect(day.totalCalls).toBe(50);
     const [installation] = await getDefaultModelInstallationStats(d1 as never);
     expect(installation.totalCalls).toBe(50);
+  });
+});
+
+const COMPLETION_BODY = { messages: [{ role: "user", content: "hello" }] };
+const TEST_INSTALLATION_ID = "123e4567-e89b-42d3-a456-426614174000";
+const TEST_JOB_ID = "mmj_00000000-0000-4000-8000-000000000000";
+const RATE_LIMITED_IP = "203.0.113.7";
+
+function stubUpstream(okBody = "ok"): ReturnType<typeof vi.fn> {
+  const fetchImpl = vi.fn(async () => new Response(okBody, { status: 200 }));
+  vi.stubGlobal("fetch", fetchImpl);
+  return fetchImpl;
+}
+
+describe("model proxy per-IP rate limit (D1 atomic counter)", () => {
+  it("allows the first 200 daily calls and rejects the 201st with 429 + Retry-After, without hitting upstream", async () => {
+    const fetchImpl = stubUpstream();
+    const d1 = new MemoryD1();
+    const callEnv = env({ MODEL_STATS: d1 }) as never;
+    for (let i = 0; i < 200; i += 1) {
+      const response = await worker.fetch(
+        modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, RATE_LIMITED_IP),
+        callEnv,
+        { waitUntil: vi.fn() } as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(200);
+
+    const blocked = await worker.fetch(
+      modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, RATE_LIMITED_IP),
+      callEnv,
+      { waitUntil: vi.fn() } as never,
+    );
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBe("86400");
+    await expect(blocked.json()).resolves.toEqual({ error: "rate-limited" });
+    expect(fetchImpl).toHaveBeenCalledTimes(200);
+    expect([...d1.rateLimits.values()]).toEqual([201]);
+  });
+
+  it("passes 50 sequential calls from the same IP (normal session unaffected)", async () => {
+    stubUpstream();
+    const d1 = new MemoryD1();
+    const callEnv = env({ MODEL_STATS: d1 }) as never;
+    for (let i = 0; i < 50; i += 1) {
+      const response = await worker.fetch(
+        modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, RATE_LIMITED_IP),
+        callEnv,
+        { waitUntil: vi.fn() } as never,
+      );
+      expect(response.status).toBe(200);
+    }
+    expect([...d1.rateLimits.values()]).toEqual([50]);
+  });
+
+  it("counts multimodal job submissions on the same shared per-IP counter", async () => {
+    stubUpstream();
+    const d1 = new MemoryD1();
+    const callEnv = env({ MODEL_STATS: d1, MODEL_STATS_HASH_SECRET: "hash-secret" }) as never;
+    for (let i = 0; i < 200; i += 1) {
+      await worker.fetch(
+        modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, RATE_LIMITED_IP),
+        callEnv,
+        { waitUntil: vi.fn() } as never,
+      );
+    }
+    const blocked = await worker.fetch(
+      modelRequestWithIp("/api/model/multimodal/jobs", COMPLETION_BODY, RATE_LIMITED_IP),
+      callEnv,
+      { waitUntil: vi.fn() } as never,
+    );
+    expect(blocked.status).toBe(429);
+    expect(blocked.headers.get("retry-after")).toBe("86400");
+    await expect(blocked.json()).resolves.toEqual({ error: "rate-limited" });
+  });
+
+  it("shares the budget across IPv6 addresses within the same /64", async () => {
+    stubUpstream();
+    const d1 = new MemoryD1();
+    const callEnv = env({ MODEL_STATS: d1, MODEL_PROXY_DAILY_LIMIT_PER_IP: "1" }) as never;
+    const first = await worker.fetch(
+      modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, "2001:db8:85a3:0:0:8a2e:370:7334"),
+      callEnv,
+      { waitUntil: vi.fn() } as never,
+    );
+    expect(first.status).toBe(200);
+    const sibling = await worker.fetch(
+      modelRequestWithIp("/api/model/language/v1/chat/completions", COMPLETION_BODY, "2001:db8:85a3:0:1111:2222:3333:4444"),
+      callEnv,
+      { waitUntil: vi.fn() } as never,
+    );
+    expect(sibling.status).toBe(429);
+  });
+
+  it("does not count status polling against the limit (1000th poll from the same IP still passes)", async () => {
+    const d1 = new MemoryD1();
+    const installationHash = await hmacInstallationId(TEST_INSTALLATION_ID, "hash-secret");
+    d1.jobs.set(TEST_JOB_ID, {
+      id: TEST_JOB_ID,
+      installation_hash: installationHash,
+      status: "running",
+      expires_at: "2999-01-01T00:00:00.000Z",
+    });
+    const pollEnv = env({
+      MODEL_STATS: d1,
+      MODEL_STATS_HASH_SECRET: "hash-secret",
+      MODEL_PROXY_DAILY_LIMIT_PER_IP: "1",
+    }) as never;
+    for (let i = 0; i < 1000; i += 1) {
+      const response = await worker.fetch(statusPollRequest(TEST_JOB_ID, RATE_LIMITED_IP), pollEnv, {} as never);
+      expect(response.status).not.toBe(429);
+    }
+    expect(d1.rateLimits.size).toBe(0);
+  });
+
+  it("a complete async job poll sequence never trips the limit", async () => {
+    const d1 = new MemoryD1();
+    const installationHash = await hmacInstallationId(TEST_INSTALLATION_ID, "hash-secret");
+    d1.jobs.set(TEST_JOB_ID, {
+      id: TEST_JOB_ID,
+      installation_hash: installationHash,
+      status: "running",
+      result_json: null,
+      error_code: null,
+      error_message: null,
+      delivered_at: null,
+      expires_at: "2999-01-01T00:00:00.000Z",
+    });
+    const pollEnv = env({ MODEL_STATS: d1, MODEL_STATS_HASH_SECRET: "hash-secret" }) as never;
+    for (let i = 0; i < 60; i += 1) {
+      const response = await worker.fetch(statusPollRequest(TEST_JOB_ID, RATE_LIMITED_IP), pollEnv, {} as never);
+      expect(response.status).toBe(202);
+    }
+    d1.jobs.set(TEST_JOB_ID, {
+      ...d1.jobs.get(TEST_JOB_ID),
+      status: "succeeded",
+      result_json: JSON.stringify({ choices: [{ message: { role: "assistant", content: "done" } }] }),
+    });
+    const final = await worker.fetch(statusPollRequest(TEST_JOB_ID, RATE_LIMITED_IP), pollEnv, {} as never);
+    expect(final.status).toBe(200);
+    await expect(final.json()).resolves.toMatchObject({ status: "succeeded" });
+    expect(d1.rateLimits.size).toBe(0);
   });
 });
 

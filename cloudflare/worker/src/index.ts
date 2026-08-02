@@ -21,6 +21,12 @@ import {
   submitDefaultMultimodalJob,
   type ModelClientMetadata,
 } from "./modelAsyncJobs";
+import {
+  MODEL_PROXY_RETRY_AFTER_SECONDS,
+  normalizeIpForRateLimit,
+  resolveModelProxyDailyLimit,
+  takeModelProxyRateLimit,
+} from "./rateLimit";
 
 /** CORS 允许的方法 */
 const CORS_ALLOWED_METHODS = "GET, POST, OPTIONS";
@@ -569,6 +575,24 @@ function readModelClientMetadata(request: Request): ModelClientMetadata | null {
   return { installationId, taskType, clientVersion };
 }
 
+/**
+ * 模型代理按 IP 的每日限流（D1 原子计数器）。
+ * 只作用于计费/写入型调用（语言完成、多模态任务提交），状态轮询端点不计数。
+ */
+async function takeModelProxyRateLimitForRequest(request: Request, env: Env): Promise<boolean> {
+  return takeModelProxyRateLimit(
+    env.MODEL_STATS,
+    normalizeIpForRateLimit(request.headers.get("CF-Connecting-IP") ?? "unknown"),
+    resolveModelProxyDailyLimit(env.MODEL_PROXY_DAILY_LIMIT_PER_IP)
+  );
+}
+
+function rateLimitedResponse(): Response {
+  const response = jsonResponse({ error: "rate-limited" }, 429);
+  response.headers.set("Retry-After", String(MODEL_PROXY_RETRY_AFTER_SECONDS));
+  return response;
+}
+
 async function handleDefaultModelProxy(
   request: Request,
   env: Env,
@@ -577,6 +601,9 @@ async function handleDefaultModelProxy(
 ): Promise<Response> {
   if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
     return jsonResponse({ error: "capability-disabled" }, 503);
+  }
+  if (!(await takeModelProxyRateLimitForRequest(request, env))) {
+    return rateLimitedResponse();
   }
   const metadata = readModelClientMetadata(request);
   if (!metadata) {
@@ -637,6 +664,9 @@ async function handleDefaultModelProxy(
 async function handleDefaultMultimodalJobSubmit(request: Request, env: Env): Promise<Response> {
   if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
     return jsonResponse({ error: "capability-disabled" }, 503);
+  }
+  if (!(await takeModelProxyRateLimitForRequest(request, env))) {
+    return rateLimitedResponse();
   }
   const metadata = readModelClientMetadata(request);
   if (!metadata) return jsonResponse({ error: "invalid-client-metadata" }, 400);
