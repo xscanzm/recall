@@ -449,11 +449,11 @@ export class FactRepository {
    * - 时间字段：created_at
    * - 不做软删除过滤（debug 查询需要看到所有记录包括已删除的）
    */
-  listByTimeRange(startAt: string, endAt: string): Fact[] {
+  listByTimeRange(startAt: string, endAt: string, limit: number = 200): Fact[] {
     const stmt = this.db.prepare(
-      "SELECT * FROM facts WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC"
+      `SELECT * FROM facts WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?`
     );
-    const rows = stmt.all(startAt, endAt) as FactRow[];
+    const rows = stmt.all(startAt, endAt, Math.max(1, Math.floor(limit))) as FactRow[];
     return rows.map(mapRow);
   }
 

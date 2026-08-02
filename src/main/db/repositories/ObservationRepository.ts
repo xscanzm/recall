@@ -169,11 +169,11 @@ export class ObservationRepository {
    * - 时间字段：captured_at
    * - 不做软删除过滤（observations 表无 deleted_at）
    */
-  listByTimeRange(startAt: string, endAt: string): Observation[] {
+  listByTimeRange(startAt: string, endAt: string, limit: number = 200): Observation[] {
     const stmt = this.db.prepare(
-      "SELECT * FROM observations WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at DESC"
+      `SELECT * FROM observations WHERE captured_at >= ? AND captured_at < ? ORDER BY captured_at DESC LIMIT ?`
     );
-    const rows = stmt.all(startAt, endAt) as ObservationRow[];
+    const rows = stmt.all(startAt, endAt, Math.max(1, Math.floor(limit))) as ObservationRow[];
     return rows.map(mapRow);
   }
 

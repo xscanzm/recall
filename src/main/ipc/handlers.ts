@@ -1122,8 +1122,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     const start = new Date(Date.parse(createdAt) - windowSeconds * 1000).toISOString();
     const end = new Date(Date.parse(createdAt) + windowSeconds * 1000).toISOString();
     try {
-      const observations = deps.observationRepo?.listByTimeRange(start, end) ?? [];
-      const facts = deps.factRepo?.listByTimeRange(start, end) ?? [];
+      const observations = deps.observationRepo?.listByTimeRange(start, end, 2000) ?? [];
+      const facts = deps.factRepo?.listByTimeRange(start, end, 2000) ?? [];
       const scenes = deps.sceneRepo?.listByTimeRange(start, end) ?? [];
       const proactiveItems = deps.proactiveItemRepo?.listByTimeRange(start, end) ?? [];
       return { ok: true as const, data: { observations, facts, scenes, proactiveItems } };
