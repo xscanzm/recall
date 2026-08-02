@@ -5,6 +5,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # 允许 release.yml 通过 workflow_call 复用它作为发布门禁。
+  workflow_call:
 
 # 同一分支上的新 push 取消上一次仍在跑的 CI，避免重型任务排队堆积。
 concurrency:
@@ -64,9 +66,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # 数据维护/清理流程在真实 Electron 进程内跑通，依赖上面的 build:main。
+      - run: npm run test:maintenance
       - run: npm run test:sqlite
       - run: npm run smoke:memory
-      # 注：playwright.config.ts 的 outputDir 指向系统临时目录、reporter 为 line，
-      # 仓库内不会留下 playwright-report/ 或 test-results/，故不做产物上传。
-      # 若日后需要排查 CI 上的 e2e 失败，先把 outputDir 改成仓库内路径再加 upload-artifact。
+      # playwright.config.ts 的 outputDir 已改为仓库内 test-results/，
+      # 失败时仍上传产物（截图/trace），便于排查 CI 上的 e2e 失败。
       - run: npm run test:e2e
+      - name: 上传 Playwright 测试产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: warn

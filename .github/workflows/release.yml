@@ -107,9 +107,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # 门禁：调用 windows-ci.yml / mac-ci.yml 作为可复用工作流。
+  # GitHub Actions 的 needs 只能引用同一文件内的 job，跨文件依赖必须用 workflow_call。
+  call-windows-ci:
+    name: 门禁 · Windows 测试 CI
+    uses: ./.github/workflows/windows-ci.yml
+
+  call-mac-ci:
+    name: 门禁 · macOS 测试 CI
+    uses: ./.github/workflows/mac-ci.yml
+
   publish:
     name: 发布 R2 manifest 与 GitHub Release
-    needs: [windows-build, mac-build]
+    # 发布前必须先通过测试 CI（call-windows-ci / call-mac-ci，与构建产物解耦的门禁）：
+    # 任一测试 CI 失败都会阻止发布，避免带病发布。
+    needs: [call-windows-ci, call-mac-ci, windows-build, mac-build]
     runs-on: windows-latest
     timeout-minutes: 20
     env:

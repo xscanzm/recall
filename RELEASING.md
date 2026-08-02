@@ -94,6 +94,11 @@ npm version major    # 0.2.0 → 1.0.0，自动 commit + tag
 
 4. 在 GitHub Actions 页面查看构建日志，确认 `✓ Deployment verified`
 
+> ⚠️ **发布门禁**：`publish` 任务通过 `workflow_call` 调用 `windows-ci.yml` 与 `mac-ci.yml`
+> （`call-windows-ci` / `call-mac-ci` 门禁 job）。跨工作流文件之间不能直接用 `needs` 引用，
+> 因此由 release.yml 以可复用工作流方式调用测试 CI，任一测试失败都会阻止发布。
+> 测试 CI 在 tag 推送时仍会各自独立运行一次，属于预期行为。
+
 **前置条件**：仓库 Secrets 中配置了 CF 凭证（见下文「三、Cloudflare 凭证配置」）。
 
 ### 方式 B：本地手动发布（Windows / PowerShell）

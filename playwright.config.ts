@@ -1,6 +1,4 @@
 import { defineConfig } from "@playwright/test";
-import os from "node:os";
-import path from "node:path";
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -9,5 +7,6 @@ export default defineConfig({
   workers: 1,
   reporter: "line",
   use: { trace: "retain-on-failure" },
-  outputDir: path.join(os.tmpdir(), "recall-playwright-results"),
+  // 仓库内相对路径，CI 失败后可经 upload-artifact 上传排查；不再写系统临时目录。
+  outputDir: "test-results",
 });

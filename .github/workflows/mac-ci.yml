@@ -5,6 +5,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # 允许 release.yml 通过 workflow_call 复用它作为发布门禁。
+  workflow_call:
 
 concurrency:
   group: mac-ci-${{ github.ref }}
@@ -35,7 +37,13 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm run test
+      # 与 Windows 快车道一致：强制覆盖率阈值，macOS 上同样把关。
+      - run: npm run test:coverage
+      # 与 Windows 快车道一致：Worker 有独立的 vitest 配置和 node_modules，
+      # 主仓的 test 不会收它；统计后台的授权判断就在这套测试里，必须一起跑。
+      - name: Worker 单测
+        working-directory: cloudflare/worker
+        run: npm ci && npm test
       - name: 构建 macOS 编译产物与包装
         run: |
           bash scripts/build-rapidocr-worker.sh
