@@ -9,6 +9,7 @@
 
 import type { DB } from "../Database";
 import type { Fact, CreateFactInput, UpdateFactInput } from "../../models/types";
+import { generateId } from "../../utils/id";
 
 /**
  * DB 行类型
@@ -767,6 +768,3 @@ function chunkValues<T>(values: T[]): T[][] {
   return chunks;
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

@@ -21,6 +21,8 @@
 import type { CaptureBundle, ScreenshotRetentionPolicy } from "../models/types";
 import type { ActivityService, ActivityWindowInfo, ActivitySignals } from "./ActivityService";
 import type { SettingsService } from "./SettingsService";
+import { generateId } from "../utils/id";
+import { getSystemTimezone } from "../utils/timezone";
 
 /**
  * 活动更新信息（由 app.ts 从 ActivityService 事件转发给 SceneScheduler）
@@ -254,11 +256,7 @@ export class SceneScheduler {
    * 获取系统时区
    */
   private getTimezone(): string {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-    } catch {
-      return "UTC";
-    }
+    return getSystemTimezone();
   }
 
   /**
@@ -267,6 +265,6 @@ export class SceneScheduler {
    * - 与 CaptureService 的 ID 格式一致
    */
   private generateCaptureId(): string {
-    return `cap_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    return generateId("cap_");
   }
 }

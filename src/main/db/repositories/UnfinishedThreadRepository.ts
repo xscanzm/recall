@@ -27,6 +27,7 @@
 
 import type { DB } from "../Database";
 import type { UnfinishedThread } from "../../../shared/types";
+import { generateId } from "../../utils/id";
 
 /**
  * DB 行类型（JSON 字段为 string，boolean 用 number）
@@ -266,6 +267,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

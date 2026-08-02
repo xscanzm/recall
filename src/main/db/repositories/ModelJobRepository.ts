@@ -13,6 +13,7 @@
 
 import type { DB } from "../Database";
 import type { DebugEvent } from "../../models/types";
+import { generateId } from "../../utils/id";
 
 /**
  * model_job 状态
@@ -325,6 +326,3 @@ function safeParseDebugEvents(json: string): DebugEvent[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

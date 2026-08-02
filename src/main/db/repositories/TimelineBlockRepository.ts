@@ -23,6 +23,7 @@
 
 import type { DB } from "../Database";
 import type { TimelineBlock } from "../../../shared/types";
+import { generateId } from "../../utils/id";
 
 export interface TimelineWindowReplacement {
   dateKey: string;
@@ -361,9 +362,6 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
 
 function sourceOverlap(a: TimelineBlock, b: TimelineBlock): number {
   return intersectionSize(a.sourceObservationIds, b.sourceObservationIds)

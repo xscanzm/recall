@@ -5,7 +5,7 @@
 //   writeUnfinishedThreads（repo 可用时 upsertMany）
 //
 // 行为与原 LinkerSceneJudgeWorker 中对应方法完全一致。
-// 注：getLocalDateKey 仍保留本模块（utils/dateKey.ts 的迁移由计划 todo 23 负责）。
+// 注：getLocalDateKey 已统一为 utils/dateKey.ts 的 formatLocalDateKey（todo 23）。
 
 import type { Task, ProactiveItem, DebugEvent } from "../../models/types";
 import type { LinkerSceneJudgeOutput } from "../../models/schemas";
@@ -16,6 +16,7 @@ import type { TimelineBlockRepository } from "../../db/repositories/TimelineBloc
 import type { UnfinishedThreadRepository } from "../../db/repositories/UnfinishedThreadRepository";
 import type { SettingsService } from "../SettingsService";
 import type { ReminderPolicy, JudgeWorkerDeps } from "./types";
+import { formatLocalDateKey } from "../../utils/dateKey";
 
 /**
  * JudgeWorker：待收尾判断员（LinkerSceneJudgeWorker 的 Judge 部分）
@@ -123,14 +124,10 @@ export class JudgeWorker {
    * 用于 unfinished_threads.date_key 字段。
    * 不能直接取 ISO 字符串前 10 位（UTC 日期），否则在 UTC+8 凌晨 0-8 点会得到"昨天"。
    *
-   * 注：utils/dateKey.ts 已有等价实现；迁移到共享工具由计划 todo 23 负责，本拆分不改动。
+   * 注：实现已统一为 utils/dateKey.ts 的 formatLocalDateKey（todo 23）。
    */
   getLocalDateKey(isoTime: string): string {
-    const date = new Date(isoTime);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+    return formatLocalDateKey(new Date(isoTime));
   }
 
   /**

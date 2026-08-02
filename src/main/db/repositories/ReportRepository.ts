@@ -10,6 +10,7 @@ import type { DB } from "../Database";
 import type { Report, CreateReportInput } from "../../models/types";
 import type { PersonalReview } from "../../../shared/types";
 import type { ReportGenerationRequirementsSnapshot } from "../../../shared/reportRequirements";
+import { generateId } from "../../utils/id";
 
 interface ReportRow {
   id: string;
@@ -455,9 +456,6 @@ function extractReportContentId(contentJson: string): string | null {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
 
 /**
  * 从 PersonalReview 中收集所有 sourceFactIds（用于 reports.source_fact_ids_json）

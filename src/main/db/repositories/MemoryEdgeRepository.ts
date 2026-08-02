@@ -9,6 +9,7 @@
 import type { DB } from "../Database";
 import type { MemoryEdge, CreateMemoryEdgeInput } from "../../models/types";
 import { assertObjectTable } from "../sqlIdentifiers";
+import { generateId } from "../../utils/id";
 
 interface MemoryEdgeRow {
   id: string;
@@ -222,6 +223,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

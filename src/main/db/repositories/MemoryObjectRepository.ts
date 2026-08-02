@@ -15,6 +15,7 @@ import type { DB } from "../Database";
 import type { Project, Task, Person, Decision } from "../../models/types";
 import { normalizeIdentity, comparePersonIdentity } from "../../../shared/identity";
 import { assertObjectTable } from "../sqlIdentifiers";
+import { generateId } from "../../utils/id";
 
 // ============================================================================
 // DB Row 类型
@@ -1094,6 +1095,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

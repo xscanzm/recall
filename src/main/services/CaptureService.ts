@@ -49,6 +49,8 @@ import {
   MAX_BENIGN_OCCLUSION_RATIO,
 } from "./captureOcclusion";
 import { logger } from "./Logger";
+import { generateId } from "../utils/id";
+import { getSystemTimezone } from "../utils/timezone";
 
 /**
  * 采集后端。按安全性排序，从最安全的开始试。
@@ -532,7 +534,7 @@ export class CaptureService extends EventEmitter {
     const bundle: CaptureBundle = {
       captureId,
       capturedAt: event.triggeredAt,
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      timezone: getSystemTimezone(),
       appName: event.window.appName,
       windowTitle: event.window.windowTitle,
       urlOrDomain: event.window.urlOrDomain,
@@ -1291,9 +1293,7 @@ export function findMatchingWindowSource<T extends { id: string; name: string }>
  * 格式：cap_<timestamp>_<random>
  */
 function generateCaptureId(): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).slice(2, 10);
-  return `cap_${timestamp}_${random}`;
+  return generateId("cap_");
 }
 
 /**

@@ -13,6 +13,7 @@
 // upsert 采用"先查后改/插"策略保证幂等。
 
 import type { DB } from "../Database";
+import { generateId } from "../../utils/id";
 
 interface ReportSelectionRowDb {
   id: string;
@@ -165,6 +166,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

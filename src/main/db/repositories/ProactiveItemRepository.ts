@@ -31,6 +31,7 @@
 import type { DB } from "../Database";
 import type { ProactiveItem } from "../../models/types";
 import { getLocalTodayStartIso } from "./_helpers";
+import { generateId } from "../../utils/id";
 
 /**
  * DB 行类型（JSON 字段为 string）
@@ -411,6 +412,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

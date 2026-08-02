@@ -13,6 +13,7 @@
 
 import type { DB } from "../Database";
 import type { ModelConfig, PrivacyRule } from "../../../shared/types";
+import { generateId } from "../../utils/id";
 import type {
   UserFeedback,
   CreateModelConfigInput,
@@ -358,6 +359,3 @@ function mapUserFeedbackRow(row: UserFeedbackRow): UserFeedback {
   };
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

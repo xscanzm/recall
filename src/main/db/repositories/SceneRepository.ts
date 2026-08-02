@@ -10,6 +10,7 @@
 import type { DB } from "../Database";
 import type { Scene, CreateSceneInput } from "../../models/types";
 import { getLocalTodayStartIso } from "./_helpers";
+import { generateId } from "../../utils/id";
 
 interface SceneRow {
   id: string;
@@ -517,6 +518,3 @@ function safeParseArray<T = unknown>(json: string): T[] {
   }
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}

@@ -12,6 +12,7 @@
 
 import type { DB } from "../Database";
 import type { ObjectMerge } from "../../models/types";
+import { generateId } from "../../utils/id";
 
 /**
  * DB 行类型
@@ -155,6 +156,3 @@ function mapRow(row: ObjectMergeRow): ObjectMerge {
   };
 }
 
-function generateId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-}
