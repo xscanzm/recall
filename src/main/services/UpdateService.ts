@@ -218,9 +218,34 @@ export interface UpdateServiceDeps {
   settingsService: SettingsService;
 }
 
+/**
+ * 校验绝对路径位于 updates 目录内（含符号链接逃逸防御）
+ *
+ * P0 安全兜底：installAndQuit 只允许启动本服务下载的安装包。
+ * - 通过 realpathSync 解析真实路径后比较，符号链接指向目录外（如指向系统
+ *   目录/任意文件）时 realpath 会落到 updates 目录之外 → 拒绝
+ * - 目标不存在或解析失败一律拒绝（fail-closed）
+ */
+export function isInsideUpdatesDir(absPath: string): boolean {
+  try {
+    const updatesReal = fs.realpathSync(getUpdatesDir());
+    const targetReal = fs.realpathSync(absPath);
+    const relative = path.relative(updatesReal, targetReal);
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  } catch {
+    return false;
+  }
+}
+
 export class UpdateService {
   private status: UpdateStatus = { state: "idle" };
   private lastCheckInfo: UpdateInfo | null = null;
+  /**
+   * 最近一次成功下载（SHA256 校验通过）的安装包路径。
+   * 仅由 downloadUpdate 写入，installAndQuit 只信任此内部路径——
+   * 渲染层无法通过 IPC 输入影响它（契约已拒绝 installerPath 字段）。
+   */
+  private lastInstallerPath: string | null = null;
 
   constructor(private deps: UpdateServiceDeps) {}
 
@@ -373,6 +398,7 @@ export class UpdateService {
     if (fs.existsSync(installerPath)) {
       const existingSha = await computeFileSha256(installerPath);
       if (existingSha === info.sha256) {
+        this.lastInstallerPath = installerPath;
         this.status = { state: "downloaded", installerPath, info };
         logger.info({
           jobType: "update_download",
@@ -471,6 +497,7 @@ export class UpdateService {
       throw new Error(message);
     }
 
+    this.lastInstallerPath = installerPath;
     this.status = { state: "downloaded", installerPath, info };
     this.persistUpdateSettings({ downloadedInstallerPath: installerPath });
     logger.info({
@@ -776,8 +803,41 @@ export class UpdateService {
    *   - 安装需要用户手动操作，所以这里只挂载/打开，不立即 app.quit()，
    *     让用户先完成拖拽再手动退出 Recall（避免用户拖拽时源 app 已退出导致困惑）
    */
-  async installAndQuit(installerPath: string): Promise<void> {
+  async installAndQuit(): Promise<void> {
     this.status = { state: "installing" };
+
+    // P0：只允许启动本服务成功下载（SHA256 校验通过）的安装包，
+    // 渲染层无法提供路径——契约已拒绝 installerPath 字段，这里做运行时兜底。
+    const installerPath = this.lastInstallerPath;
+    if (!installerPath) {
+      this.status = {
+        state: "error",
+        message: "no installer downloaded",
+        code: "installer_missing",
+      };
+      logger.error({
+        jobType: "update_install",
+        status: "failed",
+        errorCode: "installer_missing",
+        message: "installAndQuit called before any successful download",
+      });
+      throw new Error("no installer downloaded");
+    }
+
+    if (!isInsideUpdatesDir(installerPath)) {
+      this.status = {
+        state: "error",
+        message: "installer path outside the updates directory",
+        code: "installer_path_rejected",
+      };
+      logger.error({
+        jobType: "update_install",
+        status: "failed",
+        errorCode: "installer_path_rejected",
+        message: `installer path rejected: ${installerPath}`,
+      });
+      throw new Error(`installer path outside the updates directory: ${installerPath}`);
+    }
 
     if (!fs.existsSync(installerPath)) {
       this.status = {

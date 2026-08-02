@@ -176,7 +176,8 @@ export const createShellSlice: AppSliceCreator<ShellSlice> = (set, get) => ({
     const { updateStatus } = get();
     if (updateStatus.state !== "downloaded") return;
     try {
-      await getIpc().update.installAndQuit({ installerPath: updateStatus.installerPath });
+      // P0：无参调用——安装包路径由主进程 UpdateService 内部保存，不再从渲染层传入
+      await getIpc().update.installAndQuit();
     } catch {
       // 错误状态由 onStatusChanged push
     }

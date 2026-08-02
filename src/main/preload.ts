@@ -399,7 +399,7 @@ const recallApi = {
   update: {
     check: (input?: IpcRequest<"update:check">) => invokeValidated(ipcRenderer, "update:check", input),
     download: () => invokeValidated(ipcRenderer, "update:download"),
-    installAndQuit: (input: IpcRequest<"update:installAndQuit">) => invokeValidated(ipcRenderer, "update:installAndQuit", input),
+    installAndQuit: () => invokeValidated(ipcRenderer, "update:installAndQuit"),
     getStatus: () => invokeValidated(ipcRenderer, "update:getStatus"),
     dismissVersion: (input: IpcRequest<"update:dismissVersion">) => invokeValidated(ipcRenderer, "update:dismissVersion", input),
     onProgress: (callback: (progress: { bytesDownloaded: number; bytesTotal: number; percent: number }) => void): (() => void) => {

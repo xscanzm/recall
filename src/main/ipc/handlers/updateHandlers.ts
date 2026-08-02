@@ -68,14 +68,16 @@ export function registerUpdateHandlers(deps: IpcDeps): void {
   });
 
   // update:installAndQuit - 启动安装程序并退出应用
-  handleValidated(ipcMain, "update:installAndQuit", async (_event, input) => {
+  // P0：无输入。安装包路径由 UpdateService 内部保存（downloadUpdate 成功时写入），
+  // 渲染层传入的 installerPath 会被契约 schema 拒绝（schema_invalid）。
+  handleValidated(ipcMain, "update:installAndQuit", async () => {
     const svc = deps.updateService;
     if (!svc) ipcFail("update_service_unavailable", "UpdateService not initialized");
 
     // 推送 installing 状态
     pushUpdateStatus(deps, { state: "installing" });
 
-    await svc.installAndQuit(input.installerPath);
+    await svc.installAndQuit();
     // installAndQuit 成功后会 app.quit()，以下代码不会执行
     return { ok: true as const };
   });

@@ -444,7 +444,10 @@ export const ipcContracts = {
     response: z.object({ installerPath: z.string() }),
   },
   "update:installAndQuit": {
-    request: z.object({ installerPath: z.string() }),
+    // P0：无输入（z.undefined 严格拒绝任何非 undefined 载荷）。
+    // 渲染层不得传入 installerPath——安装包路径由主进程 UpdateService
+    // 在 downloadUpdate 成功时内部保存；传 { installerPath } 返回 schema_invalid。
+    request: z.undefined(),
     response: z.object({ ok: z.literal(true) }),
   },
   "update:getStatus": {
