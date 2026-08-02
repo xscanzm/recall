@@ -57,6 +57,16 @@ npm version major    # 0.2.0 → 1.0.0，自动 commit + tag
 
 > ⚠️ **重要**：如果 `release-notes.md` 的版本号与 `package.json` 不一致，客户端「关于」分区会显示错误的更新内容。发布前务必核对。
 
+### 数据库迁移规则（必做）
+
+**已发布迁移文件禁止改名/改内容，新变更一律新增迁移。**
+
+`runMigrations` 按文件名排序执行，已执行的版本记录在 `_migrations` 表并跳过。因此：
+
+- 迁移编号发布后**不可改名、不可回改内容**（老库按编号已执行，改动不会重新生效；改名会造成新装库与已升级库的执行顺序分叉）。
+- 任何 schema 变更都以**新编号迁移文件**（当前最大值 + 1，三位数零填充）追加实现。
+- 新增迁移时同步上调 [`src/main/db/migrations.contract.test.ts`](file:///d:/回声Recall/src/main/db/migrations.contract.test.ts) 的 `HIGHEST_RELEASED_MIGRATION`。
+
 ## 二、发布方式
 
 ### 方式 A：GitHub Actions 自动发布（推荐）
