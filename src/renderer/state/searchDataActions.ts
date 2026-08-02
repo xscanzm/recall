@@ -44,25 +44,38 @@ export interface SearchDataState {
 type Set = StoreApi<SearchDataState>["setState"];
 type Get = StoreApi<SearchDataState>["getState"];
 
+/** 搜索请求序号：只有最后一次请求的结果允许落地，避免快速连续搜索/展开时旧响应覆盖新结果。 */
+let latestSearchRequestId = 0;
+
 export async function searchMemoryAction(set: Set, query: string, limit = 50, offset = 0, filters: SearchFilters = {}): Promise<void> {
   if (!query.trim()) return;
+  const requestId = ++latestSearchRequestId;
   set({ searchLoading: true, searchError: null, searchExpandError: null, searchQuery: query, followupQuestion: "", aiMode: null, aiResult: null, aiError: null });
   try {
     const result = await getIpc().memory.search({ query: query.trim(), limit, offset, filters });
+    if (requestId !== latestSearchRequestId) return;
     set({ searchResults: result.results, searchTotal: result.total, searchQuality: result.quality, searchQueryTerms: result.queryTerms, searchFilters: filters, searchExpandedTerms: [], searchLoading: false, searchSearched: true });
   } catch (error) {
+    if (requestId !== latestSearchRequestId) return;
     set({ searchLoading: false, searchError: error instanceof Error ? error.message : String(error), searchSearched: true });
   }
 }
 
 export async function expandSearchAction(set: Set, query: string, filters: SearchFilters = {}): Promise<void> {
   if (!query.trim()) return;
+  const requestId = ++latestSearchRequestId;
   set({ searchExpandLoading: true, searchExpandError: null, aiMode: null, aiResult: null, aiError: null });
   try {
     const result = await getIpc().memory.expandSearch({ query: query.trim(), filters });
-    if (!result.ok) { set({ searchExpandLoading: false, searchExpandError: result.message }); return; }
+    if (!result.ok) {
+      if (requestId !== latestSearchRequestId) return;
+      set({ searchExpandLoading: false, searchExpandError: result.message });
+      return;
+    }
+    if (requestId !== latestSearchRequestId) return;
     set({ searchResults: result.results, searchTotal: result.total, searchQuality: result.quality, searchExpandedTerms: result.expandedTerms, searchExpandLoading: false, searchSearched: true });
   } catch (error) {
+    if (requestId !== latestSearchRequestId) return;
     set({ searchExpandLoading: false, searchExpandError: error instanceof Error ? error.message : String(error) });
   }
 }

@@ -8,6 +8,9 @@ import type { AppSliceCreator, TaskItem, PersonItem, ProjectDetail, FeedbackType
 import type { UnfinishedThread } from "../../../shared/types";
 import { getIpc } from "../ipc";
 
+/** 项目详情请求序号：只有最后一次请求的结果允许落地，避免快速切换项目时旧响应覆盖新数据。 */
+let latestProjectDetailRequestId = 0;
+
 export interface ObjectsSlice {
 
   // M7 新增：项目详情
@@ -113,14 +116,17 @@ export const createObjectsSlice: AppSliceCreator<ObjectsSlice> = (set, get) => (
   unfinishedLoading: false,
   unfinishedError: null,
   loadProjectDetail: async (id: string) => {
+    const requestId = ++latestProjectDetailRequestId;
     set({ projectDetailLoading: true, projectDetailError: null, projectDetail: null });
     try {
       const detail = await getIpc().memory.getProjectDetail({ id });
+      if (requestId !== latestProjectDetailRequestId) return;
       set({
         projectDetail: detail as ProjectDetail,
         projectDetailLoading: false,
       });
     } catch (err) {
+      if (requestId !== latestProjectDetailRequestId) return;
       const message = err instanceof Error ? err.message : String(err);
       set({ projectDetailLoading: false, projectDetailError: message });
     }
