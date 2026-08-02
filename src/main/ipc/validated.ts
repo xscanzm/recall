@@ -1,5 +1,6 @@
 import type { IpcMain, IpcMainInvokeEvent } from "electron";
 import { ipcContracts, type IpcRequest, type IpcResponse, type ValidatedIpcChannel } from "../../shared/ipcContracts";
+import { hasTrustedWebContents } from "./trustedWebContents";
 
 export class IpcValidationError extends Error {
   constructor(public readonly code: string, message: string) {
@@ -12,6 +13,23 @@ export function ipcFail(code: string, message: string): never {
   throw new IpcValidationError(code, message);
 }
 
+interface TrustedSenderEventLike {
+  sender: { id: number; mainFrame: unknown };
+  senderFrame: unknown;
+}
+
+/**
+ * sender 校验（fail-closed）：
+ * - senderFrame 为 null（窗口销毁/导航间隙）→ 拒绝；
+ * - senderFrame 不是主 frame（iframe/子 frame 注入）→ 拒绝；
+ * - webContents.id 不在受信任集合 → 拒绝。
+ */
+export function isTrustedSender(event: TrustedSenderEventLike | null | undefined): boolean {
+  if (!event || !event.sender || event.senderFrame == null) return false;
+  if (event.senderFrame !== event.sender.mainFrame) return false;
+  return hasTrustedWebContents(event.sender.id);
+}
+
 export function handleValidated<C extends ValidatedIpcChannel>(
   ipc: Pick<IpcMain, "handle" | "removeHandler">,
   channel: C,
@@ -20,6 +38,7 @@ export function handleValidated<C extends ValidatedIpcChannel>(
   const contract = ipcContracts[channel];
   ipc.removeHandler(channel);
   ipc.handle(channel, async (event, rawInput?: unknown) => {
+    if (!isTrustedSender(event)) ipcFail("untrusted_sender", `${channel} rejected: sender is not a trusted main frame`);
     const request = contract.request.safeParse(rawInput);
     if (!request.success) ipcFail("schema_invalid", `${channel} request validation failed: ${request.error.message}`);
     try {

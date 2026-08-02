@@ -9,9 +9,19 @@ import { ipcMain } from "electron";
 import { MemoryAskOutputSchema } from "../../models/schemas";
 import type { IpcDeps } from "../handlers";
 import { registerMemorySearchHandlers, shouldRetryMemorySearchExpansion } from "./memorySearchHandlers";
+import { addTrustedWebContents, resetTrustedWebContents } from "../trustedWebContents";
+
+const TRUSTED_SENDER_ID = 2001;
+const mainFrame = {};
+
+function trustedEvent(): { sender: { id: number; mainFrame: object }; senderFrame: object } {
+  return { sender: { id: TRUSTED_SENDER_ID, mainFrame }, senderFrame: mainFrame };
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetTrustedWebContents();
+  addTrustedWebContents(TRUSTED_SENDER_ID);
 });
 
 describe("memory search expansion fallback", () => {
@@ -64,7 +74,7 @@ describe("memory AI requests", () => {
     const registered = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "memory:ask");
     expect(registered).toBeDefined();
 
-    const result = await registered![1]({} as never, {
+    const result = await registered![1](trustedEvent() as never, {
       mode: "summary",
       candidates: [{ id: "fact-1", type: "fact" }],
     });
@@ -101,7 +111,7 @@ describe("memory AI requests", () => {
     const registered = vi.mocked(ipcMain.handle).mock.calls.find(([channel]) => channel === "memory:search");
     expect(registered).toBeDefined();
 
-    const res = await registered![1]({} as never, { query: "测试查询", limit: 10, offset: 0, filters: {} });
+    const res = await registered![1](trustedEvent() as never, { query: "测试查询", limit: 10, offset: 0, filters: {} });
     expect(res).toMatchObject({ total: 1, quality: "strong" });
     expect(searchMock).toHaveBeenCalledWith("测试查询", 10, 0, {});
   });
