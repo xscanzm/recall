@@ -558,61 +558,74 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     if (!parsed.success) {
       fail("schema_invalid", `memory:deleteObject 参数校验失败: ${parsed.error.message}`);
     }
-    if (!deps.memoryObjectRepo || !deps.factRepo || !deps.sceneRepo) {
+    if (!deps.db || !deps.memoryObjectRepo || !deps.factRepo || !deps.sceneRepo) {
       fail("not_ready", "Repositories 未初始化");
     }
-    // soft delete 优先（来自 spec.md "删除和纠错"）
+    // soft delete + 级联标记整体纳入事务（better-sqlite3 transaction 为同步 API：
+    // 事务体内禁止 await / async 函数，任一步失败整体回滚，不再吞错返回成功）
     const { id, type } = parsed.data;
-    let deleted = false;
-    let deletedFact: Fact | null = null;
-    let deletedScene: Scene | null = null;
-    switch (type) {
-      case "fact":
-        // 先取出 fact（用于级联标记），再 soft delete
-        deletedFact = deps.factRepo.getByIdActive(id);
-        deleted = deps.factRepo.softDelete(id);
-        break;
-      case "scene":
-        deletedScene = deps.sceneRepo.getByIdActive(id);
-        deleted = deps.sceneRepo.softDelete(id);
-        break;
-      case "task":
-        deleted = deps.memoryObjectRepo.softDeleteTask(id);
-        break;
-      case "person":
-        deleted = deps.memoryObjectRepo.softDeletePerson(id);
-        break;
-      case "decision":
-        deleted = deps.memoryObjectRepo.softDeleteDecision(id);
-        break;
-      case "project":
-        // 项目使用 archive 而非删除（保留 source 链路）
-        deleted = deps.memoryObjectRepo.archiveProject(id);
-        break;
-      default:
-        fail("schema_invalid", `不支持的删除类型: ${type}`);
+    let staleReportIds: string[] = [];
+    deps.db.transaction(() => {
+      let deleted = false;
+      let deletedFact: Fact | null = null;
+      let deletedScene: Scene | null = null;
+      switch (type) {
+        case "fact":
+          // 先取出 fact（用于级联标记），再 soft delete
+          deletedFact = deps.factRepo!.getByIdActive(id);
+          deleted = deps.factRepo!.softDelete(id);
+          break;
+        case "scene":
+          deletedScene = deps.sceneRepo!.getByIdActive(id);
+          deleted = deps.sceneRepo!.softDelete(id);
+          break;
+        case "task":
+          deleted = deps.memoryObjectRepo!.softDeleteTask(id);
+          break;
+        case "person":
+          deleted = deps.memoryObjectRepo!.softDeletePerson(id);
+          break;
+        case "decision":
+          deleted = deps.memoryObjectRepo!.softDeleteDecision(id);
+          break;
+        case "project":
+          // 项目使用 archive 而非删除（保留 source 链路）
+          deleted = deps.memoryObjectRepo!.archiveProject(id);
+          break;
+        default:
+          fail("schema_invalid", `不支持的删除类型: ${type}`);
+      }
+      if (!deleted) {
+        fail("not_found", `未找到 ${type} ${id} 或已删除`);
+      }
+      // 级联标记：fact / scene 软删除后触发 reports.markStale + L3 orphan 标记
+      // （12.5 / 12.7 / 12.8 / 22.11）。事务内只收集受影响的 reportIds，
+      // deleteImage（异步副作用）必须在事务提交之后执行。
+      try {
+        cascadeMarkAfterFactSceneDelete(
+          {
+            ...deps,
+            onReportsStale: (reportIds) => {
+              staleReportIds = reportIds;
+            },
+          },
+          deletedFact ? [deletedFact] : [],
+          deletedScene ? [deletedScene] : []
+        );
+      } catch (err) {
+        // 级联失败 → 整个事务回滚，返回结构化错误（不再吞错返回成功）
+        fail(
+          "delete_cascade_failed",
+          `级联标记失败，删除已回滚: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    })();
+
+    // 事务提交成功后，再触发信息图清理（异步副作用，不得在事务内执行）
+    for (const reportId of staleReportIds) {
+      void deps.infographicService?.deleteImage(reportId);
     }
-    if (!deleted) {
-      fail("not_found", `未找到 ${type} ${id} 或已删除`);
-    }
-    // 级联标记：fact / scene 软删除后触发 reports.markStale + L3 orphan 标记
-    // （12.5 / 12.7 / 12.8 / 22.11）
-    try {
-      const facts = deletedFact ? [deletedFact] : [];
-      const scenes = deletedScene ? [deletedScene] : [];
-       cascadeMarkAfterFactSceneDelete(
-         {
-           ...deps,
-           onReportsStale: (reportIds) => {
-             for (const reportId of reportIds) void deps.infographicService?.deleteImage(reportId);
-           },
-         },
-         facts,
-         scenes
-       );
-    } catch {
-      // 级联失败不阻断删除结果（已删除不可恢复）
-    }
+
     return { ok: true };
   });
 
