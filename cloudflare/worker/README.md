@@ -152,7 +152,13 @@ npx wrangler secret put STATS_READ_TOKEN
 
 两个端点兼容 OpenAI Chat Completions 的 JSON 与 SSE 响应。Worker 会覆盖客户端传入的 `model`，只允许调用 `wrangler.toml` 中固定的上游与模型，并从对应 Worker Secret 注入 Key。请求体最大 32 MiB，字段和图片输入格式均经过白名单校验。
 
-桌面端只发送随机安装 UUID、任务类型和客户端版本。Worker 使用 `MODEL_STATS_HASH_SECRET` 对安装 UUID 做 HMAC 后才写入 KV，不保存原始标识、提示词、截图或模型回答。`/admin/stats` 只展示经过 Recall 默认代理的调用；用户自配 Key 的直连调用不上报。
+桌面端只发送随机安装 UUID、任务类型和客户端版本。Worker 使用 `MODEL_STATS_HASH_SECRET` 对安装 UUID 做 HMAC 后才持久化，各存储的保留边界如下：
+
+- **KV**：只存按日期/版本的聚合计数（官网访问、下载、更新检查），不含任何请求内容；
+- **D1**：存逐安装的调用元数据（HMAC 化安装标识、任务类型、客户端版本、调用量/成败、首末次时间），不含提示词、截图或模型回答；
+- **R2**：异步多模态任务请求体（sanitizedBody，**可能包含截图 data URL**）以 `default-multimodal-jobs/` 前缀临时存入 `MODEL_JOB_PAYLOADS`，最长保留 2 小时，任务处理完成或到期后自动删除。
+
+`/admin/stats` 只展示经过 Recall 默认代理的调用；用户自配 Key 的直连调用不上报。
 
 紧急停用默认模型代理时，将 `MODEL_PROXY_ENABLED` 设为 `false` 并重新部署。
 
