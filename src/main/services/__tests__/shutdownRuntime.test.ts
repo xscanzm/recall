@@ -55,6 +55,18 @@ describe("shutdownRuntime", () => {
     expect(drainModelJobQueue).toHaveBeenCalledWith(1234);
   });
 
+  it("stops the model job retention scheduler during shutdown", async () => {
+    const stopModelJobRetentionService = vi.fn();
+    const closeDatabase = vi.fn();
+
+    await shutdownRuntime({
+      modelJobRetentionService: { stop: stopModelJobRetentionService },
+      closeDatabase,
+    });
+
+    expect(stopModelJobRetentionService).toHaveBeenCalledOnce();
+  });
+
   it("continues after best-effort scheduler cleanup fails", async () => {
     const closeDatabase = vi.fn();
     await expect(shutdownRuntime({
