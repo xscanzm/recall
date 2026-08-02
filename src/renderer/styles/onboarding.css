@@ -1,0 +1,264 @@
+/* src/renderer/styles/onboarding.css
+   首次启动引导页
+
+   由 global.css 按固定顺序 @import，顺序即层叠顺序。
+   （原为 Onboarding.tsx 内联 <style>，todo 16 迁移至此，类名与规则不变）
+*/
+
+.onboarding {
+  min-height: 100vh;
+  background-color: var(--recall-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.onboarding__container {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 24px rgba(30, 36, 35, 0.06);
+  width: 100%;
+  max-width: 720px;
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.onboarding__progress {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.onboarding__progress-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  color: var(--recall-text-muted);
+}
+.onboarding__progress-item.is-current {
+  background-color: var(--recall-accent);
+  color: white;
+}
+.onboarding__progress-item.is-done {
+  color: var(--recall-accent);
+}
+.onboarding__progress-index {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+.onboarding__progress-item.is-current .onboarding__progress-index {
+  background-color: white;
+  color: var(--recall-accent);
+}
+.onboarding__content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.onboarding__footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--recall-border);
+}
+.onboarding__skip-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--recall-text-muted);
+}
+.onboarding__skip-btn:hover {
+  background-color: var(--recall-bg);
+}
+.onboarding__title {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+}
+.onboarding__subtitle {
+  font-size: 13px;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.onboarding__intro {
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0;
+}
+.onboarding__intro strong {
+  color: var(--recall-text);
+}
+.onboarding__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.onboarding__list-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  background-color: var(--recall-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--recall-border);
+}
+.onboarding__list-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: var(--recall-accent);
+  color: white;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+}
+.onboarding__list-text {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.onboarding__list-text strong {
+  display: block;
+  margin-bottom: 2px;
+}
+.onboarding__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.onboarding__actions button {
+  padding: 8px 18px;
+  font-size: 13px;
+  border: 1px solid var(--recall-border);
+  background-color: var(--recall-surface);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  font-family: inherit;
+}
+.onboarding__actions button.primary {
+  background-color: var(--recall-accent);
+  color: white;
+  border-color: var(--recall-accent);
+}
+.onboarding__actions button.secondary {
+  color: var(--recall-text-muted);
+}
+.onboarding__hint {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.5;
+  margin: 0;
+  font-style: italic;
+}
+.onboarding__service-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.onboarding__service-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 92px;
+  padding: 14px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  background: var(--recall-surface);
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+  cursor: pointer;
+}
+.onboarding__service-option.is-selected {
+  border-color: var(--recall-accent);
+  background: var(--recall-accent-soft);
+  color: var(--recall-text);
+}
+.onboarding__service-option input {
+  margin-top: 3px;
+  accent-color: var(--recall-accent);
+}
+.onboarding__service-option strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--recall-text);
+  font-size: 13px;
+}
+@media (max-width: 620px) {
+  .onboarding__service-options {
+    grid-template-columns: 1fr;
+  }
+}
+.onboarding__status-banner {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.onboarding__status-banner.is-success {
+  background-color: rgba(76, 175, 80, 0.08);
+  color: var(--recall-accent);
+  border: 1px solid var(--recall-accent);
+}
+.onboarding__status-banner.is-info {
+  background-color: var(--recall-bg);
+  color: var(--recall-text-muted);
+  border: 1px solid var(--recall-border);
+}
+.onboarding__status-banner.is-error {
+  background-color: rgba(211, 47, 47, 0.08);
+  color: var(--recall-danger);
+  border: 1px solid var(--recall-danger);
+}
+.onboarding__privacy-summary {
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.onboarding__privacy-summary p {
+  margin: 0 0 6px 0;
+}
+.onboarding__privacy-summary p:last-child {
+  margin-bottom: 0;
+}
+.onboarding__privacy-summary ul {
+  margin: 0 0 6px 0;
+  padding-left: 18px;
+}
+.onboarding__complete-summary {
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.onboarding__complete-summary p {
+  margin: 0 0 6px 0;
+}
+.onboarding__complete-summary p:last-child {
+  margin-bottom: 0;
+}

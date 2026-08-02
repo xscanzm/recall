@@ -77,28 +77,6 @@ export function LoadMorePager<T>({
           {loadMoreLabel}（剩余 {remaining} 条）
         </button>
       )}
-      <style>{`
-        .load-more-pager__list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .load-more-pager__btn {
-          margin-top: 8px;
-          align-self: center;
-          font-size: 12px;
-          color: var(--recall-text-muted);
-          background-color: var(--recall-bg);
-          border: 1px solid var(--recall-border);
-          padding: 6px 16px;
-          border-radius: var(--radius-pill);
-        }
-        .load-more-pager__btn:hover {
-          background-color: #f0eee7;
-          color: var(--recall-accent);
-          border-color: var(--recall-accent);
-        }
-      `}</style>
     </>
   );
 }

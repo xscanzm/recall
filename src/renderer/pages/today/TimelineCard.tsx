@@ -11,6 +11,7 @@
 // - 关键产出 chips
 // - 底部操作：查看来源 / 加入日报 / 忽略
 
+import * as React from "react";
 import { MoreHorizontal } from "lucide-react";
 import type { TodayTimelineProjection } from "../../../shared/types";
 import { Tag } from "../../components/Tag";
@@ -29,7 +30,7 @@ interface TimelineCardProps {
   onOpenDetail: () => void;
 }
 
-export function TimelineCard({ block, detailMode, onOpenDetail }: TimelineCardProps) {
+export const TimelineCard = React.memo(function TimelineCard({ block, detailMode, onOpenDetail }: TimelineCardProps) {
   const selectionMode = useAppStore((s) => s.workReportSelectionMode);
   const selectedBlockIds = useAppStore((s) => s.selectedBlockIds);
   const toggleBlockSelection = useAppStore((s) => s.toggleBlockSelection);
@@ -175,7 +176,7 @@ export function TimelineCard({ block, detailMode, onOpenDetail }: TimelineCardPr
       </div>
     </div>
   );
-}
+});
 
 function DetailItems({ title, items, emptyText }: { title: string; items: string[]; emptyText: string }) {
   return (

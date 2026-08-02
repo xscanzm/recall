@@ -6,6 +6,7 @@
 // - 空状态：今天还没有时间轴片段
 // - 正常：TimelineCard 列表
 
+import * as React from "react";
 import type { TimelineBlock } from "../../../shared/types";
 import { TimelineCard } from "./TimelineCard";
 import type { TimelineViewMode } from "./TimelineToolbar";
@@ -19,6 +20,11 @@ interface TimelineListProps {
 }
 
 export function TimelineList({ blocks, loading, organizing = false, viewMode, onOpenDetail }: TimelineListProps) {
+  // 稳定回调，配合 memo 化的 TimelineCardItem 避免整列表重渲染
+  const handleOpenDetail = React.useCallback(
+    (block: TimelineBlock) => onOpenDetail(block),
+    [onOpenDetail]
+  );
   if (loading) {
     return <TimelineSkeleton />;
   }
@@ -52,16 +58,38 @@ export function TimelineList({ blocks, loading, organizing = false, viewMode, on
   return (
     <div className="timeline-list">
       {blocks.map((block) => (
-        <TimelineCard
+        <TimelineCardItem
           key={block.id}
           block={block}
           detailMode={viewMode === "detail"}
-          onOpenDetail={() => onOpenDetail(block)}
+          onOpenDetail={handleOpenDetail}
         />
       ))}
     </div>
   );
 }
+
+/**
+ * memo 化的单条卡片包装：props 不变时跳过重渲染。
+ * onOpenDetail 接收 block，由本层把稳定回调与当前 block 绑定。
+ */
+const TimelineCardItem = React.memo(function TimelineCardItem({
+  block,
+  detailMode,
+  onOpenDetail,
+}: {
+  block: TimelineBlock;
+  detailMode: boolean;
+  onOpenDetail: (block: TimelineBlock) => void;
+}) {
+  return (
+    <TimelineCard
+      block={block}
+      detailMode={detailMode}
+      onOpenDetail={() => onOpenDetail(block)}
+    />
+  );
+});
 
 /** 4 张 skeleton 卡片（spec 行 1704） */
 function TimelineSkeleton() {

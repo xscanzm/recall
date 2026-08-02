@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatReportAsText, type MonthlyReportContent } from "./ReportEditor";
+import { formatReportAsText, type MonthlyReportContent } from "./reportFormatting";
 
 describe("monthly report text formatting", () => {
   it("uses month and next-month wording", () => {

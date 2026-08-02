@@ -16,6 +16,7 @@
 @import "./components.css"; /* Button / Card / Tag / Skeleton 基础组件 */
 @import "./today-timeline.css"; /* 时间轴：Header / Toolbar / List / Card */
 @import "./today-panel.css"; /* 今日页右侧结果面板、7 个 Section、预览弹层 */
+@import "./onboarding.css"; /* 首次启动引导页 */
 @import "./settings.css"; /* 设置页 6 分区 */
 @import "./trust-center.css"; /* 信任中心 5 卡片 */
 @import "./dialogs.css"; /* 二次确认对话框 */

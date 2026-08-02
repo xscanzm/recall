@@ -41,3 +41,319 @@
   border: 1px solid var(--recall-border);
   border-radius: var(--radius-md);
 }
+
+/* ============ ReminderCard（原内联 <style>，迁移自 ReminderCard.tsx）============ */
+.reminder-card {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-left: 3px solid var(--recall-accent);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(30, 36, 35, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reminder-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+.reminder-card__type-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.reminder-card__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  color: #fff; /* TODO: token */
+}
+.reminder-card__type {
+  font-weight: 500;
+}
+.reminder-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--recall-text);
+  margin: 0;
+}
+.reminder-card__reason {
+  margin: 0;
+  color: var(--recall-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.reminder-card__meta {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.reminder-card__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  color: var(--recall-text-muted);
+}
+.reminder-card__actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.reminder-card__actions-primary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.reminder-card__actions-secondary {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+.reminder-card__actions button {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+.reminder-card__btn--snooze {
+  color: var(--recall-amber);
+  border-color: var(--recall-amber);
+  background-color: var(--recall-surface);
+}
+.reminder-card__btn--snooze:hover {
+  background-color: color-mix(in srgb, var(--recall-amber) 12%, var(--recall-surface));
+}
+.reminder-card__btn--mute {
+  color: var(--recall-danger);
+  border-color: var(--recall-danger);
+  background-color: var(--recall-surface);
+}
+.reminder-card__btn--mute:hover {
+  background-color: color-mix(in srgb, var(--recall-danger) 12%, var(--recall-surface));
+}
+
+/* ============ RemindersPage（原内联 <style>，迁移自 RemindersPage.tsx:531-738）============ */
+.reminders-page__error {
+  background-color: #fbeeeb;
+  border: 1px solid var(--recall-danger);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--recall-danger);
+  font-size: 13px;
+}
+.reminders-page__count {
+  margin-left: 8px;
+  color: var(--recall-text-muted);
+  font-size: 12px;
+  align-self: center;
+}
+.reminder-edit {
+  margin-top: 8px;
+  padding: 12px;
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+}
+.reminder-edit__hint {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0 0 8px 0;
+}
+.reminder-edit__textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 60px;
+}
+.reminder-edit__textarea:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+.reminder-edit__error {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--recall-danger);
+}
+.reminder-edit__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.reminders-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  padding: 12px 16px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  align-items: center;
+}
+.reminders-legend__title {
+  font-weight: 500;
+}
+.reminders-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.reminders-legend__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* 012 新增：合并建议区样式 */
+.reminders-page__merge-suggestions {
+  margin-bottom: 24px;
+  padding: 16px;
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-amber);
+  border-radius: var(--radius-md);
+}
+.reminders-page__merge-header {
+  margin-bottom: 12px;
+}
+.reminders-page__merge-title {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.reminders-page__merge-count {
+  display: inline-block;
+  min-width: 20px;
+  padding: 2px 8px;
+  background-color: var(--recall-amber);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 999px;
+  text-align: center;
+}
+.reminders-page__merge-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+}
+.reminders-page__merge-error {
+  background-color: #fbeeeb;
+  border: 1px solid var(--recall-danger);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--recall-danger);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.reminders-page__merge-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.merge-suggestion-card {
+  padding: 12px 14px;
+  background-color: var(--recall-bg);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.merge-suggestion-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.merge-suggestion-card__type {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 4px;
+}
+.merge-suggestion-card__type--person {
+  background-color: #e8f1ff;
+  color: #1f6feb;
+}
+.merge-suggestion-card__type--project {
+  background-color: #e7f8ee;
+  color: #1a7f37;
+}
+.merge-suggestion-card__confidence {
+  font-size: 11px;
+  color: var(--recall-text-muted);
+}
+.merge-suggestion-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.merge-suggestion-card__arrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.merge-suggestion-card__from {
+  color: var(--recall-text-muted);
+  text-decoration: line-through;
+}
+.merge-suggestion-card__arrow-icon {
+  color: var(--recall-amber);
+  font-weight: 600;
+}
+.merge-suggestion-card__to {
+  color: var(--recall-text);
+  font-weight: 600;
+}
+.merge-suggestion-card__reason {
+  margin: 0;
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  line-height: 1.5;
+}
+.merge-suggestion-card__actions {
+  display: flex;
+  gap: 6px;
+}
+.merge-suggestion-card__actions button {
+  padding: 6px 12px;
+  font-size: 13px;
+}

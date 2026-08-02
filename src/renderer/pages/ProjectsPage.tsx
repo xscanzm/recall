@@ -14,7 +14,8 @@
 // - 不暴露 L0/L1/L2/L3 术语
 // - 不显示 source ids
 
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../state/store";
 import { getIpc } from "../state/ipc";
 import { CorrectionDialog } from "../components/CorrectionDialog";
@@ -58,6 +59,175 @@ function admissionReasonLabel(reason?: string | null): string {
   };
   return reason ? labels[reason] ?? "需要确认是否作为长期项目" : "需要确认是否作为长期项目";
 }
+
+interface ProjectCardProps {
+  project: ProjectItem;
+  stat: { openTaskCount: number; decisionCount: number; recentSummary: string };
+  status: "active" | "candidate" | "archived";
+  reviewingProjectId: string | null;
+  onOpenDetail: (id: string) => void;
+  onGenerateReport: (id: string) => void;
+  onMerge: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+  onReview: (id: string, decision: "promote" | "reject" | "restore") => void;
+}
+
+/** memo 化的项目卡片：props 不变时跳过重渲染（配合父组件 useCallback 稳定回调） */
+const ProjectCard = React.memo(function ProjectCard({
+  project,
+  stat,
+  status,
+  reviewingProjectId,
+  onOpenDetail,
+  onGenerateReport,
+  onMerge,
+  onDelete,
+  onReview,
+}: ProjectCardProps) {
+  const today = isToday(project.lastActiveAt);
+  const thisWeek = isThisWeek(project.lastActiveAt);
+  return (
+    <div
+      className="project-card"
+      onClick={() => status === "active" && onOpenDetail(project.id)}
+      role={status === "active" ? "button" : undefined}
+      tabIndex={status === "active" ? 0 : undefined}
+      onKeyDown={(e) => {
+        if (status === "active" && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpenDetail(project.id);
+        }
+      }}
+    >
+      <div className="project-card__header">
+        <h3 className="project-card__name">{project.name}</h3>
+        <div className="project-card__tags">
+          {status === "candidate" && (
+            <span className="project-card__tag admission-card__status">待确认</span>
+          )}
+          {status === "archived" && (
+            <span className="project-card__tag admission-card__status">已归档</span>
+          )}
+          {status === "active" && today && (
+            <span className="project-card__tag project-card__tag--today">今日</span>
+          )}
+          {status === "active" && !today && thisWeek && (
+            <span className="project-card__tag project-card__tag--week">本周</span>
+          )}
+        </div>
+      </div>
+      {project.aliases && project.aliases.length > 0 && (
+        <div className="project-card__aliases" title="已合并过的旧名字">
+          别名：{project.aliases.join("、")}
+        </div>
+      )}
+      <div className="project-card__summary">
+        {stat.recentSummary || project.summary || "暂无最近进展"}
+      </div>
+      {status !== "active" && (
+        <div className="admission-card__reason">
+          {admissionReasonLabel(project.admissionReason)}
+        </div>
+      )}
+      <div className="project-card__meta">
+        {status === "active" ? (
+          <span className="project-card__stat">待收尾：{stat.openTaskCount} 项</span>
+        ) : (
+          <span className="project-card__stat">
+            相关证据：{project.admissionEvidence?.length ?? project.sourceFactIds.length} 条
+          </span>
+        )}
+        <span className="project-card__time">
+          最后活跃：
+          {project.lastActiveAt
+            ? new Date(project.lastActiveAt).toLocaleDateString("zh-CN")
+            : "未知"}
+        </span>
+      </div>
+      <div className="project-card__actions">
+        {status === "active" && <><button
+          type="button"
+          className="project-card__action project-card__action--primary"
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpenDetail(project.id);
+          }}
+        >
+          查看项目
+        </button>
+        <button
+          type="button"
+          className="project-card__action"
+          onClick={(e) => {
+            e.stopPropagation();
+            onGenerateReport(project.id);
+          }}
+        >
+          生成项目报告
+        </button>
+        <button
+          type="button"
+          className="project-card__action project-card__action--merge"
+          onClick={(e) => {
+            e.stopPropagation();
+            onMerge(project.id, project.name);
+          }}
+          title="把此项目合并到其他项目（同一项目但识别成多个名字时）"
+        >
+          合并到...
+        </button>
+        <button
+          type="button"
+          className="project-card__action project-card__action--danger"
+          onClick={(e) => {
+            e.stopPropagation();
+            void onDelete(project.id);
+          }}
+        >
+          归档
+        </button>
+        </>}
+        {status === "candidate" && <>
+          <button
+            type="button"
+            className="project-card__action project-card__action--primary"
+            disabled={reviewingProjectId === project.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onReview(project.id, "promote");
+            }}
+          >
+            确认为项目
+          </button>
+          <button
+            type="button"
+            className="project-card__action project-card__action--danger"
+            disabled={reviewingProjectId === project.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onReview(project.id, "reject");
+            }}
+          >
+            排除
+          </button>
+        </>}
+        {status === "archived" && (
+          <button
+            type="button"
+            className="project-card__action project-card__action--primary"
+            disabled={reviewingProjectId === project.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onReview(project.id, "restore");
+            }}
+          >
+            恢复项目
+          </button>
+        )}
+      </div>
+    </div>
+  );
+});
 
 /**
  * 根据项目详情生成项目报告（结构化展示，非 LLM 生成）
@@ -283,7 +453,7 @@ export function ProjectsPage() {
     return list;
   }, [todayData.projects, supplementalProjects, projectsFilters]);
 
-  const handleReviewProject = async (
+  const handleReviewProject = useCallback(async (
     id: string,
     decision: "promote" | "reject" | "restore"
   ) => {
@@ -298,18 +468,29 @@ export function ProjectsPage() {
     } finally {
       setReviewingProjectId(null);
     }
-  };
+  }, [loadToday]);
 
-  const handleOpenDetail = (id: string) => {
+  const handleOpenDetail = useCallback((id: string) => {
     setSelectedProjectId(id);
-  };
+  }, []);
 
-  const handleBackToList = () => {
+  const handleGenerateReport = useCallback((id: string) => {
+    setSelectedProjectId(id);
+    void loadProjectDetail(id).then(() => {
+      setReportExpanded(true);
+    });
+  }, [loadProjectDetail]);
+
+  const handleMergeProject = useCallback((id: string, name: string) => {
+    setMergeFrom({ id, name });
+  }, []);
+
+  const handleBackToList = useCallback(() => {
     setSelectedProjectId(null);
     setReportExpanded(false);
-  };
+  }, []);
 
-  const handleDeleteProject = (id: string) => {
+  const handleDeleteProject = useCallback((id: string) => {
     useAppStore.getState().requestConfirm({
       title: "归档项目",
       message: "确定要归档这个项目吗？项目归档后仍保留 source 链路，可恢复。",
@@ -325,7 +506,7 @@ export function ProjectsPage() {
         }
       },
     });
-  };
+  }, [deleteObject, selectedProjectId]);
 
   const handleCompleteTask = async (id: string) => {
     try {
@@ -805,160 +986,24 @@ export function ProjectsPage() {
         </div>
       ) : (
         <div className="projects-grid">
-          {filteredProjects.map((project) => {
-            const stat = projectStats.get(project.id) ?? {
-              openTaskCount: 0,
-              decisionCount: 0,
-              recentSummary: "",
-            };
-            const today = isToday(project.lastActiveAt);
-            const thisWeek = isThisWeek(project.lastActiveAt);
-            return (
-              <div
-                key={project.id}
-                className="project-card"
-                onClick={() => projectsFilters.status === "active" && handleOpenDetail(project.id)}
-                role={projectsFilters.status === "active" ? "button" : undefined}
-                tabIndex={projectsFilters.status === "active" ? 0 : undefined}
-                onKeyDown={(e) => {
-                  if (projectsFilters.status === "active" && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    handleOpenDetail(project.id);
-                  }
-                }}
-              >
-                <div className="project-card__header">
-                  <h3 className="project-card__name">{project.name}</h3>
-                  <div className="project-card__tags">
-                    {projectsFilters.status === "candidate" && (
-                      <span className="project-card__tag admission-card__status">待确认</span>
-                    )}
-                    {projectsFilters.status === "archived" && (
-                      <span className="project-card__tag admission-card__status">已归档</span>
-                    )}
-                    {projectsFilters.status === "active" && today && (
-                      <span className="project-card__tag project-card__tag--today">今日</span>
-                    )}
-                    {projectsFilters.status === "active" && !today && thisWeek && (
-                      <span className="project-card__tag project-card__tag--week">本周</span>
-                    )}
-                  </div>
-                </div>
-                {project.aliases && project.aliases.length > 0 && (
-                  <div className="project-card__aliases" title="已合并过的旧名字">
-                    别名：{project.aliases.join("、")}
-                  </div>
-                )}
-                <div className="project-card__summary">
-                  {stat.recentSummary || project.summary || "暂无最近进展"}
-                </div>
-                {projectsFilters.status !== "active" && (
-                  <div className="admission-card__reason">
-                    {admissionReasonLabel(project.admissionReason)}
-                  </div>
-                )}
-                <div className="project-card__meta">
-                  {projectsFilters.status === "active" ? (
-                    <span className="project-card__stat">待收尾：{stat.openTaskCount} 项</span>
-                  ) : (
-                    <span className="project-card__stat">
-                      相关证据：{project.admissionEvidence?.length ?? project.sourceFactIds.length} 条
-                    </span>
-                  )}
-                  <span className="project-card__time">
-                    最后活跃：
-                    {project.lastActiveAt
-                      ? new Date(project.lastActiveAt).toLocaleDateString("zh-CN")
-                      : "未知"}
-                  </span>
-                </div>
-                <div className="project-card__actions">
-                  {projectsFilters.status === "active" && <><button
-                    type="button"
-                    className="project-card__action project-card__action--primary"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenDetail(project.id);
-                    }}
-                  >
-                    查看项目
-                  </button>
-                  <button
-                    type="button"
-                    className="project-card__action"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedProjectId(project.id);
-                      void loadProjectDetail(project.id).then(() => {
-                        setReportExpanded(true);
-                      });
-                    }}
-                  >
-                    生成项目报告
-                  </button>
-                  <button
-                    type="button"
-                    className="project-card__action project-card__action--merge"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMergeFrom({ id: project.id, name: project.name });
-                    }}
-                    title="把此项目合并到其他项目（同一项目但识别成多个名字时）"
-                  >
-                    合并到...
-                  </button>
-                  <button
-                    type="button"
-                    className="project-card__action project-card__action--danger"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleDeleteProject(project.id);
-                    }}
-                  >
-                    归档
-                  </button>
-                  </>}
-                  {projectsFilters.status === "candidate" && <>
-                    <button
-                      type="button"
-                      className="project-card__action project-card__action--primary"
-                      disabled={reviewingProjectId === project.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleReviewProject(project.id, "promote");
-                      }}
-                    >
-                      确认为项目
-                    </button>
-                    <button
-                      type="button"
-                      className="project-card__action project-card__action--danger"
-                      disabled={reviewingProjectId === project.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleReviewProject(project.id, "reject");
-                      }}
-                    >
-                      排除
-                    </button>
-                  </>}
-                  {projectsFilters.status === "archived" && (
-                    <button
-                      type="button"
-                      className="project-card__action project-card__action--primary"
-                      disabled={reviewingProjectId === project.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleReviewProject(project.id, "restore");
-                      }}
-                    >
-                      恢复项目
-                    </button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {filteredProjects.map((project) => (
+            <ProjectCard
+              key={project.id}
+              project={project}
+              stat={projectStats.get(project.id) ?? {
+                openTaskCount: 0,
+                decisionCount: 0,
+                recentSummary: "",
+              }}
+              status={projectsFilters.status}
+              reviewingProjectId={reviewingProjectId}
+              onOpenDetail={handleOpenDetail}
+              onGenerateReport={handleGenerateReport}
+              onMerge={handleMergeProject}
+              onDelete={handleDeleteProject}
+              onReview={handleReviewProject}
+            />
+          ))}
         </div>
       )}
 

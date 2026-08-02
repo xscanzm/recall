@@ -1,6 +1,97 @@
-import { formatReportAsText } from "../../components/ReportEditor";
+// 报告类型定义与纯文本格式化（自 ReportEditor 死组件迁移，todo 16）
 import type { ReportItem } from "../../state/store";
 import type { PersonalReview } from "../../../shared/types";
+
+// ============================================================================
+// 报告内容类型（与 main/models/schemas.ts 保持结构一致，进程边界隔离）
+// ============================================================================
+
+export interface ReportProjectUpdate {
+  projectId?: string;
+  projectName: string;
+  summary: string;
+  evidenceFactIds: string[];
+  evidenceSceneIds: string[];
+  progress?: string; // 仅周报
+}
+
+export interface ReportFactEntry {
+  text: string;
+  confidence: number;
+  evidenceFactIds: string[];
+}
+
+export interface ReportOpenTaskEntry extends ReportFactEntry {
+  status: "open" | "in_progress" | "blocked" | "needs_confirmation";
+}
+
+export interface ReportNeedsReviewEntry {
+  text: string;
+  reason: string;
+  sourceFactIds: string[];
+}
+
+export interface DailyReportContent {
+  date?: string;
+  headline: string;
+  overview: string;
+  projectUpdates: ReportProjectUpdate[];
+  completed: ReportFactEntry[];
+  openTasks: ReportOpenTaskEntry[];
+  decisions: ReportFactEntry[];
+  risks: ReportFactEntry[];
+  tomorrowSuggestions: string[];
+  needsReview: ReportNeedsReviewEntry[];
+}
+
+export interface WeeklyReportContent {
+  weekStart: string;
+  weekEnd: string;
+  headline: string;
+  overview: string;
+  projectUpdates: ReportProjectUpdate[];
+  completed: ReportFactEntry[];
+  decisions: ReportFactEntry[];
+  risks: ReportFactEntry[];
+  nextWeekSuggestions: string[];
+}
+
+export interface MonthlyReportContent {
+  monthStart: string;
+  monthEnd: string;
+  headline: string;
+  overview: string;
+  projectUpdates: ReportProjectUpdate[];
+  completed: ReportFactEntry[];
+  decisions: ReportFactEntry[];
+  risks: ReportFactEntry[];
+  nextMonthSuggestions: string[];
+}
+
+export type ReportContent =
+  | DailyReportContent
+  | WeeklyReportContent
+  | MonthlyReportContent;
+
+function isMonthlyContent(c: ReportContent): c is MonthlyReportContent {
+  return (c as MonthlyReportContent).monthStart !== undefined;
+}
+
+function isWeeklyContent(c: ReportContent): c is WeeklyReportContent {
+  return !isMonthlyContent(c) &&
+    (c as WeeklyReportContent).weekStart !== undefined &&
+    (c as DailyReportContent).date === undefined;
+}
+
+function taskStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    open: "未开始",
+    in_progress: "进行中",
+    blocked: "阻塞",
+    needs_confirmation: "待确认",
+  };
+  return labels[status] ?? status;
+}
 
 export const REPORT_TYPE_LABELS: Record<string, string> = {
   daily: "日报",
@@ -259,4 +350,116 @@ export function parseReportSections(item: ReportItem): ReportSection[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * 将报告格式化为可复制的纯文本（适合粘贴到工作汇报）
+ */
+export function formatReportAsText(
+  content: ReportContent,
+  title: string,
+  dateKey: string,
+  reportType?: "daily" | "weekly" | "monthly"
+): string {
+  const lines: string[] = [];
+  const isMonthly = reportType === "monthly" || isMonthlyContent(content);
+  const isWeekly = !isMonthly && (reportType === "weekly" || isWeeklyContent(content));
+
+  lines.push(`# ${content.headline || title}`);
+  if (isMonthly) {
+    const m = content as MonthlyReportContent;
+    const legacy = content as unknown as WeeklyReportContent;
+    const monthStart = m.monthStart || legacy.weekStart || dateKey;
+    const monthEnd = m.monthEnd || legacy.weekEnd || dateKey;
+    lines.push(`月份：${monthStart} ~ ${monthEnd}`);
+  } else {
+    lines.push(`日期：${dateKey}`);
+    if (isWeekly) {
+      const w = content as WeeklyReportContent;
+      lines.push(`周期：${w.weekStart} ~ ${w.weekEnd}`);
+    }
+  }
+  lines.push("");
+  lines.push("## 概览");
+  lines.push(content.overview);
+  lines.push("");
+
+  if (content.projectUpdates.length > 0) {
+    lines.push("## 项目进展");
+    content.projectUpdates.forEach((p) => {
+      lines.push(`### ${p.projectName}`);
+      lines.push(p.summary);
+      if (p.progress) lines.push(`进展：${p.progress}`);
+      lines.push("");
+    });
+  }
+
+  if (content.completed.length > 0) {
+    lines.push("## 已完成");
+    content.completed.forEach((c) => {
+      lines.push(`- ${c.text}`);
+    });
+    lines.push("");
+  }
+
+  if (!isWeekly && !isMonthly) {
+    const d = content as DailyReportContent;
+    if (d.openTasks.length > 0) {
+      lines.push("## 进行中任务");
+      d.openTasks.forEach((t) => {
+        lines.push(`- [${taskStatusLabel(t.status)}] ${t.text}`);
+      });
+      lines.push("");
+    }
+  }
+
+  if (content.decisions.length > 0) {
+    lines.push("## 关键决策");
+    content.decisions.forEach((d) => {
+      lines.push(`- ${d.text}`);
+    });
+    lines.push("");
+  }
+
+  if (content.risks.length > 0) {
+    lines.push("## 风险与阻塞");
+    content.risks.forEach((r) => {
+      lines.push(`- ${r.text}`);
+    });
+    lines.push("");
+  }
+
+  if (isMonthly) {
+    const m = content as MonthlyReportContent;
+    const legacy = content as unknown as WeeklyReportContent;
+    const suggestions = m.nextMonthSuggestions ?? legacy.nextWeekSuggestions ?? [];
+    if (suggestions.length > 0) {
+      lines.push("## 下月重点");
+      suggestions.forEach((s) => lines.push(`- ${s}`));
+      lines.push("");
+    }
+  } else if (isWeekly) {
+    const w = content as WeeklyReportContent;
+    if (w.nextWeekSuggestions.length > 0) {
+      lines.push("## 下周建议");
+      w.nextWeekSuggestions.forEach((s) => lines.push(`- ${s}`));
+      lines.push("");
+    }
+  } else {
+    const d = content as DailyReportContent;
+    if (d.tomorrowSuggestions.length > 0) {
+      lines.push("## 明日建议");
+      d.tomorrowSuggestions.forEach((s) => lines.push(`- ${s}`));
+      lines.push("");
+    }
+    if (d.needsReview.length > 0) {
+      lines.push("## 待确认");
+      d.needsReview.forEach((n) => {
+        lines.push(`- ${n.text}（原因：${n.reason}）`);
+      });
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
 }

@@ -395,6 +395,11 @@ textarea:disabled {
   box-shadow: var(--shadow-card);
 }
 
+/* 合并建议区保持 amber 边框：迁移前该规则由 RemindersPage 内联 <style> 覆盖（todo 16） */
+.reminders-page__merge-suggestions {
+  border-color: var(--recall-amber);
+}
+
 .card,
 .project-card,
 .person-card,

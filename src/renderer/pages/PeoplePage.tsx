@@ -18,7 +18,8 @@
 // - 不显示 source ids
 // - 人物页是用户自己的关系记忆，不是监控别人
 
-import { useEffect, useMemo, useState } from "react";
+import * as React from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MoreHorizontal } from "lucide-react";
 import { useAppStore } from "../state/store";
 import type { PersonItem, ProjectItem, SceneItem, TaskItem, FactItem } from "../state/store";
@@ -58,6 +59,135 @@ function admissionReasonLabel(reason?: string | null): string {
   };
   return reason ? labels[reason] ?? "需要确认是否作为长期人物" : "需要确认是否作为长期人物";
 }
+
+interface PersonCardProps {
+  person: PersonItem;
+  stat: { latestInteraction: string | null; unfinishedCount: number; projectNames: string[] };
+  status: "active" | "candidate" | "deleted";
+  reviewingPersonId: string | null;
+  onOpenDetail: (id: string) => void;
+  onMerge: (id: string, name: string) => void;
+  onDelete: (id: string) => void;
+  onReview: (id: string, decision: "promote" | "reject" | "restore") => void;
+}
+
+/** memo 化的人物卡片：props 不变时跳过重渲染（配合父组件 useCallback 稳定回调） */
+const PersonCard = React.memo(function PersonCard({
+  person,
+  stat,
+  status,
+  reviewingPersonId,
+  onOpenDetail,
+  onMerge,
+  onDelete,
+  onReview,
+}: PersonCardProps) {
+  return (
+    <div
+      className="person-card"
+      role={status === "active" ? "button" : undefined}
+      tabIndex={status === "active" ? 0 : undefined}
+      onClick={() => {
+        if (status === "active") {
+          onOpenDetail(person.id);
+        }
+      }}
+      onKeyDown={(e) => {
+        if (status === "active" && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onOpenDetail(person.id);
+        }
+      }}
+    >
+      <div className="person-card__header">
+        <h3 className="person-card__name">{person.name}</h3>
+        <div className="person-card__header-right">
+          {status !== "active" && (
+            <span className="person-card__badge admission-card__status">
+              {status === "candidate" ? "待确认" : "已删除"}
+            </span>
+          )}
+          {stat.unfinishedCount > 0 && (
+            <span className="person-card__badge">{stat.unfinishedCount} 项待办</span>
+          )}
+          {status === "active" && <details className="person-card__menu">
+            <summary aria-label="人物操作" title="人物操作"><MoreHorizontal size={17} /></summary>
+            <div className="person-card__menu-popover">
+              <button type="button" onClick={(e) => { e.stopPropagation(); onMerge(person.id, person.name); }}>合并到...</button>
+              <button type="button" className="is-danger" onClick={(e) => { e.stopPropagation(); onDelete(person.id); }}>删除</button>
+            </div>
+          </details>}
+        </div>
+      </div>
+      {person.aliases && person.aliases.length > 0 && (
+        <div className="person-card__aliases" title="已合并过的旧名字">
+          别名：{person.aliases.join("、")}
+        </div>
+      )}
+      <div
+        className={`person-card__body${status === "active" ? "" : " person-card__body--static"}`}
+        onClick={() => status === "active" && onOpenDetail(person.id)}
+      >
+        <div className="person-card__role">
+          {person.relationship
+            || [person.role, person.organization].filter(Boolean).join(" · ")
+            || "角色未知"}
+        </div>
+        <div className="person-card__projects">
+          {stat.projectNames.length > 0
+            ? stat.projectNames.slice(0, 2).join("、")
+            : "暂无相关项目"}
+          {stat.projectNames.length > 2 && ` 等 ${stat.projectNames.length} 个`}
+        </div>
+        <div className="person-card__meta">
+          <span className="person-card__time">
+            最近协作：
+            {stat.latestInteraction
+              ? new Date(stat.latestInteraction).toLocaleDateString("zh-CN")
+              : "暂无记录"}
+          </span>
+        </div>
+      </div>
+      {status !== "active" && (
+        <div className="admission-card__reason">
+          {admissionReasonLabel(person.admissionReason)}
+        </div>
+      )}
+      {status === "candidate" && (
+        <div className="admission-card__actions">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={reviewingPersonId === person.id}
+            onClick={() => void onReview(person.id, "promote")}
+          >
+            确认为人物
+          </button>
+          <button
+            type="button"
+            className="btn btn-danger"
+            disabled={reviewingPersonId === person.id}
+            onClick={() => void onReview(person.id, "reject")}
+          >
+            排除
+          </button>
+        </div>
+      )}
+      {status === "deleted" && (
+        <div className="admission-card__actions">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={reviewingPersonId === person.id}
+            onClick={() => void onReview(person.id, "restore")}
+          >
+            恢复人物
+          </button>
+        </div>
+      )}
+    </div>
+  );
+});
 
 interface PersonDetailData {
   person: PersonItem;
@@ -236,7 +366,7 @@ export function PeoplePage() {
     return list;
   }, [todayData.people, supplementalPeople, peopleFilters]);
 
-  const handleReviewPerson = async (
+  const handleReviewPerson = useCallback(async (
     id: string,
     decision: "promote" | "reject" | "restore"
   ) => {
@@ -251,21 +381,18 @@ export function PeoplePage() {
     } finally {
       setReviewingPersonId(null);
     }
-  };
+  }, [loadToday]);
 
-  if (!isReady) {
-    return (
-      <div className="people-page">
-        <header className="page-header">
-          <h2>人物</h2>
-        </header>
-        <p className="state-loading">正在加载...</p>
-      </div>
-    );
-  }
+  const handleOpenPersonDetail = useCallback((id: string) => {
+    setSelectedPersonId(id);
+  }, []);
+
+  const handleMergePerson = useCallback((id: string, name: string) => {
+    setMergeFrom({ id, name });
+  }, []);
 
   /** 删除人物（软删除，保留 source 链路可恢复） */
-  const handleDeletePerson = (id: string) => {
+  const handleDeletePerson = useCallback((id: string) => {
     useAppStore.getState().requestConfirm({
       title: "删除人物",
       message: "确定要删除这个人物吗？删除后仍保留 source 链路，可恢复。",
@@ -281,7 +408,18 @@ export function PeoplePage() {
         }
       },
     });
-  };
+  }, [deleteObject, selectedPersonId]);
+
+  if (!isReady) {
+    return (
+      <div className="people-page">
+        <header className="page-header">
+          <h2>人物</h2>
+        </header>
+        <p className="state-loading">正在加载...</p>
+      </div>
+    );
+  }
 
   /** 打开人物编辑弹窗（用当前人物信息初始化表单） */
   const handleOpenEditDialog = () => {
@@ -712,119 +850,23 @@ export function PeoplePage() {
         </div>
       ) : (
         <div className="people-grid">
-          {filteredPeople.map((person) => {
-            const stat = peopleStats.get(person.id) ?? {
-              latestInteraction: null,
-              unfinishedCount: 0,
-              projectNames: [],
-            };
-            return (
-              <div
-                key={person.id}
-                className="person-card"
-                role={peopleFilters.status === "active" ? "button" : undefined}
-                tabIndex={peopleFilters.status === "active" ? 0 : undefined}
-                onClick={() => {
-                  if (peopleFilters.status === "active") {
-                    setSelectedPersonId(person.id);
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (peopleFilters.status === "active" && (e.key === "Enter" || e.key === " ")) {
-                    e.preventDefault();
-                    setSelectedPersonId(person.id);
-                  }
-                }}
-              >
-                <div className="person-card__header">
-                  <h3 className="person-card__name">{person.name}</h3>
-                  <div className="person-card__header-right">
-                    {peopleFilters.status !== "active" && (
-                      <span className="person-card__badge admission-card__status">
-                        {peopleFilters.status === "candidate" ? "待确认" : "已删除"}
-                      </span>
-                    )}
-                    {stat.unfinishedCount > 0 && (
-                      <span className="person-card__badge">{stat.unfinishedCount} 项待办</span>
-                    )}
-                    {peopleFilters.status === "active" && <details className="person-card__menu">
-                      <summary aria-label="人物操作" title="人物操作"><MoreHorizontal size={17} /></summary>
-                      <div className="person-card__menu-popover">
-                        <button type="button" onClick={(e) => { e.stopPropagation(); setMergeFrom({ id: person.id, name: person.name }); }}>合并到...</button>
-                        <button type="button" className="is-danger" onClick={(e) => { e.stopPropagation(); handleDeletePerson(person.id); }}>删除</button>
-                      </div>
-                    </details>}
-                  </div>
-                </div>
-                {person.aliases && person.aliases.length > 0 && (
-                  <div className="person-card__aliases" title="已合并过的旧名字">
-                    别名：{person.aliases.join("、")}
-                  </div>
-                )}
-                <div
-                  className={`person-card__body${peopleFilters.status === "active" ? "" : " person-card__body--static"}`}
-                  onClick={() => peopleFilters.status === "active" && setSelectedPersonId(person.id)}
-                >
-                  <div className="person-card__role">
-                    {person.relationship
-                      || [person.role, person.organization].filter(Boolean).join(" · ")
-                      || "角色未知"}
-                  </div>
-                  <div className="person-card__projects">
-                    {stat.projectNames.length > 0
-                      ? stat.projectNames.slice(0, 2).join("、")
-                      : "暂无相关项目"}
-                    {stat.projectNames.length > 2 && ` 等 ${stat.projectNames.length} 个`}
-                  </div>
-                  <div className="person-card__meta">
-                    <span className="person-card__time">
-                      最近协作：
-                      {stat.latestInteraction
-                        ? new Date(stat.latestInteraction).toLocaleDateString("zh-CN")
-                        : "暂无记录"}
-                    </span>
-                  </div>
-                </div>
-                {peopleFilters.status !== "active" && (
-                  <div className="admission-card__reason">
-                    {admissionReasonLabel(person.admissionReason)}
-                  </div>
-                )}
-                {peopleFilters.status === "candidate" && (
-                  <div className="admission-card__actions">
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={reviewingPersonId === person.id}
-                      onClick={() => void handleReviewPerson(person.id, "promote")}
-                    >
-                      确认为人物
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      disabled={reviewingPersonId === person.id}
-                      onClick={() => void handleReviewPerson(person.id, "reject")}
-                    >
-                      排除
-                    </button>
-                  </div>
-                )}
-                {peopleFilters.status === "deleted" && (
-                  <div className="admission-card__actions">
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      disabled={reviewingPersonId === person.id}
-                      onClick={() => void handleReviewPerson(person.id, "restore")}
-                    >
-                      恢复人物
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {filteredPeople.map((person) => (
+            <PersonCard
+              key={person.id}
+              person={person}
+              stat={peopleStats.get(person.id) ?? {
+                latestInteraction: null,
+                unfinishedCount: 0,
+                projectNames: [],
+              }}
+              status={peopleFilters.status}
+              reviewingPersonId={reviewingPersonId}
+              onOpenDetail={handleOpenPersonDetail}
+              onMerge={handleMergePerson}
+              onDelete={handleDeletePerson}
+              onReview={handleReviewPerson}
+            />
+          ))}
         </div>
       )}
 

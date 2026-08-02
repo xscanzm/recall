@@ -1,4 +1,5 @@
-import { useState } from "react";
+import * as React from "react";
+import { useCallback, useState } from "react";
 import { MemoryDetailPage } from "./MemoryDetailPage";
 import { useAppStore, type SearchFilters, type SearchResultItem } from "../state/store";
 
@@ -43,6 +44,40 @@ function timeRange(filter: TimeFilter): Pick<SearchFilters, "timeFrom" | "timeTo
   return { timeFrom: start.toISOString(), timeTo: new Date(now.getTime() + 1).toISOString() };
 }
 
+/** memo 化的搜索结果卡片：props 不变时跳过重渲染 */
+const SearchResultCard = React.memo(function SearchResultCard({
+  result,
+  onOpenDetail,
+}: {
+  result: SearchResultItem;
+  onOpenDetail: (ref: { id: string; type: SearchResultItem["type"] }) => void;
+}) {
+  const handleOpen = () => onOpenDetail({ id: result.id, type: result.type });
+  return (
+    <article
+      className="memory-result-card"
+      role="button"
+      tabIndex={0}
+      onClick={handleOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          handleOpen();
+        }
+      }}
+    >
+      <div className="memory-result-card__header">
+        <span className="memory-result-card__type" style={{ color: RESULT_TYPE_COLORS[result.type] }}>{RESULT_TYPE_LABELS[result.type]}</span>
+        {result.projectName && <span className="memory-result-card__project">{result.projectName}</span>}
+      </div>
+      <h3 className="memory-result-card__title">{result.title}</h3>
+      {result.summary && <p className="memory-result-card__summary">{result.summary}</p>}
+      <div className="memory-result-card__matches">{result.matchReasons.slice(0, 3).map((reason) => <span key={reason}>命中{reason}</span>)}{result.sourceCount > 0 && <span>{result.sourceCount} 条来源</span>}</div>
+      <div className="memory-result-card__footer"><time>{new Date(result.createdAt).toLocaleString("zh-CN")}</time><span className="memory-result-card__open">查看详情</span></div>
+    </article>
+  );
+});
+
 function buildFilters(time: TimeFilter, project: string, type: string, person: string): SearchFilters {
   return {
     timePreset: time,
@@ -85,6 +120,11 @@ export function MemorySearchPage() {
   const [personFilter, setPersonFilter] = useState(() => searchFilters.personId ?? "all");
   const [selectedDetail, setSelectedDetail] = useState<{ id: string; type: SearchResultItem["type"] } | null>(null);
   const [followupOpen, setFollowupOpen] = useState(false);
+
+  // 稳定回调：配合 memo 化的 SearchResultCard 跳过重渲染
+  const handleOpenResult = useCallback((ref: { id: string; type: SearchResultItem["type"] }) => {
+    setSelectedDetail(ref);
+  }, []);
 
   const currentFilters = buildFilters(timeFilter, projectFilter, typeFilter, personFilter);
 
@@ -195,16 +235,11 @@ export function MemorySearchPage() {
           {searchResults.length > 0 ? (
             <div className="memory-results__list">
               {searchResults.map((result) => (
-                <article className="memory-result-card" key={`${result.type}-${result.id}`} role="button" tabIndex={0} onClick={() => setSelectedDetail({ id: result.id, type: result.type })} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedDetail({ id: result.id, type: result.type }); } }}>
-                  <div className="memory-result-card__header">
-                    <span className="memory-result-card__type" style={{ color: RESULT_TYPE_COLORS[result.type] }}>{RESULT_TYPE_LABELS[result.type]}</span>
-                    {result.projectName && <span className="memory-result-card__project">{result.projectName}</span>}
-                  </div>
-                  <h3 className="memory-result-card__title">{result.title}</h3>
-                  {result.summary && <p className="memory-result-card__summary">{result.summary}</p>}
-                  <div className="memory-result-card__matches">{result.matchReasons.slice(0, 3).map((reason) => <span key={reason}>命中{reason}</span>)}{result.sourceCount > 0 && <span>{result.sourceCount} 条来源</span>}</div>
-                  <div className="memory-result-card__footer"><time>{new Date(result.createdAt).toLocaleString("zh-CN")}</time><span className="memory-result-card__open">查看详情</span></div>
-                </article>
+                <SearchResultCard
+                  key={`${result.type}-${result.id}`}
+                  result={result}
+                  onOpenDetail={handleOpenResult}
+                />
               ))}
             </div>
           ) : (

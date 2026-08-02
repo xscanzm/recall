@@ -178,3 +178,42 @@ a:hover {
   color: var(--recall-text-muted);
   max-width: 480px;
 }
+
+/* ===== App.tsx 启动错误/加载页（原内联 <style>，迁移自 App.tsx:175-218）=====
+   追加在文件末尾以保持迁移前的层叠顺序（原内联样式在 base.css 之后生效）。 */
+.boot-error {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: var(--recall-bg);
+}
+
+.boot-error h1 {
+  font-size: 20px;
+  margin: 0 0 12px 0;
+  color: var(--recall-danger);
+}
+
+.boot-error p {
+  font-size: 13px;
+  margin: 0 0 8px 0;
+  color: var(--recall-text-muted);
+  line-height: 1.6;
+  text-align: center;
+}
+
+.boot-loading {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--recall-bg);
+}
+
+.boot-loading p {
+  font-size: 14px;
+  color: var(--recall-text-muted);
+}

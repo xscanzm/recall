@@ -143,3 +143,307 @@
     animation: none;
   }
 }
+
+/* ============ MergeDialog（原内联 <style>，迁移自 MergeDialog.tsx:247-400）============ */
+.merge-dialog__overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(30, 36, 35, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.merge-dialog__modal {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 24px rgba(30, 36, 35, 0.12);
+  width: 90%;
+  max-width: 560px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.merge-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--recall-border);
+}
+.merge-dialog__header h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.merge-dialog__close {
+  font-size: 12px;
+  padding: 4px 10px;
+  background-color: transparent;
+  border: 1px solid var(--recall-border);
+}
+.merge-dialog__body {
+  padding: 16px 20px;
+  overflow: auto;
+  flex: 1;
+}
+.merge-dialog__hint {
+  font-size: 13px;
+  color: var(--recall-text);
+  margin: 0 0 8px 0;
+  font-weight: 500;
+}
+.merge-dialog__sub {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0 0 8px 0;
+  line-height: 1.6;
+}
+.merge-dialog__sub-list {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0 0 16px 16px;
+  padding: 0;
+  line-height: 1.7;
+}
+.merge-dialog__field {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.merge-dialog__field-label {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  font-weight: 500;
+}
+.merge-dialog__field-required {
+  color: var(--recall-danger);
+  margin-left: 2px;
+}
+.merge-dialog__select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+  background-color: var(--recall-surface);
+}
+.merge-dialog__select:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+.merge-dialog__textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 60px;
+  box-sizing: border-box;
+}
+.merge-dialog__textarea:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+.merge-dialog__textarea--note {
+  min-height: 40px;
+}
+.merge-dialog__empty {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  padding: 8px 10px;
+  border: 1px dashed var(--recall-border);
+  border-radius: var(--radius-md);
+  margin: 0;
+}
+.merge-dialog__preview {
+  margin: 12px 0;
+  padding: 10px 14px;
+  background-color: #eef3f1;
+  border: 1px solid var(--recall-accent);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--recall-text);
+  line-height: 1.7;
+}
+.merge-dialog__preview-title {
+  font-weight: 600;
+  margin: 0 0 4px 0;
+}
+.merge-dialog__preview p {
+  margin: 4px 0;
+}
+.merge-dialog__preview-detail {
+  color: var(--recall-text-muted);
+  font-size: 11px;
+}
+.merge-dialog__error {
+  color: var(--recall-danger);
+  font-size: 12px;
+  margin: 8px 0 0 0;
+}
+.merge-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--recall-border);
+}
+
+/* ============ CorrectionDialog（原内联 <style>，迁移自 CorrectionDialog.tsx:325-474）============ */
+.correction-dialog__overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(30, 36, 35, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.correction-dialog__modal {
+  background-color: var(--recall-surface);
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 24px rgba(30, 36, 35, 0.12);
+  width: 90%;
+  max-width: 560px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+.correction-dialog__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--recall-border);
+}
+.correction-dialog__header h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.correction-dialog__close {
+  font-size: 12px;
+  padding: 4px 10px;
+  background-color: transparent;
+  border: 1px solid var(--recall-border);
+}
+.correction-dialog__body {
+  padding: 16px 20px;
+  overflow: auto;
+  flex: 1;
+}
+.correction-dialog__hint {
+  font-size: 13px;
+  color: var(--recall-text);
+  margin: 0 0 4px 0;
+  font-weight: 500;
+}
+.correction-dialog__sub {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  margin: 0 0 12px 0;
+  line-height: 1.6;
+}
+.correction-dialog__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.correction-dialog__option {
+  text-align: left;
+  padding: 10px 14px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  background-color: var(--recall-surface);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+  cursor: pointer;
+}
+.correction-dialog__option:hover {
+  background-color: #f0eee7;
+}
+.correction-dialog__option--active {
+  border-color: var(--recall-accent);
+  background-color: #eef3f1;
+}
+.correction-dialog__option-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--recall-text);
+  margin-bottom: 2px;
+}
+.correction-dialog__option-desc {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+}
+.correction-dialog__field {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.correction-dialog__field-label {
+  font-size: 12px;
+  color: var(--recall-text-muted);
+  font-weight: 500;
+}
+.correction-dialog__field-required {
+  color: var(--recall-danger);
+  margin-left: 2px;
+}
+.correction-dialog__textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 60px;
+  box-sizing: border-box;
+}
+.correction-dialog__textarea:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+.correction-dialog__textarea--note {
+  min-height: 40px;
+}
+.correction-dialog__select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--recall-border);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  box-sizing: border-box;
+  background-color: var(--recall-surface);
+}
+.correction-dialog__select:focus {
+  outline: none;
+  border-color: var(--recall-accent);
+}
+.correction-dialog__error {
+  color: var(--recall-danger);
+  font-size: 12px;
+  margin: 8px 0 0 0;
+}
+.correction-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--recall-border);
+}

@@ -172,29 +172,6 @@ export default function App() {
         <h1>启动失败</h1>
         <p>{bootError}</p>
         <p>请重启应用，或检查 main 进程日志。</p>
-        <style>{`
-          .boot-error {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            padding: 24px;
-            background-color: var(--recall-bg);
-          }
-          .boot-error h1 {
-            font-size: 20px;
-            margin: 0 0 12px 0;
-            color: var(--recall-danger);
-          }
-          .boot-error p {
-            font-size: 13px;
-            margin: 0 0 8px 0;
-            color: var(--recall-text-muted);
-            line-height: 1.6;
-            text-align: center;
-          }
-        `}</style>
       </div>
     );
   }
@@ -203,19 +180,6 @@ export default function App() {
     return (
       <div className="boot-loading">
         <p>正在加载 Recall...</p>
-        <style>{`
-          .boot-loading {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: var(--recall-bg);
-          }
-          .boot-loading p {
-            font-size: 14px;
-            color: var(--recall-text-muted);
-          }
-        `}</style>
       </div>
     );
   }
