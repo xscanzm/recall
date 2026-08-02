@@ -21,9 +21,10 @@
 // - 不覆盖 source ids
 // - 中文注释
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore, type FeedbackType, type FeedbackTargetType } from "../state/store";
 import { NAMING } from "../app/naming";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 export interface CorrectionDialogProps {
   open: boolean;
@@ -125,6 +126,9 @@ export function CorrectionDialog({
   const createUserFeedback = useAppStore((s) => s.createUserFeedback);
   const projects = useAppStore((s) => s.todayData.projects);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { enabled: open, onEscape: onClose });
+
   // open 变化时重置状态
   useEffect(() => {
     if (open) {
@@ -199,6 +203,7 @@ export function CorrectionDialog({
     <div className="correction-dialog__overlay" onClick={onClose}>
       <div
         className="correction-dialog__modal"
+        ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

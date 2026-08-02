@@ -356,7 +356,7 @@ function TodayPageLayout(props: TodayPageLayoutProps) {
         workReportSelectionMode ? " is-select-mode" : ""
       }`}
     >
-      <main className="timeline-main" aria-label="今日时间轴">
+      <main className="timeline-main" id="timeline-view-panel" aria-label="今日时间轴">
         <TimelineHeader dayMainThread={dayMainThread} dateLabel={dateLabel} historical={isHistorical} />
 
         {todayPageData && (

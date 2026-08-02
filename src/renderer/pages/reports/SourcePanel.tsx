@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getIpc } from "../../state/ipc";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 import type { FactItem, SceneItem } from "../../state/store";
 import type { TimelineBlock } from "../../../shared/types";
 
@@ -32,6 +33,9 @@ export function SourcePanel({
     scenes: [],
     timelineBlocks: [],
   });
+
+  const panelRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(panelRef, { enabled: true, onEscape: onClose });
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +87,7 @@ export function SourcePanel({
     <div className="report-source-overlay" onClick={onClose}>
       <div
         className="report-source-panel"
+        ref={panelRef}
         onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-label={title}

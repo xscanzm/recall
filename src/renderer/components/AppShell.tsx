@@ -6,7 +6,7 @@
 // - 顶部状态栏（48px）：StatusPill + 暂停/恢复按钮
 // - 主内容区：根据当前路由渲染对应页面
 
-import { type ReactNode, type ComponentType, type PointerEvent as ReactPointerEvent } from "react";
+import { type ReactNode, type ComponentType, type PointerEvent as ReactPointerEvent, useRef } from "react";
 import {
   CalendarDays,
   ListTodo,
@@ -25,6 +25,7 @@ import { useAppStore, type PageKey } from "../state/store";
 import { StatusPill } from "./StatusPill";
 import { UpdateBadge } from "./UpdateBadge";
 import { getIpc } from "../state/ipc";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 interface NavItem {
   key: PageKey;
@@ -71,6 +72,12 @@ export const AppShell = ({ children }: AppShellProps) => {
   const confirmDialogConfirmText = useAppStore((s) => s.confirmDialogConfirmText);
   const closeConfirmDialog = useAppStore((s) => s.closeConfirmDialog);
   const executeConfirm = useAppStore((s) => s.executeConfirm);
+
+  const confirmDialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(confirmDialogRef, {
+    enabled: showConfirmDialog,
+    onEscape: closeConfirmDialog,
+  });
 
   const isObserving = appStatus.observing && !appStatus.paused;
 
@@ -238,6 +245,7 @@ export const AppShell = ({ children }: AppShellProps) => {
       {showConfirmDialog && (
         <div
           className="confirm-dialog"
+          ref={confirmDialogRef}
           role="dialog"
           aria-modal="true"
           aria-labelledby="confirm-dialog-title"

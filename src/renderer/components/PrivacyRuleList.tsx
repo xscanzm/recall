@@ -14,6 +14,7 @@
 
 import { useEffect, useState } from "react";
 import type { PrivacyRuleItem } from "../state/store";
+import { useAppStore } from "../state/store";
 
 export type PrivacyRuleType = PrivacyRuleItem["type"];
 export type PrivacyRuleAction = PrivacyRuleItem["action"];
@@ -91,6 +92,8 @@ const DEFAULT_FIELDS: FormFields = {
 
 export function PrivacyRuleList(props: PrivacyRuleListProps) {
   const { rules, loading, error, onAdd, onUpdate, onDelete, emptyHint } = props;
+
+  const requestConfirm = useAppStore((s) => s.requestConfirm);
 
   // 表单状态
   const [showForm, setShowForm] = useState(false);
@@ -184,31 +187,51 @@ export function PrivacyRuleList(props: PrivacyRuleListProps) {
     try {
       await onUpdate(rule.id, { enabled: !rule.enabled });
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "切换失败");
+      requestConfirm({
+        title: "切换失败",
+        message: err instanceof Error ? err.message : "切换失败",
+        confirmText: "知道了",
+        onConfirm: () => undefined,
+      });
     } finally {
       setToggling(null);
     }
   };
 
   /**
-   * 删除规则
+   * 删除规则（走应用内确认框，不再用原生 confirm/alert）
    */
-  const handleDelete = async (rule: PrivacyRuleItem) => {
-    const confirmed = window.confirm(
-      `确认删除规则「${TYPE_LABELS[rule.type]}：${rule.pattern}」？`
-    );
-    if (!confirmed) return;
-    setDeleting(rule.id);
-    try {
-      const result = await onDelete(rule.id);
-      if (!result.ok) {
-        window.alert(result.error ?? "删除失败");
-      }
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "删除失败");
-    } finally {
-      setDeleting(null);
-    }
+  const handleDelete = (rule: PrivacyRuleItem) => {
+    requestConfirm({
+      title: "删除隐私规则",
+      message: `确认删除规则「${TYPE_LABELS[rule.type]}：${rule.pattern}」？`,
+      confirmText: "删除",
+      onConfirm: () => {
+        void (async () => {
+          setDeleting(rule.id);
+          try {
+            const result = await onDelete(rule.id);
+            if (!result.ok) {
+              requestConfirm({
+                title: "删除失败",
+                message: result.error ?? "删除失败",
+                confirmText: "知道了",
+                onConfirm: () => undefined,
+              });
+            }
+          } catch (err) {
+            requestConfirm({
+              title: "删除失败",
+              message: err instanceof Error ? err.message : "删除失败",
+              confirmText: "知道了",
+              onConfirm: () => undefined,
+            });
+          } finally {
+            setDeleting(null);
+          }
+        })();
+      },
+    });
   };
 
   return (

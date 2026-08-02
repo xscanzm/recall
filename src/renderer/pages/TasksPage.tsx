@@ -37,6 +37,7 @@ import { EmptyState } from "../components/EmptyState";
 import { ErrorState } from "../components/ErrorState";
 import { Loading } from "../components/Loading";
 import { MemoryDetailPage, type MemoryDetailRef } from "./MemoryDetailPage";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 // ============================================================================
 // 日期辅助
@@ -440,6 +441,9 @@ function SourceDialog({ thread, onClose, onOpenDetail }: SourceDialogProps) {
   const [facts, setFacts] = useState<FactItem[]>([]);
   const [timelineBlocks, setTimelineBlocks] = useState<TimelineBlock[]>([]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { enabled: true, onEscape: onClose });
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -487,6 +491,7 @@ function SourceDialog({ thread, onClose, onOpenDetail }: SourceDialogProps) {
   return (
     <div
       className="unfinished-source-dialog"
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="查看来源"

@@ -60,6 +60,31 @@ export function TimelineToolbar({
 
   const [searchFocused, setSearchFocused] = useState(false);
 
+  // tablist 键盘导航（WAI-ARIA：方向键移动焦点并激活，Home/End 跳首尾）
+  const handleViewTabsKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    const tabs = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    );
+    if (tabs.length === 0) return;
+    const currentIndex = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex = -1;
+    if (event.key === "ArrowRight") {
+      nextIndex = currentIndex >= 0 ? (currentIndex + 1) % tabs.length : 0;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex =
+        currentIndex >= 0 ? (currentIndex - 1 + tabs.length) % tabs.length : 0;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    tabs[nextIndex].click();
+  };
+
   const handleDateShift = (delta: number) => {
     const next = shiftDateKey(dateKey, delta);
     onDateChange(next);
@@ -158,11 +183,18 @@ export function TimelineToolbar({
           </button>
         </div>
 
-        <div className="seg-control" role="tablist" aria-label="视图切换">
+        <div
+          className="seg-control"
+          role="tablist"
+          aria-label="视图切换"
+          onKeyDown={handleViewTabsKeyDown}
+        >
           <button
             type="button"
             role="tab"
             aria-selected={viewMode === "segments"}
+            aria-controls="timeline-view-panel"
+            tabIndex={viewMode === "segments" ? 0 : -1}
             className={`seg-control__btn${viewMode === "segments" ? " is-active" : ""}`}
             onClick={() => onViewModeChange("segments")}
           >
@@ -172,6 +204,8 @@ export function TimelineToolbar({
             type="button"
             role="tab"
             aria-selected={viewMode === "detail"}
+            aria-controls="timeline-view-panel"
+            tabIndex={viewMode === "detail" ? 0 : -1}
             className={`seg-control__btn${viewMode === "detail" ? " is-active" : ""}`}
             onClick={() => onViewModeChange("detail")}
           >

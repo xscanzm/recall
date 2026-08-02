@@ -15,6 +15,7 @@ import type { TodayPageData, PersonalReview, WorkReport } from "../../../shared/
 import { useAppStore } from "../../state/store";
 import { Button } from "../../components/Button";
 import { isToday } from "./helpers";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
 
 interface TodaySidePanelProps {
   data: TodayPageData;
@@ -185,6 +186,12 @@ function DecisionsSection({ decisions, historical }: { decisions: TodayPageData[
     ? decisions.find((d) => d.id === viewingSourceFor) ?? null
     : null;
 
+  const modalRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(modalRef, {
+    enabled: viewingDecision !== null,
+    onEscape: () => setViewingSourceFor(null),
+  });
+
   return (
     <section className="side-section">
       <h2 className="side-section__title">{historical ? "当天决策" : "今日决策"}</h2>
@@ -214,6 +221,9 @@ function DecisionsSection({ decisions, historical }: { decisions: TodayPageData[
           />
           <div
             className="decision-source-modal"
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="decision-source-modal__header">

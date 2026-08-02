@@ -724,6 +724,11 @@ export function PeoplePage() {
                 className="person-card"
                 role={peopleFilters.status === "active" ? "button" : undefined}
                 tabIndex={peopleFilters.status === "active" ? 0 : undefined}
+                onClick={() => {
+                  if (peopleFilters.status === "active") {
+                    setSelectedPersonId(person.id);
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (peopleFilters.status === "active" && (e.key === "Enter" || e.key === " ")) {
                     e.preventDefault();

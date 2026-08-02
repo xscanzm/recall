@@ -125,6 +125,31 @@ export function ReportsPage() {
 
   // 报告页 actions
   const setReportsTab = useAppStore((s) => s.setReportsTab);
+
+  // tablist 键盘导航（WAI-ARIA：方向键移动焦点并激活，Home/End 跳首尾）
+  const handleTablistKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    const tabs = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    );
+    if (tabs.length === 0) return;
+    const currentIndex = tabs.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex = -1;
+    if (event.key === "ArrowRight") {
+      nextIndex = currentIndex >= 0 ? (currentIndex + 1) % tabs.length : 0;
+    } else if (event.key === "ArrowLeft") {
+      nextIndex =
+        currentIndex >= 0 ? (currentIndex - 1 + tabs.length) % tabs.length : 0;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = tabs.length - 1;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    tabs[nextIndex].focus();
+    tabs[nextIndex].click();
+  };
   const setReportsDateKey = useAppStore((s) => s.setReportsDateKey);
   const rollOverReportsDateKeyIfNeeded = useAppStore(
     (s) => s.rollOverReportsDateKeyIfNeeded
@@ -633,12 +658,14 @@ export function ReportsPage() {
       </header>
 
       {/* Tab 栏 */}
-      <nav className="reports-tabs" role="tablist">
+      <nav className="reports-tabs" role="tablist" onKeyDown={handleTablistKeyDown}>
         {REPORT_TABS.map((tab) => (
           <button
             key={tab.key}
             role="tab"
             aria-selected={reportsTab === tab.key}
+            aria-controls="reports-tab-panel"
+            tabIndex={reportsTab === tab.key ? 0 : -1}
             className={`reports-tab${reportsTab === tab.key ? " is-active" : ""}`}
             onClick={() => setReportsTab(tab.key)}
           >
@@ -713,7 +740,7 @@ export function ReportsPage() {
       )}
 
       {/* 主区域：最大宽度 920px */}
-      <div className="reports-content">
+      <div className="reports-content" id="reports-tab-panel" role="tabpanel">
         {reportsError && (
           <div className="reports-error">
             <span>{reportsError}</span>

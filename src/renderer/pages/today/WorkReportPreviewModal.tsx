@@ -9,6 +9,8 @@
 import type { TodayPageData } from "../../../shared/types";
 import { useAppStore } from "../../state/store";
 import { Button } from "../../components/Button";
+import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { useRef } from "react";
 
 interface WorkReportPreviewModalProps {
   data: TodayPageData;
@@ -42,6 +44,12 @@ export function WorkReportPreviewModal({ data }: WorkReportPreviewModalProps) {
 
   const handleBack = () => setPreviewModalOpen(false);
 
+  const modalRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(modalRef, {
+    enabled: true,
+    onEscape: handleBack,
+  });
+
   return (
     <div
       className="modal-overlay"
@@ -52,6 +60,7 @@ export function WorkReportPreviewModal({ data }: WorkReportPreviewModalProps) {
     >
       <div
         className="modal-box modal-box--preview"
+        ref={modalRef}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal-box__head">

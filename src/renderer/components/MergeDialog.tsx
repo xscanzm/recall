@@ -17,8 +17,9 @@
 // - 不使用 emoji
 // - soft delete from，from 仍可审计追溯
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useAppStore, type PersonItem, type ProjectItem } from "../state/store";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 export interface MergeDialogProps {
   open: boolean;
@@ -43,6 +44,10 @@ export function MergeDialog({
   const people = useAppStore((s) => s.todayData.people);
   const projects = useAppStore((s) => s.todayData.projects);
   const mergeObjects = useAppStore((s) => s.mergeObjects);
+  const requestConfirm = useAppStore((s) => s.requestConfirm);
+
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(dialogRef, { enabled: open, onEscape: onClose });
 
   const [targetId, setTargetId] = useState<string>("");
   const [reason, setReason] = useState<string>("");
@@ -97,9 +102,14 @@ export function MergeDialog({
         reason: reason.trim() || undefined,
       });
       setSubmitting(false);
-      // 显示成功提示
+      // 成功提示走应用内确认框（a11y 批量：不再用原生 alert）
       const stats = `改写 ${result.rewrittenFactsCount} 个事实，${result.rewrittenScenesCount} 个场景，添加 ${result.mergedAliases.length} 个别名`;
-      alert(`已合并「${fromName}」到「${target?.name ?? targetId}」。${stats}`);
+      requestConfirm({
+        title: "合并完成",
+        message: `已合并「${fromName}」到「${target?.name ?? targetId}」。${stats}`,
+        confirmText: "知道了",
+        onConfirm: () => undefined,
+      });
       onMerged?.();
       onClose();
     } catch (err) {
@@ -119,6 +129,7 @@ export function MergeDialog({
     <div className="merge-dialog__overlay" onClick={onClose}>
       <div
         className="merge-dialog__modal"
+        ref={dialogRef}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"

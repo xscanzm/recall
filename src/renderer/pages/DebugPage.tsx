@@ -4,8 +4,9 @@
 // 仅当 settings.debug.enabled=true 时可访问（AppShell 条件渲染导航入口）
 // 数据源：model_jobs 表（通过 debug:* IPC 查询，手动刷新）
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useAppStore, type DebugEventItem } from "../state/store";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 function parseDebugEvents(json: string | null): DebugEventItem[] {
   if (!json) return [];
@@ -330,6 +331,12 @@ export function DebugPage() {
     setSelectedJobId(null);
   };
 
+  const drawerRef = useRef<HTMLDivElement>(null);
+  useFocusTrap(drawerRef, {
+    enabled: selectedJobId !== null,
+    onEscape: handleCloseDrawer,
+  });
+
   return (
     <div className="debug-page">
       {/* 筛选器 */}
@@ -476,7 +483,7 @@ export function DebugPage() {
 
       {/* 详情抽屉 */}
       {selectedJobId && (
-        <div className="debug-drawer" role="dialog" aria-modal="true">
+        <div className="debug-drawer" ref={drawerRef} role="dialog" aria-modal="true">
           <div className="debug-drawer__header">
             <h3 className="debug-drawer__title">调用详情</h3>
             <button type="button" className="debug-drawer__close" onClick={handleCloseDrawer}>✕</button>

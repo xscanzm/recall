@@ -15,6 +15,7 @@
 
 import { useEffect, useState } from "react";
 import type { ModelConfigItem } from "../state/store";
+import { useAppStore } from "../state/store";
 
 export type ModelKind = "vision" | "language" | "multimodal";
 
@@ -102,6 +103,8 @@ const EMPTY_FIELDS: FormFields = {
 
 export function ModelConfigForm(props: ModelConfigFormProps) {
   const { kind, configs, loading, error, onSave, onDelete, onTest, wizardMode, onSaved } = props;
+
+  const requestConfirm = useAppStore((s) => s.requestConfirm);
 
   // 编辑中的配置 id（null 表示新建模式）
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -302,25 +305,40 @@ export function ModelConfigForm(props: ModelConfigFormProps) {
   };
 
   /**
-   * 删除配置
+   * 删除配置（走应用内确认框，不再用原生 confirm/alert）
    * 后端会同时删除 SecretService 中的 API Key
    */
-  const handleDelete = async (config: ModelConfigItem) => {
-    const confirmed = window.confirm(
-      `确认删除 ${kindLabel}配置「${config.providerName} / ${config.model}」？\n\n对应的 API Key 会从系统安全存储中一并删除。`
-    );
-    if (!confirmed) return;
-    setDeleting(config.id);
-    try {
-      const result = await onDelete(config.id);
-      if (!result.ok) {
-        window.alert(result.error ?? "删除失败");
-      }
-    } catch (err) {
-      window.alert(err instanceof Error ? err.message : "删除失败");
-    } finally {
-      setDeleting(null);
-    }
+  const handleDelete = (config: ModelConfigItem) => {
+    requestConfirm({
+      title: "删除模型配置",
+      message: `确认删除 ${kindLabel}配置「${config.providerName} / ${config.model}」？对应的 API Key 会从系统安全存储中一并删除。`,
+      confirmText: "删除",
+      onConfirm: () => {
+        void (async () => {
+          setDeleting(config.id);
+          try {
+            const result = await onDelete(config.id);
+            if (!result.ok) {
+              requestConfirm({
+                title: "删除失败",
+                message: result.error ?? "删除失败",
+                confirmText: "知道了",
+                onConfirm: () => undefined,
+              });
+            }
+          } catch (err) {
+            requestConfirm({
+              title: "删除失败",
+              message: err instanceof Error ? err.message : "删除失败",
+              confirmText: "知道了",
+              onConfirm: () => undefined,
+            });
+          } finally {
+            setDeleting(null);
+          }
+        })();
+      },
+    });
   };
 
   return (
