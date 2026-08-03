@@ -21,6 +21,23 @@ interface CaptureRow {
   bundle_json: string;
 }
 
+interface ImagePathRow {
+  image_path: string | null;
+}
+
+export interface PendingCaptureStats {
+  count: number;
+  oldestCapturedAt: string | null;
+}
+
+export interface TerminalCompactionResult {
+  batches: number;
+  captures: number;
+  bytesBefore: number;
+  bytesAfter: number;
+  reclaimedBytes: number;
+}
+
 export interface CaptureWindowWatermark {
   totalCount: number;
   unsettledCount: number;
@@ -64,12 +81,48 @@ export class CaptureInboxRepository {
     return result.changes > 0;
   }
 
-  listPendingCaptures(): CaptureBundle[] {
+  listPendingCaptures(limit = 6): CaptureBundle[] {
     const rows = this.db.prepare(
       `SELECT bundle_json FROM capture_inbox
-       WHERE status = 'pending' ORDER BY captured_at ASC, created_at ASC`
-    ).all() as CaptureRow[];
+       WHERE status = 'pending' ORDER BY captured_at ASC, created_at ASC LIMIT ?`
+    ).all(Math.max(1, Math.floor(limit))) as CaptureRow[];
     return rows.map((row) => JSON.parse(row.bundle_json) as CaptureBundle);
+  }
+
+  countPendingCaptures(): number {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS count FROM capture_inbox WHERE status = 'pending'"
+    ).get() as { count: number };
+    return row.count;
+  }
+
+  getPendingCaptureStats(): PendingCaptureStats {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count, MIN(captured_at) AS oldestCapturedAt
+       FROM capture_inbox WHERE status = 'pending'`
+    ).get() as { count: number; oldestCapturedAt: string | null };
+    return row;
+  }
+
+  listPendingCaptureImagePaths(): string[] {
+    const rows = this.db.prepare(
+      `SELECT json_extract(bundle_json, '$.stitchedImagePath') AS image_path
+       FROM capture_inbox
+       WHERE status = 'pending'
+         AND json_valid(bundle_json)
+         AND json_type(bundle_json, '$.stitchedImagePath') = 'text'
+       UNION ALL
+       SELECT image.value AS image_path
+       FROM capture_inbox
+       CROSS JOIN json_each(
+         CASE
+           WHEN json_valid(bundle_json) THEN COALESCE(json_extract(bundle_json, '$.imagePaths'), '[]')
+           ELSE '[]'
+         END
+       ) AS image
+       WHERE status = 'pending' AND typeof(image.value) = 'text'`
+    ).all() as ImagePathRow[];
+    return rows.flatMap((row) => row.image_path ? [row.image_path] : []);
   }
 
   createBatch(bundle: BatchCaptureBundle): boolean {
@@ -118,27 +171,47 @@ export class CaptureInboxRepository {
     ).run(new Date().toISOString(), maxAttempts).changes;
   }
 
-  listProcessableBatches(maxAttempts: number): CaptureBatchRecord[] {
+  listProcessableBatches(maxAttempts: number, limit = 2): CaptureBatchRecord[] {
     const rows = this.db.prepare(
        `SELECT batch_id, bundle_json, status, attempts, last_error,
                observer_status, episode_status, atom_status, linker_status, checkpoint_json
        FROM capture_batches
-       WHERE status = 'pending' AND attempts < ? ORDER BY created_at ASC`
-    ).all(maxAttempts) as BatchRow[];
+       WHERE status = 'pending' AND attempts < ? ORDER BY created_at ASC LIMIT ?`
+    ).all(maxAttempts, normalizeLimit(limit)) as BatchRow[];
     return rows.map(mapBatch);
+  }
+
+  getLatestProcessableBatch(maxAttempts: number): CaptureBatchRecord | null {
+    const row = this.db.prepare(
+      `SELECT batch_id, bundle_json, status, attempts, last_error,
+              observer_status, episode_status, atom_status, linker_status, checkpoint_json
+       FROM capture_batches
+       WHERE status = 'pending' AND attempts < ?
+       ORDER BY created_at DESC LIMIT 1`
+    ).get(maxAttempts) as BatchRow | undefined;
+    return row ? mapBatch(row) : null;
+  }
+
+  countProcessableBatches(maxAttempts: number): number {
+    const row = this.db.prepare(
+      `SELECT COUNT(*) AS count FROM capture_batches
+       WHERE status = 'pending' AND attempts < ?`
+    ).get(maxAttempts) as { count: number };
+    return row.count;
   }
 
   listProcessableBatchesForWindow(
     collectionStart: string,
     collectionEnd: string,
-    maxAttempts: number
+    maxAttempts: number,
+    limit = 2
   ): CaptureBatchRecord[] {
     const rows = this.db.prepare(`SELECT DISTINCT cb.* FROM capture_batches cb
       JOIN capture_inbox ci ON ci.batch_id = cb.batch_id
       WHERE ci.captured_at >= ? AND ci.captured_at < ?
         AND cb.status = 'pending' AND cb.attempts < ?
-      ORDER BY cb.created_at ASC`)
-      .all(collectionStart, collectionEnd, maxAttempts) as BatchRow[];
+      ORDER BY cb.created_at ASC LIMIT ?`)
+      .all(collectionStart, collectionEnd, maxAttempts, normalizeLimit(limit)) as BatchRow[];
     return rows.map(mapBatch);
   }
 
@@ -188,13 +261,68 @@ export class CaptureInboxRepository {
       this.db.prepare(
         `UPDATE capture_inbox SET status = 'succeeded', updated_at = ? WHERE batch_id = ?`
       ).run(now, batchId);
+      this.compactTerminalBatch(batchId);
     })();
   }
 
   markFailed(batchId: string, error: string, retry: boolean): void {
-    this.db.prepare(
-      `UPDATE capture_batches SET status = ?, last_error = ?, updated_at = ? WHERE batch_id = ?`
-    ).run(retry ? "pending" : "failed", error.slice(0, 1000), new Date().toISOString(), batchId);
+    const status = retry ? "pending" : "failed";
+    this.db.transaction(() => {
+      const now = new Date().toISOString();
+      this.db.prepare(
+        `UPDATE capture_batches SET status = ?, last_error = ?, updated_at = ? WHERE batch_id = ?`
+      ).run(status, error.slice(0, 1000), now, batchId);
+      if (!retry) {
+        this.db.prepare(
+          `UPDATE capture_inbox SET status = 'failed', updated_at = ? WHERE batch_id = ?`
+        ).run(now, batchId);
+        this.compactTerminalBatch(batchId);
+      }
+    })();
+  }
+
+  /**
+   * Replace terminal capture payloads with the metadata needed by watermarks,
+   * forgetRecent, and diagnostics. Pending/running work is left untouched.
+   */
+  compactTerminalBatch(batchId: string): void {
+    this.db.prepare(COMPACT_TERMINAL_BATCH_SQL).run(batchId);
+    this.db.prepare(COMPACT_TERMINAL_CAPTURES_FOR_BATCH_SQL).run(batchId);
+  }
+
+  /** Compact historical terminal capture payloads without touching memories. */
+  compactTerminalPayloads(): TerminalCompactionResult {
+    const before = this.db.prepare(
+      `SELECT
+         COALESCE((SELECT SUM(length(bundle_json)) FROM capture_batches
+           WHERE status IN ('succeeded', 'failed')), 0) AS batchBytes,
+         COALESCE((SELECT SUM(length(bundle_json)) FROM capture_inbox
+           WHERE status IN ('succeeded', 'failed')
+              OR batch_id IN (SELECT batch_id FROM capture_batches WHERE status IN ('succeeded', 'failed'))), 0) AS captureBytes`
+    ).get() as { batchBytes: number; captureBytes: number };
+
+    const result = this.db.transaction(() => {
+      const batches = this.db.prepare(COMPACT_TERMINAL_BATCHES_SQL).run().changes;
+      const captures = this.db.prepare(COMPACT_TERMINAL_CAPTURES_SQL).run().changes;
+      return { batches, captures };
+    })();
+
+    const after = this.db.prepare(
+      `SELECT
+         COALESCE((SELECT SUM(length(bundle_json)) FROM capture_batches
+           WHERE status IN ('succeeded', 'failed')), 0) AS batchBytes,
+         COALESCE((SELECT SUM(length(bundle_json)) FROM capture_inbox
+           WHERE status IN ('succeeded', 'failed')
+              OR batch_id IN (SELECT batch_id FROM capture_batches WHERE status IN ('succeeded', 'failed'))), 0) AS captureBytes`
+    ).get() as { batchBytes: number; captureBytes: number };
+    const bytesBefore = before.batchBytes + before.captureBytes;
+    const bytesAfter = after.batchBytes + after.captureBytes;
+    return {
+      ...result,
+      bytesBefore,
+      bytesAfter,
+      reclaimedBytes: Math.max(0, bytesBefore - bytesAfter),
+    };
   }
 
   checkpointRunning(batchId: string): void {
@@ -253,3 +381,71 @@ function mapBatch(row: BatchRow): CaptureBatchRecord {
 function safeParseCheckpoint(json: string): BatchCheckpoint {
   try { return JSON.parse(json) as BatchCheckpoint; } catch { return {}; }
 }
+
+function normalizeLimit(limit: number): number {
+  return Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 1;
+}
+
+const TERMINAL_STATUS_SQL = "status IN ('succeeded', 'failed')";
+
+const COMPACT_TERMINAL_BATCH_SQL = `
+  UPDATE capture_batches
+  SET bundle_json = CASE
+    WHEN json_valid(bundle_json) THEN json_object(
+      'batchId', batch_id,
+      'capturedAtStart', json_extract(bundle_json, '$.capturedAtStart'),
+      'capturedAtEnd', json_extract(bundle_json, '$.capturedAtEnd'),
+      'timezone', json_extract(bundle_json, '$.timezone'),
+      'appName', json_extract(bundle_json, '$.appName'),
+      'windowTitle', json_extract(bundle_json, '$.windowTitle'),
+      'captureReason', json_extract(bundle_json, '$.captureReason'),
+      'frameCount', COALESCE(json_array_length(json_extract(bundle_json, '$.frames')), 0),
+      'imageCount', COALESCE(json_array_length(json_extract(bundle_json, '$.imagePaths')), 0),
+      'retentionPolicy', json_extract(bundle_json, '$.retentionPolicy'),
+      'terminalStatus', status
+    )
+    ELSE json_object('batchId', batch_id, 'terminalStatus', status)
+  END,
+  updated_at = updated_at
+  WHERE batch_id = ? AND ${TERMINAL_STATUS_SQL}`;
+
+const COMPACT_TERMINAL_BATCHES_SQL = COMPACT_TERMINAL_BATCH_SQL.replace(
+  "WHERE batch_id = ? AND status IN ('succeeded', 'failed')",
+  `WHERE ${TERMINAL_STATUS_SQL}`
+);
+
+const COMPACT_TERMINAL_CAPTURES_SQL = `
+  UPDATE capture_inbox
+  SET status = CASE
+    WHEN batch_id IN (SELECT batch_id FROM capture_batches WHERE status = 'failed') THEN 'failed'
+    ELSE 'succeeded'
+  END,
+  bundle_json = CASE
+    WHEN json_valid(bundle_json) THEN json_object(
+      'captureId', capture_id,
+      'capturedAt', captured_at,
+      'batchId', batch_id,
+      'retentionPolicy', json_extract(bundle_json, '$.retentionPolicy'),
+      'terminalStatus', CASE
+        WHEN batch_id IN (SELECT batch_id FROM capture_batches WHERE status = 'failed') THEN 'failed'
+        ELSE 'succeeded'
+      END
+    )
+    ELSE json_object(
+      'captureId', capture_id,
+      'capturedAt', captured_at,
+      'batchId', batch_id,
+      'terminalStatus', CASE
+        WHEN batch_id IN (SELECT batch_id FROM capture_batches WHERE status = 'failed') THEN 'failed'
+        ELSE 'succeeded'
+      END
+    )
+  END,
+  updated_at = updated_at
+  WHERE status IN ('succeeded', 'failed')
+     OR batch_id IN (SELECT batch_id FROM capture_batches WHERE status IN ('succeeded', 'failed'))`;
+
+const COMPACT_TERMINAL_CAPTURES_FOR_BATCH_SQL = COMPACT_TERMINAL_CAPTURES_SQL.replace(
+  "WHERE status IN ('succeeded', 'failed')\n     OR batch_id IN (SELECT batch_id FROM capture_batches WHERE status IN ('succeeded', 'failed'))",
+  "WHERE batch_id = ? AND (status IN ('succeeded', 'failed')\n     OR batch_id IN (SELECT batch_id FROM capture_batches WHERE status IN ('succeeded', 'failed')))"
+);
