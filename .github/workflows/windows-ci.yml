@@ -17,7 +17,7 @@ jobs:
   # 快车道：几分钟内给出反馈，任何一项失败就不必再烧重型任务。
   fast:
     name: 快速检查（lint / typecheck / 单测）
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     env:
       CI: "1"
@@ -27,10 +27,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # windows-latest 自带 VS 2026（18），node-gyp 9.x 的 find-VS 无法识别其
-      # 版本号。与 release.yml 的 windows-build 一致：先注入 MSVC 构建环境
-      # （设置 VCINSTALLDIR 等），node-gyp 会直接信任该环境变量并跳过注册表
-      # 探测，从而让 better-sqlite3 的原生编译在 VS 18 上成功。
+      # windows-2022 自带 VS 2022，node-gyp 9.x（npm ci 为 better-sqlite3
+      # 源码编译所用）能原生识别其版本号——与本地开发机一致。
+      # 保留 msvc-dev-cmd 注入完整 MSVC 工具链，供 heavy job 的
+      # electron-builder / electron-rebuild 使用。
       - name: Setup MSVC build environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -60,7 +60,7 @@ jobs:
   heavy:
     name: 集成检查（build / sqlite / smoke / e2e）
     needs: fast
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 45
     env:
       CI: "1"
@@ -72,9 +72,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # 与 fast job 相同：npm ci（better-sqlite3 源码编译）以及后续
-      # electron-builder / electron-rebuild 都需要 MSVC 环境；该 step 的
-      # 环境变量对后续所有 step 生效。
+      # 保留 MSVC 环境注入：electron-builder / electron-rebuild 需要完整
+      # 工具链；该 step 的环境变量对后续所有 step 生效。
       - name: Setup MSVC build environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
