@@ -27,6 +27,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # windows-2022 自带 Python 3.12（已移除 distutils），node-gyp 9.4.1
+      # 依赖 distutils 完成 configure（better-sqlite3 源码编译）→ 固定 3.11，
+      # 与本地开发机（Python 3.11.9）一致。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       # windows-2022 自带 VS 2022，node-gyp 9.x（npm ci 为 better-sqlite3
       # 源码编译所用）能原生识别其版本号——与本地开发机一致。
       # 保留 msvc-dev-cmd 注入完整 MSVC 工具链，供 heavy job 的
@@ -72,6 +78,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # 同上：固定 Python 3.11（默认 3.12 无 distutils，node-gyp 9.4.1 无法
+      # configure better-sqlite3），与 fast job 及本地开发机保持一致。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       # 保留 MSVC 环境注入：electron-builder / electron-rebuild 需要完整
       # 工具链；该 step 的环境变量对后续所有 step 生效。
       - name: Setup MSVC build environment
