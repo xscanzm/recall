@@ -19,7 +19,18 @@ vi.mock("electron", () => ({
   net: { fetch: vi.fn() },
 }));
 
+// macOS 分支 installAndQuit 走 spawn("open")；mock 让 exit(code 0) 立即回调，
+// 避免真实 spawn 在 macOS CI 上对无效 DMG 文件返回非零退出码。
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => ({
+    once: (event: string, cb: (code?: number) => void) => {
+      if (event === "exit") queueMicrotask(() => cb(0));
+    },
+  })),
+}));
+
 import { app, ipcMain, shell } from "electron";
+import { spawn } from "node:child_process";
 import { IpcValidationError } from "../validated";
 import { addTrustedWebContents, resetTrustedWebContents } from "../trustedWebContents";
 import { registerUpdateHandlers } from "./updateHandlers";
@@ -62,12 +73,22 @@ function createService(): UpdateService {
   });
 }
 
+// 安装包文件名与 UpdateService.downloadUpdate 的平台推导保持一致：
+// Windows .exe / macOS .dmg（makeInfo 默认 downloadUrl 在 macOS 上为 .dmg）。
+const INSTALLER_NAME =
+  process.platform === "win32"
+    ? "Recall-0.5.6-installer.exe"
+    : "Recall-0.5.6-installer.dmg";
+
 function makeInfo(overrides: Partial<UpdateInfo> = {}): UpdateInfo {
   return {
     hasUpdate: true,
     currentVersion: "0.5.5",
     latestVersion: "0.5.6",
-    downloadUrl: "/download/Recall-0.5.6-installer.exe",
+    downloadUrl:
+      process.platform === "win32"
+        ? "/download/Recall-0.5.6-installer.exe"
+        : "/download/Recall-0.5.6-installer.dmg",
     sha256: "deadbeef",
     releaseNotes: "",
     publishedAt: "2026-01-01T00:00:00.000Z",
@@ -119,7 +140,7 @@ describe("UpdateService.installAndQuit 内部路径（P0）", () => {
 
   it("下载成功后无参调用 → 启动 updates 目录内的安装包（内部路径）", async () => {
     const content = Buffer.from(`fake-installer-bytes-${Date.now()}`);
-    const installerPath = path.join(updatesRoot, "updates", "Recall-0.5.6-installer.exe");
+    const installerPath = path.join(updatesRoot, "updates", INSTALLER_NAME);
     fs.mkdirSync(path.dirname(installerPath), { recursive: true });
     fs.writeFileSync(installerPath, content);
     const info = makeInfo({ sha256: crypto.createHash("sha256").update(content).digest("hex") });
@@ -130,9 +151,17 @@ describe("UpdateService.installAndQuit 内部路径（P0）", () => {
 
     await svc.installAndQuit();
 
-    expect(shell.openPath).toHaveBeenCalledTimes(1);
-    expect(shell.openPath).toHaveBeenCalledWith(installerPath);
-    expect(app.quit).toHaveBeenCalledTimes(1);
+    if (process.platform === "darwin") {
+      // macOS：spawn("open") 挂载 DMG，不立即 app.quit
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledWith("open", [installerPath], { stdio: "ignore" });
+      expect(shell.openPath).not.toHaveBeenCalled();
+      expect(app.quit).not.toHaveBeenCalled();
+    } else {
+      expect(shell.openPath).toHaveBeenCalledTimes(1);
+      expect(shell.openPath).toHaveBeenCalledWith(installerPath);
+      expect(app.quit).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("内部路径不在 updates 目录内 → 抛错，不启动", async () => {

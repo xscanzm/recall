@@ -27,6 +27,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # windows-latest 自带 VS 2026（18），node-gyp 9.x 的 find-VS 无法识别其
+      # 版本号。与 release.yml 的 windows-build 一致：先注入 MSVC 构建环境
+      # （设置 VCINSTALLDIR 等），node-gyp 会直接信任该环境变量并跳过注册表
+      # 探测，从而让 better-sqlite3 的原生编译在 VS 18 上成功。
+      - name: Setup MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
@@ -64,6 +72,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # 与 fast job 相同：npm ci（better-sqlite3 源码编译）以及后续
+      # electron-builder / electron-rebuild 都需要 MSVC 环境；该 step 的
+      # 环境变量对后续所有 step 生效。
+      - name: Setup MSVC build environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - run: npm ci
       - run: npm run build
       # 数据维护/清理流程在真实 Electron 进程内跑通，依赖上面的 build:main。

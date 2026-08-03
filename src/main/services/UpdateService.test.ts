@@ -16,7 +16,10 @@
 // 与 UpdateServiceHostAllowlist.test.ts（todo 6）分工：该文件只测白名单纯函数
 // 与接线点，本文件专注下载管线本身；主机拒绝用例在此仅作接线复述。
 //
-// 平台说明：本机/CI 为 win32，installAndQuit 走 shell.openPath 分支。
+// 平台说明：测试平台无关。安装包文件名按 UpdateService.downloadUpdate 的
+// 平台推导（Windows .exe / macOS .dmg）由 INSTALLER_NAME 生成，避免 macOS
+// 上硬编码 .exe 导致路径断言失败；installAndQuit 断言按平台分支
+// （darwin → spawn("open") 挂载 DMG，其余 → shell.openPath + app.quit）。
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as os from "node:os";
@@ -42,13 +45,33 @@ vi.mock("electron", () => ({
   shell: { openPath: electronMocks.openPath },
 }));
 
+// macOS 分支 installAndQuit 走 spawn("open")；mock 让 exit(code 0) 立即回调，
+// 避免真实 spawn 在 macOS CI 上对无效 DMG 文件返回非零退出码。
+vi.mock("node:child_process", () => ({
+  spawn: vi.fn(() => ({
+    once: (event: string, cb: (code?: number) => void) => {
+      if (event === "exit") queueMicrotask(() => cb(0));
+    },
+  })),
+}));
+
 import { shell } from "electron";
+import { spawn } from "node:child_process";
 import { UpdateService, isAllowedUpdateHost, isInsideUpdatesDir } from "./UpdateService";
 import type { UpdateInfo } from "../../shared/updateTypes";
 
 const CHUNK = 4 * 1024 * 1024; // 4MB，与 UpdateService.CHUNK_SIZE 一致
 const DEFAULT_HOST = "recall-update.ppclaw.online";
 const EVIL_URL = "https://evil.example.com/payload";
+
+// 安装包文件名与 UpdateService.downloadUpdate 的平台推导保持一致：
+// - Windows：固定 .exe
+// - 其余（macOS）：downloadUrl 以 .zip/.dmg 结尾则沿用，否则回退 .dmg；
+//   本文件 makeInfo 默认 downloadUrl 在 macOS 上为 .dmg → 文件名 .dmg。
+const INSTALLER_NAME =
+  process.platform === "win32"
+    ? "Recall-0.5.6-installer.exe"
+    : "Recall-0.5.6-installer.dmg";
 
 function sha256hex(buf: Buffer): string {
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -160,7 +183,7 @@ describe("downloadUpdate：Range 分片下载", () => {
     );
 
     expect(installerPath).toBe(
-      path.join(updatesRoot, "updates", "Recall-0.5.6-installer.exe"),
+      path.join(updatesRoot, "updates", INSTALLER_NAME),
     );
     const file = fs.readFileSync(installerPath);
     expect(file.length).toBe(bytesTotal);
@@ -232,7 +255,7 @@ describe("downloadUpdate：断点续传", () => {
     const installerPath = path.join(
       updatesRoot,
       "updates",
-      "Recall-0.5.6-installer.exe",
+      INSTALLER_NAME,
     );
     const partPath = installerPath + ".part";
     const metaPath = installerPath + ".meta.json";
@@ -275,52 +298,50 @@ describe("downloadUpdate：断点续传", () => {
 // ② 单片超时重试
 // ============================================================================
 describe("downloadUpdate：单片超时重试", () => {
-  it("单片超时 → 单片 5 次尝试（退避）→ 6 轮耗尽后抛错", async () => {
-    vi.useFakeTimers();
-    const bytesTotal = CHUNK;
-    // HEAD 正常；分片请求挂起直到被 AbortController（30s）中止 → 模拟超时
-    electronMocks.fetch.mockImplementation(
-      (url: string, opts?: { method?: string; signal?: AbortSignal }) => {
-        if (opts?.method === "HEAD") {
-          return Promise.resolve(
-            new Response(null, {
-              status: 200,
-              headers: {
-                "accept-ranges": "bytes",
-                "content-length": String(bytesTotal),
-              },
-            }),
-          );
-        }
-        return new Promise((_resolve, reject) => {
-          const sig = opts?.signal;
-          if (sig?.aborted) {
-            reject(new Error("aborted"));
-            return;
+  // timeout 30s：假定时器驱动退避与轮次等待（6 轮 × 单片 31s 退避 ≈ 228s 假时间，
+  // 真实耗时毫秒级）；即使某平台假定时器失效，30s 上限也留出兜底余量。
+  it(
+    "单片超时 → 单片 5 次尝试（退避）→ 6 轮耗尽后抛错",
+    { timeout: 30_000 },
+    async () => {
+      vi.useFakeTimers();
+      const bytesTotal = CHUNK;
+      // HEAD 正常；分片请求立即以超时错误拒绝（等效于 30s 单片超时触发，
+      // 不再依赖 30 个 AbortController 假定时器，macOS 上更稳健）
+      electronMocks.fetch.mockImplementation(
+        (url: string, opts?: { method?: string }) => {
+          if (opts?.method === "HEAD") {
+            return Promise.resolve(
+              new Response(null, {
+                status: 200,
+                headers: {
+                  "accept-ranges": "bytes",
+                  "content-length": String(bytesTotal),
+                },
+              }),
+            );
           }
-          sig?.addEventListener("abort", () => reject(new Error("aborted")), {
-            once: true,
-          });
-        });
-      },
-    );
+          return Promise.reject(new Error("aborted: chunk timed out"));
+        },
+      );
 
-    const svc = createService();
-    const info = makeInfo({ sha256: sha256hex(Buffer.alloc(bytesTotal, 1)) });
-    const promise = svc.downloadUpdate(info, vi.fn());
-    // 先注册拒绝处理器（否则 runAllTimersAsync 期间已拒绝会触发
-    // Node unhandled-rejection 告警），再推进假定时器
-    const rejection = expect(promise).rejects.toThrow(/failed after 6 rounds/);
-    promise.catch(() => {});
+      const svc = createService();
+      const info = makeInfo({ sha256: sha256hex(Buffer.alloc(bytesTotal, 1)) });
+      const promise = svc.downloadUpdate(info, vi.fn());
+      // 先注册拒绝处理器（否则 runAllTimersAsync 期间已拒绝会触发
+      // Node unhandled-rejection 告警），再推进假定时器
+      const rejection = expect(promise).rejects.toThrow(/failed after 6 rounds/);
+      promise.catch(() => {});
 
-    await vi.runAllTimersAsync();
-    await rejection;
+      await vi.runAllTimersAsync();
+      await rejection;
 
-    // 每轮该片尝试 5 次：6 轮 × 5 = 30 次 Range 请求（外加 1 次 HEAD）
-    expect(rangeRequests()).toHaveLength(30);
-    expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
-    expect(svc.getStatus()).toMatchObject({ state: "error", code: "download_failed" });
-  });
+      // 每轮该片尝试 5 次：6 轮 × 5 = 30 次 Range 请求（外加 1 次 HEAD）
+      expect(rangeRequests()).toHaveLength(30);
+      expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
+      expect(svc.getStatus()).toMatchObject({ state: "error", code: "download_failed" });
+    },
+  );
 });
 
 // ============================================================================
@@ -335,7 +356,7 @@ describe("downloadUpdate：SHA256 校验", () => {
     const installerPath = path.join(
       updatesRoot,
       "updates",
-      "Recall-0.5.6-installer.exe",
+      INSTALLER_NAME,
     );
 
     await expect(
@@ -428,7 +449,7 @@ describe("installAndQuit", () => {
     expect(svc.getStatus()).toMatchObject({ state: "error", code: "installer_missing" });
   });
 
-  it("成功下载后 → 使用内部 lastInstallerPath 调 shell.openPath 并 app.quit", async () => {
+  it("成功下载后 → 使用内部 lastInstallerPath 启动安装器（按平台分支断言）", async () => {
     const bytesTotal = 1024 * 1024;
     const content = Buffer.alloc(bytesTotal, 0x33);
     mockRangeServer(bytesTotal, () => 0x33);
@@ -441,9 +462,17 @@ describe("installAndQuit", () => {
 
     await svc.installAndQuit();
 
-    expect(shell.openPath).toHaveBeenCalledTimes(1);
-    expect(shell.openPath).toHaveBeenCalledWith(installerPath);
-    expect(electronMocks.quit).toHaveBeenCalledTimes(1);
+    if (process.platform === "darwin") {
+      // macOS：spawn("open") 挂载 DMG，不立即 app.quit（等用户拖拽完成安装）
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(spawn).toHaveBeenCalledWith("open", [installerPath], { stdio: "ignore" });
+      expect(shell.openPath).not.toHaveBeenCalled();
+      expect(electronMocks.quit).not.toHaveBeenCalled();
+    } else {
+      expect(shell.openPath).toHaveBeenCalledTimes(1);
+      expect(shell.openPath).toHaveBeenCalledWith(installerPath);
+      expect(electronMocks.quit).toHaveBeenCalledTimes(1);
+    }
   });
 
   it("isInsideUpdatesDir 兜底：目录外路径 → 拒绝且不启动", async () => {
@@ -489,7 +518,10 @@ describe("checkForUpdates", () => {
           hasUpdate,
           currentVersion: "0.5.6",
           latestVersion: "0.5.6",
-          downloadUrl: "/download/Recall-0.5.6-installer.exe",
+    downloadUrl:
+      process.platform === "win32"
+        ? "/download/Recall-0.5.6-installer.exe"
+        : "/download/Recall-0.5.6-installer.dmg",
           sha256: "abc123",
           releaseNotes: "notes",
           publishedAt: "2026-01-02T00:00:00.000Z",
