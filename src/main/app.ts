@@ -74,6 +74,7 @@ import { WindowsOcrService } from "./services/WindowsOcrService";
 import type { ManagedOcrBatchService } from "./services/OcrService";
 import { BatchProcessor } from "./services/BatchProcessor";
 import { DataLifecycleService } from "./services/DataLifecycleService";
+import { ModelJobRetentionService } from "./services/ModelJobRetentionService";
 import { ProjectionInvalidationProcessor } from "./services/ProjectionInvalidationProcessor";
 import { SceneRelationProjector } from "./services/SceneRelationProjector";
 import {
@@ -212,6 +213,8 @@ let memoryPipeline: MemoryPipeline | null = null;
 // M6：报告调度器
 let reportScheduler: ReportScheduler | null = null;
 let endOfDayReviewService: EndOfDayReviewService | null = null;
+// model_jobs 调试载荷每日自动清理
+let modelJobRetentionService: ModelJobRetentionService | null = null;
 // 版本更新服务
 let updateService: UpdateService | null = null;
 // 长会话场景调度器（C-3 修复：触发 long_session capture bundle）
@@ -949,6 +952,10 @@ app.whenReady().then(async () => {
     embeddingIndexerService,
   });
 
+  // model_jobs 调试载荷每日自动清理（启动后立即执行一次，之后每天一次）
+  modelJobRetentionService = new ModelJobRetentionService({ db });
+  modelJobRetentionService.start();
+
   // 6. 订阅 CaptureService 的 capture-bundle 事件
   //    - 每当 CaptureService 成功捕获一个 bundle，加入攒批队列
   //    - 攒批由 CaptureBatcher 管理（满 6 帧 / 5 分钟超时自动 flush）
@@ -1212,6 +1219,7 @@ app.on("before-quit", (event) => {
     activityService,
     captureService,
     endOfDayReviewService,
+    modelJobRetentionService,
     sceneScheduler,
     captureBatcher,
     ocrService,

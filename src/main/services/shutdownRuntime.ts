@@ -12,6 +12,7 @@ export interface ShutdownDependencies {
   activityService?: { stop: () => void } | null;
   captureService?: { stop: () => void; drain: () => Promise<void> } | null;
   endOfDayReviewService?: { stop: () => void } | null;
+  modelJobRetentionService?: { stop: () => void } | null;
   sceneScheduler?: { stop: () => void } | null;
   captureBatcher?: { drain: () => Promise<void> } | null;
   ocrService?: { stop: () => Promise<void> | void } | null;
@@ -50,6 +51,7 @@ async function performShutdown(
   await runBestEffort("cleanupUpdateDownloads", () => deps.updateService?.cleanupIncompleteDownloads());
   await runBestEffort("stopSceneScheduler", () => deps.sceneScheduler?.stop());
   await runBestEffort("stopEndOfDayReviewService", () => deps.endOfDayReviewService?.stop());
+  await runBestEffort("stopModelJobRetentionService", () => deps.modelJobRetentionService?.stop());
 
   const criticalErrors: Error[] = [];
   await runCritical("stopActivityService", () => deps.activityService?.stop(), criticalErrors);
