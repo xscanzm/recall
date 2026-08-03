@@ -9,6 +9,14 @@ const indexPath = path.join(rootDir, "dist", "renderer", "index.html");
 const captureDir = process.env.RECALL_CAPTURE_DIR || null;
 const now = "2026-07-09T10:08:00.000Z";
 const dateKey = "2026-07-09";
+// SourceLink 文案 "来自今天 HH:MM 的记录" 的 HH:MM 是机器本地时区时间
+// （渲染端 formatTime 对 block.startAt 求值）。CI（windows-2022, UTC）
+// 渲染为 10:00，本地开发机（UTC+8）为 18:00，故必须按本地时区动态计算，
+// 不能硬编码 "18:00"。
+const sourceLinkTime = (() => {
+  const d = new Date("2026-07-09T10:00:00.000Z");
+  return `${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}`;
+})();
 const marketingCapture = Boolean(captureDir) && process.env.RECALL_STANDARD_CAPTURE !== "1";
 const onboardingCapture = process.env.RECALL_ONBOARDING_CAPTURE === "1";
 const defaultModelCapture = process.env.RECALL_DEFAULT_MODEL_CAPTURE === "1";
@@ -824,7 +832,7 @@ async function run() {
     "2 条记忆线索",
     "1 个工作片段",
   ]);
-  await clickByLabel(win, "来自今天 18:00 的记录");
+  await clickByLabel(win, `来自今天 ${sourceLinkTime} 的记录`);
   await assertTexts(win, ["返回今日时间轴", "时间轴", "来源记录", "L0 降低判断负担"]);
   await clickByLabel(win, "返回今日时间轴");
 
