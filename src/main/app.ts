@@ -16,6 +16,7 @@
 import { app, BrowserWindow, dialog, powerMonitor } from "electron";
 import * as path from "node:path";
 import { registerIpcHandlers } from "./ipc/handlers";
+import { addTrustedWebContents, removeTrustedWebContents } from "./ipc/trustedWebContents";
 import type { AppStatus, ReportGeneratedEvent } from "../shared/types";
 import { APP_NAME_ZH } from "../shared/constants";
 import { getDatabase, closeDatabase } from "./db/Database";
@@ -355,6 +356,9 @@ function createMainWindow(options: { deferRendererLoad?: boolean } = {}): Browse
 
   installNavigationGuards(win.webContents, navigationPolicy);
 
+  const webContentsId = win.webContents.id;
+  addTrustedWebContents(webContentsId);
+
   // 启动后再显示，避免白屏
   win.once("ready-to-show", () => {
     if (!shouldStartHidden() || defaultModelConsentRequested) {
@@ -374,6 +378,7 @@ function createMainWindow(options: { deferRendererLoad?: boolean } = {}): Browse
 
   win.on("closed", () => {
     mainWindow = null;
+    removeTrustedWebContents(webContentsId);
   });
 
   win.webContents.on("did-finish-load", () => {
