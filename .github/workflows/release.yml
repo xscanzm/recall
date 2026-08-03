@@ -89,6 +89,8 @@ jobs:
             resources/ocr/requirements-build.txt
       - name: Install dependencies
         run: npm ci
+      - name: 修复脚本加可执行权限
+        run: chmod +x resources/scripts/双击修复安装.command
       - name: Build macOS RapidOCR worker
         run: bash scripts/build-rapidocr-worker.sh
       - name: Build main and renderer

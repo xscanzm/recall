@@ -20,7 +20,9 @@ const { createMemoryEdgeRepository } = requireDist("db/repositories/MemoryEdgeRe
 const { ObservationNormalizer } = requireDist("services/ObservationNormalizer.js");
 const { MemoryPipeline } = requireDist("services/MemoryPipeline.js");
 const { LinkerSceneJudgeWorker } = requireDist("services/LinkerSceneJudgeWorker.js");
+const { MemoryObjectAdmissionService } = requireDist("services/MemoryObjectAdmissionService.js");
 const { LinkerSceneJudgeOutputSchema } = requireDist("models/schemas.js");
+const { resolveModelConfigId: resolveModelTargetId } = requireDist("services/ModelTargets.js");
 
 function resetSmokeDb() {
   fs.mkdirSync(outputDir, { recursive: true });
@@ -258,6 +260,42 @@ class StaticModelJobQueue {
   }
 }
 
+/**
+ * 可用多模态配置，镜像 src/shared/types.ts 的 ModelConfig 结构。
+ */
+const smokeMultimodalModelConfig = {
+  id: "smoke_multimodal_config",
+  kind: "multimodal",
+  providerName: "smoke",
+  endpoint: "http://127.0.0.1:9/v1",
+  model: "smoke-multimodal-model",
+  optionsJson: "{}",
+  enabled: true,
+  createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
+};
+
+/**
+ * 镜像 src/main/services/SettingsService 模型配置接口，供 MemoryPipeline.resolveConfigId 解析。
+ */
+const smokeSettingsServiceStub = {
+  isDebugMode: () => false,
+  getActiveMultimodalModelConfigId: () => smokeMultimodalModelConfig.id,
+  listModelConfigs: () => [smokeMultimodalModelConfig],
+  getApiKey: async () => "smoke-api-key",
+  isModelConfigUsable: async (configId) => {
+    const config = smokeMultimodalModelConfig.id === configId ? smokeMultimodalModelConfig : null;
+    return Boolean(config?.enabled && config.endpoint.trim() && config.model.trim());
+  },
+  resolveModelConfigId: async (taskKind) =>
+    resolveModelTargetId({
+      taskKind,
+      configs: [smokeMultimodalModelConfig],
+      getApiKey: async () => "smoke-api-key",
+      defaultConsent: "accepted",
+    }),
+};
+
 async function main() {
   assertLinkerSceneJudgeDefaults();
   outputDir = fs.mkdtempSync(path.join(os.tmpdir(), "recall-memory-smoke-"));
@@ -285,6 +323,7 @@ async function main() {
       memoryObjectRepo,
       proactiveItemRepo,
       edgeRepo,
+      admissionService: new MemoryObjectAdmissionService({ factRepo, memoryObjectRepo }),
       settingsService: {
         getAll: () => ({
           notification: { inAppReminders: true, desktopNotifications: false },
@@ -312,10 +351,7 @@ async function main() {
       factRepo,
       memoryObjectRepo,
       edgeRepo,
-      settingsService: {
-        isDebugMode: () => false,
-        getActiveMultimodalModelConfigId: () => "smoke_multimodal_config",
-      },
+      settingsService: smokeSettingsServiceStub,
       config: { enableSceneBuilder: true },
     });
 
