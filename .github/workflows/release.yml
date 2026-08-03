@@ -95,10 +95,39 @@ jobs:
         run: bash scripts/build-rapidocr-worker.sh
       - name: Build main and renderer
         run: npm run build
+      # macos-latest is Apple Silicon (arm64), so `npm ci` installs only the current-platform
+      # sharp optional dep (@img/sharp-darwin-arm64). Cross-packaging the x64 DMG/ZIP from the
+      # same node_modules would bundle the arm64 sharp binary and crash on Intel Macs with
+      # "Could not load the sharp module using the darwin-x64 runtime". Swap sharp to
+      # darwin-x64 before the x64 build, then restore darwin-arm64 before the arm64 build.
+      - name: Swap sharp to darwin-x64 for x64 build
+        run: npm install --no-save --os=darwin --cpu=x64 sharp
       - name: Build macOS x64 DMG and ZIP
         run: npx electron-builder --mac dmg:x64 zip:x64 --publish never
+      - name: Verify x64 DMG bundles darwin-x64 sharp
+        run: |
+          # x64 is the default mac arch (mac.defaultArch unset), so electron-builder writes the
+          # app to release/mac (some versions use release/mac-x64) — accept either location.
+          if test -d release/mac-x64/Recall.app/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-x64 -o -d release/mac/Recall.app/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-x64; then
+            echo "X64-SHARP-PRESENT (@img/sharp-darwin-x64 bundled)"
+          else
+            echo "ERROR: darwin-x64 sharp NOT found in x64 app bundle"
+            find release -maxdepth 6 -type d -name "@img" -print
+            exit 1
+          fi
+      - name: Swap sharp back to darwin-arm64 for arm64 build
+        run: npm install --no-save --os=darwin --cpu=arm64 sharp
       - name: Build macOS arm64 DMG and ZIP
         run: npx electron-builder --mac dmg:arm64 zip:arm64 --publish never
+      - name: Verify arm64 DMG bundles darwin-arm64 sharp
+        run: |
+          if test -d release/mac-arm64/Recall.app/Contents/Resources/app.asar.unpacked/node_modules/@img/sharp-darwin-arm64; then
+            echo "ARM64-SHARP-PRESENT (@img/sharp-darwin-arm64 bundled)"
+          else
+            echo "ERROR: darwin-arm64 sharp NOT found in arm64 app bundle"
+            find release -maxdepth 6 -type d -name "@img" -print
+            exit 1
+          fi
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
