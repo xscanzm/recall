@@ -13,8 +13,8 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 - **官网**：<https://recall.ppclaw.online/>（含产品介绍与 macOS / Windows 客户端下载）
 - **Windows 下载**：<https://recall-update.ppclaw.online/download/latest>（Windows x64 NSIS 安装包）
-- **macOS 下载**：<https://github.com/xscanzm/recall/releases/latest>（支持 Apple Silicon `arm64` 与 Intel `x64` DMG 包）
-- **GitHub Release**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
+- **macOS 下载（R2 直连）**：Apple Silicon `arm64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.zip) · Intel `x64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.zip)
+- **GitHub Release（备份/历史版本）**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
 > 💡 **macOS 首次安装提示“应用已损坏，无法打开”解决指南**：
 > 由于未购买 Apple 商业证书签名，macOS 会对从网络下载的应用标记隔离。解决办法：
