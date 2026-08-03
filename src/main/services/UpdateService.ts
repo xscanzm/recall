@@ -158,6 +158,40 @@ const CHUNK_MAX_ATTEMPTS = 5;
 const CHUNK_BACKOFF_MS = [1000, 2000, 4000, 8000, 16000];
 /** 整体下载最大重试轮次（每轮从断点继续） */
 const DOWNLOAD_MAX_ROUNDS = 6;
+/** 轮间等待基准（毫秒）：2000 × round */
+const ROUND_BACKOFF_BASE_MS = 2000;
+
+/**
+ * 下载重试参数可覆盖项。
+ *
+ * 仅供测试注入极小值（真实定时器 + 毫秒级退避），使单片超时重试路径在
+ * 任意平台上都能在 <2s 真实时间内确定性跑完。不传任何字段时，行为与
+ * 原有默认常量完全一致（默认生产路径不变）。
+ */
+export interface UpdateRetryOptions {
+  /** 单片超时（默认 30s） */
+  chunkTimeoutMs?: number;
+  /** 单片最大尝试次数（默认 5） */
+  maxChunkRetries?: number;
+  /** 单片退避基准毫秒（默认 1s/2s/4s/8s/16s 指数递增） */
+  backoffBaseMs?: number;
+  /** 整体下载最大轮次（默认 6） */
+  overallRounds?: number;
+  /** 轮间等待基准毫秒（默认 2000ms × round） */
+  roundBackoffBaseMs?: number;
+}
+
+/** 由覆盖项推导单片退避时间表；未覆盖时返回默认常量数组 */
+function buildBackoffSchedule(
+  options: UpdateRetryOptions,
+  maxAttempts: number,
+): number[] {
+  if (options.backoffBaseMs !== undefined) {
+    const base = options.backoffBaseMs;
+    return Array.from({ length: maxAttempts - 1 }, (_, i) => base * 2 ** i);
+  }
+  return CHUNK_BACKOFF_MS;
+}
 
 interface DownloadMeta {
   version: string;
@@ -291,7 +325,10 @@ export class UpdateService {
    */
   private lastInstallerPath: string | null = null;
 
-  constructor(private deps: UpdateServiceDeps) {}
+  constructor(
+    private deps: UpdateServiceDeps,
+    private readonly retryOptions: UpdateRetryOptions = {},
+  ) {}
 
   /**
    * 检查更新
@@ -613,9 +650,14 @@ export class UpdateService {
     }
 
     // 以 append 模式打开 .part 文件，每片下载后追加
-    const totalRounds = DOWNLOAD_MAX_ROUNDS;
+    const chunkTimeoutMs = this.retryOptions.chunkTimeoutMs ?? CHUNK_TIMEOUT_MS;
+    const maxChunkAttempts = this.retryOptions.maxChunkRetries ?? CHUNK_MAX_ATTEMPTS;
+    const backoffMs = buildBackoffSchedule(this.retryOptions, maxChunkAttempts);
+    const roundBackoffBaseMs =
+      this.retryOptions.roundBackoffBaseMs ?? ROUND_BACKOFF_BASE_MS;
+    const totalRounds = this.retryOptions.overallRounds ?? DOWNLOAD_MAX_ROUNDS;
     let consecutiveChunkFailures = 0;
-    const MAX_CONSECUTIVE_CHUNK_FAILURES = CHUNK_MAX_ATTEMPTS * 4; // 多片连续失败兜底
+    const MAX_CONSECUTIVE_CHUNK_FAILURES = maxChunkAttempts * 4; // 多片连续失败兜底
 
     for (let round = 1; round <= totalRounds; round++) {
       // 读取最新进度（断点续传可能从上次中断处继续）
@@ -652,13 +694,13 @@ export class UpdateService {
           let lastChunkErr: unknown = null;
 
           // 单片重试
-          for (let attempt = 1; attempt <= CHUNK_MAX_ATTEMPTS; attempt++) {
+          for (let attempt = 1; attempt <= maxChunkAttempts; attempt++) {
             try {
               chunkBuffer = await downloadChunkWithTimeout(
                 fullUrl,
                 chunkStart,
                 chunkEnd,
-                CHUNK_TIMEOUT_MS
+                chunkTimeoutMs
               );
               if (chunkBuffer.length !== chunkSize) {
                 throw new Error(
@@ -669,13 +711,13 @@ export class UpdateService {
               break;
             } catch (err) {
               lastChunkErr = err;
-              if (attempt < CHUNK_MAX_ATTEMPTS) {
-                const backoff = CHUNK_BACKOFF_MS[attempt - 1] ?? 1000;
+              if (attempt < maxChunkAttempts) {
+                const backoff = backoffMs[attempt - 1] ?? 1000;
                 logger.warn({
                   jobType: "update_download",
                   status: "started",
                   errorCode: "chunk_retry",
-                  message: `chunk [${chunkStart},${chunkEnd}) attempt ${attempt}/${CHUNK_MAX_ATTEMPTS} failed, retry in ${backoff}ms: ${err instanceof Error ? err.message : String(err)}`,
+                  message: `chunk [${chunkStart},${chunkEnd}) attempt ${attempt}/${maxChunkAttempts} failed, retry in ${backoff}ms: ${err instanceof Error ? err.message : String(err)}`,
                 });
                 await new Promise((r) => setTimeout(r, backoff));
               }
@@ -685,7 +727,7 @@ export class UpdateService {
           if (chunkBuffer === null || lastChunkErr) {
             // 单片重试用尽，关闭 writer，进入下一轮断点续传
             consecutiveChunkFailures++;
-            const message = `chunk [${chunkStart},${chunkEnd}) failed after ${CHUNK_MAX_ATTEMPTS} attempts: ${lastChunkErr instanceof Error ? lastChunkErr.message : String(lastChunkErr)}`;
+            const message = `chunk [${chunkStart},${chunkEnd}) failed after ${maxChunkAttempts} attempts: ${lastChunkErr instanceof Error ? lastChunkErr.message : String(lastChunkErr)}`;
             logger.warn({
               jobType: "update_download",
               status: "started",
@@ -743,7 +785,7 @@ export class UpdateService {
 
         // 进入下一轮断点续传前等待
         if (round < totalRounds) {
-          const roundBackoff = 2000 * round;
+          const roundBackoff = roundBackoffBaseMs * round;
           logger.warn({
             jobType: "update_download",
             status: "started",

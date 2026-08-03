@@ -58,6 +58,7 @@ vi.mock("node:child_process", () => ({
 import { shell } from "electron";
 import { spawn } from "node:child_process";
 import { UpdateService, isAllowedUpdateHost, isInsideUpdatesDir } from "./UpdateService";
+import type { UpdateRetryOptions } from "./UpdateService";
 import type { UpdateInfo } from "../../shared/updateTypes";
 
 const CHUNK = 4 * 1024 * 1024; // 4MB，与 UpdateService.CHUNK_SIZE 一致
@@ -90,13 +91,16 @@ function makeInfo(overrides: Partial<UpdateInfo> = {}): UpdateInfo {
   };
 }
 
-function createService(): UpdateService {
-  return new UpdateService({
-    settingsService: {
-      getAll: () => ({ update: null }),
-      setUpdateSettings: vi.fn(),
-    } as never,
-  });
+function createService(retryOptions?: UpdateRetryOptions): UpdateService {
+  return new UpdateService(
+    {
+      settingsService: {
+        getAll: () => ({ update: null }),
+        setUpdateSettings: vi.fn(),
+      } as never,
+    },
+    retryOptions,
+  );
 }
 
 /**
@@ -298,50 +302,51 @@ describe("downloadUpdate：断点续传", () => {
 // ② 单片超时重试
 // ============================================================================
 describe("downloadUpdate：单片超时重试", () => {
-  // timeout 30s：假定时器驱动退避与轮次等待（6 轮 × 单片 31s 退避 ≈ 228s 假时间，
-  // 真实耗时毫秒级）；即使某平台假定时器失效，30s 上限也留出兜底余量。
-  it(
-    "单片超时 → 单片 5 次尝试（退避）→ 6 轮耗尽后抛错",
-    { timeout: 30_000 },
-    async () => {
-      vi.useFakeTimers();
-      const bytesTotal = CHUNK;
-      // HEAD 正常；分片请求立即以超时错误拒绝（等效于 30s 单片超时触发，
-      // 不再依赖 30 个 AbortController 假定时器，macOS 上更稳健）
-      electronMocks.fetch.mockImplementation(
-        (url: string, opts?: { method?: string }) => {
-          if (opts?.method === "HEAD") {
-            return Promise.resolve(
-              new Response(null, {
-                status: 200,
-                headers: {
-                  "accept-ranges": "bytes",
-                  "content-length": String(bytesTotal),
-                },
-              }),
-            );
-          }
-          return Promise.reject(new Error("aborted: chunk timed out"));
-        },
-      );
+  // 通过 UpdateRetryOptions 注入极小退避（单片 1/2/4/8ms，轮间 1/2/3/4/5ms），
+  // 全部走真实定时器，6 轮流程在 <200ms 真实时间内完成——不再依赖假定时器
+  // （假定时器无法拦截 AbortController 内部真实定时器，Windows CI 上会退化
+  // 为真实 30s 单片退避导致 30s 用例超时）。仍断言真实行为：6 轮 × 5 次尝试
+  // = 30 次 Range 请求、退避生效、最终抛出 "failed after 6 rounds"。
+  it("单片超时 → 单片 5 次尝试（退避）→ 6 轮耗尽后抛错", async () => {
+    const bytesTotal = CHUNK;
+    // HEAD 正常；分片请求立即以超时错误拒绝（等效于单片超时触发）
+    electronMocks.fetch.mockImplementation(
+      (url: string, opts?: { method?: string }) => {
+        if (opts?.method === "HEAD") {
+          return Promise.resolve(
+            new Response(null, {
+              status: 200,
+              headers: {
+                "accept-ranges": "bytes",
+                "content-length": String(bytesTotal),
+              },
+            }),
+          );
+        }
+        return Promise.reject(new Error("aborted: chunk timed out"));
+      },
+    );
 
-      const svc = createService();
-      const info = makeInfo({ sha256: sha256hex(Buffer.alloc(bytesTotal, 1)) });
-      const promise = svc.downloadUpdate(info, vi.fn());
-      // 先注册拒绝处理器（否则 runAllTimersAsync 期间已拒绝会触发
-      // Node unhandled-rejection 告警），再推进假定时器
-      const rejection = expect(promise).rejects.toThrow(/failed after 6 rounds/);
-      promise.catch(() => {});
+    const svc = createService({
+      chunkTimeoutMs: 5,
+      maxChunkRetries: 5,
+      backoffBaseMs: 1,
+      overallRounds: 6,
+      roundBackoffBaseMs: 1,
+    });
+    const info = makeInfo({ sha256: sha256hex(Buffer.alloc(bytesTotal, 1)) });
+    const promise = svc.downloadUpdate(info, vi.fn());
+    // 先注册拒绝处理器（避免 unhandled-rejection 告警），再等待完成
+    const rejection = expect(promise).rejects.toThrow(/failed after 6 rounds/);
+    promise.catch(() => {});
 
-      await vi.runAllTimersAsync();
-      await rejection;
+    await rejection;
 
-      // 每轮该片尝试 5 次：6 轮 × 5 = 30 次 Range 请求（外加 1 次 HEAD）
-      expect(rangeRequests()).toHaveLength(30);
-      expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
-      expect(svc.getStatus()).toMatchObject({ state: "error", code: "download_failed" });
-    },
-  );
+    // 每轮该片尝试 5 次：6 轮 × 5 = 30 次 Range 请求（外加 1 次 HEAD）
+    expect(rangeRequests()).toHaveLength(30);
+    expect(electronMocks.fetch).toHaveBeenCalledTimes(31);
+    expect(svc.getStatus()).toMatchObject({ state: "error", code: "download_failed" });
+  });
 });
 
 // ============================================================================
