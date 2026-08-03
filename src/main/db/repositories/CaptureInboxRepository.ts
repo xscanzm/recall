@@ -1,5 +1,6 @@
 import type { DB } from "../Database";
 import type { BatchCaptureBundle, CaptureBundle } from "../../models/types";
+import { assertBatchStage } from "../sqlIdentifiers";
 
 /**
  * batch 的最大尝试次数。放在仓储层是因为 getWindowWatermark 的 SQL 也要用它判定终态，
@@ -208,18 +209,21 @@ export class CaptureInboxRepository {
   }
 
   markStageSucceeded(batchId: string, stage: BatchStage, patch: BatchCheckpoint = {}): void {
+    const safeStage = assertBatchStage(stage);
     const current = this.getBatch(batchId)?.checkpoint ?? {};
-    this.db.prepare(`UPDATE capture_batches SET ${stage}_status = 'succeeded', checkpoint_json = ?, updated_at = ? WHERE batch_id = ?`)
+    this.db.prepare(`UPDATE capture_batches SET ${safeStage}_status = 'succeeded', checkpoint_json = ?, updated_at = ? WHERE batch_id = ?`)
       .run(JSON.stringify({ ...current, ...patch }), new Date().toISOString(), batchId);
   }
 
   markStageFailed(batchId: string, stage: BatchStage, error: string): void {
-    this.db.prepare(`UPDATE capture_batches SET ${stage}_status = 'failed', last_error = ?, updated_at = ? WHERE batch_id = ?`)
+    const safeStage = assertBatchStage(stage);
+    this.db.prepare(`UPDATE capture_batches SET ${safeStage}_status = 'failed', last_error = ?, updated_at = ? WHERE batch_id = ?`)
       .run(error.slice(0, 1000), new Date().toISOString(), batchId);
   }
 
   private updateStage(batchId: string, stage: BatchStage, status: BatchStageStatus): void {
-    this.db.prepare(`UPDATE capture_batches SET ${stage}_status = ?, updated_at = ? WHERE batch_id = ?`)
+    const safeStage = assertBatchStage(stage);
+    this.db.prepare(`UPDATE capture_batches SET ${safeStage}_status = ?, updated_at = ? WHERE batch_id = ?`)
       .run(status, new Date().toISOString(), batchId);
   }
 
