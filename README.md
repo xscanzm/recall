@@ -16,10 +16,11 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 - **macOS 下载（R2 直连）**：Apple Silicon `arm64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.zip) · Intel `x64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.zip)
 - **GitHub Release（备份/历史版本）**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
-> 💡 **macOS 首次安装提示“应用已损坏，无法打开”解决指南**：
-> 由于未购买 Apple 商业证书签名，macOS 会对从网络下载的应用标记隔离。解决办法：
-> 1. **推荐（一键修复）**：打开安装包 `.dmg`，将 `Recall.app` 拖入【应用程序】文件夹后，双击运行 DMG 内内置的 **`双击修复安装.command`** 脚本。
-> 2. **手动修复**：打开 Mac 终端执行命令：`sudo xattr -rd com.apple.quarantine /Applications/Recall.app` 即可解锁。
+> 💡 **macOS 首次安装提示“无法打开，因为它来自身份不明的开发者”解决指南**：
+> 原因：安装包未签名、未经过 Apple 公证，macOS 会对从网络下载的文件标记隔离（quarantine），首次打开被 Gatekeeper 拦截，授权一次后即可正常使用。任选其一：
+> 1. **方法 1（推荐，无需终端）**：在【应用程序】中**右键点击 `Recall.app` → 打开** → 在弹出的确认框点击 **打开**（只需一次授权），之后永远正常打开。若使用修复脚本，同样先右键点击它 → 打开。
+> 2. **方法 2（一键修复脚本）**：打开安装包 `.dmg`，将 `Recall.app` 拖入【应用程序】后，双击运行 DMG 内的 **`双击修复安装.command`**，脚本会自动清除隔离标记。若脚本本身也被拦截无法双击，请**右键点击它 → 打开** 先授权一次，或把它**复制到【桌面】**后再运行。
+> 3. **方法 3（终端，最可靠）**：打开 Mac 终端执行 `sudo xattr -rd com.apple.quarantine /Applications/Recall.app`，然后正常打开 Recall。
 
 ---
 

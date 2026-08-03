@@ -147,7 +147,7 @@ function App() {
               <Laptop size={15} /> Windows x64 & macOS (Apple Silicon / Intel) <span /> 默认模型服务已配置
               <br />
               <small style={{ opacity: 0.8, marginTop: "4px", display: "inline-block" }}>
-                当前版本没有 Windows 代码签名或 Apple 公证。macOS 首次打开请运行 DMG 内的【双击修复安装.command】。
+                当前版本没有 Windows 代码签名或 Apple 公证。macOS 首次请右键点击 DMG 内的【双击修复安装.command】→ 打开，授予一次权限（或按 README 使用终端命令）。
               </small>
             </p>
           </div>
