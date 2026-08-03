@@ -23,6 +23,7 @@
 //   本队列只负责调度和重试控制
 
 import type { ModelJobRepository } from "../db/repositories/ModelJobRepository";
+import { generateId } from "../utils/id";
 
 /**
  * 任务类型（来自 spec.md + 多模态统一架构改造）
@@ -164,10 +165,9 @@ export const MAX_TOTAL_REQUEST_BUDGET = 6;
 /**
  * 多模态任务并发上限
  *
- * 改造前：vision=2, llm=1（串行）
- * 改造后：统一 5 并发（激进合并后单次 capture 只需 2 次调用，总调用量大幅下降，可安全提升并发）
+ * 统一模型任务最多 3 个并发，给 OCR、批处理和渲染线程留出 CPU 余量。
  */
-const MULTIMODAL_CONCURRENCY = 5;
+export const MULTIMODAL_CONCURRENCY = 3;
 
 /**
  * 内部任务条目
@@ -207,6 +207,7 @@ export interface QueueStatus {
   pending: number;
   /** 执行中的任务数 */
   running: number;
+  retries: number;
   /** 是否已暂停 */
   paused: boolean;
 }
@@ -226,6 +227,7 @@ export class ModelJobQueue {
   private readonly modelJobRepo: ModelJobRepository | null;
   private readonly multimodalQueue: QueueEntry[] = [];
   private runningCount = 0;
+  private retryCount = 0;
   private isPaused = false;
   private isStopping = false;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -412,6 +414,7 @@ export class ModelJobQueue {
     return {
       pending: this.multimodalQueue.length,
       running: this.runningCount,
+      retries: this.retryCount,
       paused: this.isPaused,
     };
   }
@@ -597,6 +600,7 @@ export class ModelJobQueue {
         this.setEndpointCooldown(entry.rateLimitKey, backoffMs);
       }
       this.multimodalQueue.push(entry);
+      this.retryCount += 1;
       requeued = true;
     } catch (err) {
       // 不应到达此处
@@ -651,7 +655,7 @@ export class ModelJobQueue {
 // ============================================================================
 
 function generateJobId(): string {
-  return `qj_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return generateId("qj_");
 }
 
 function withQueueMetadata<T>(result: JobResult<T>, attempts: number, requestCount: number): JobResult<T> {

@@ -372,6 +372,14 @@ export class RapidOcrService implements ManagedOcrBatchService {
     }
   }
 
+  public getPid(): number | null {
+    return this.worker?.pid ?? null;
+  }
+
+  public getPendingRequestCount(): number {
+    return this.pending.size;
+  }
+
   private async fallbackFailedFrames(
     imagePaths: string[],
     result: OcrBatchResult

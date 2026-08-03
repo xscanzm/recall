@@ -4,7 +4,7 @@ import * as path from "node:path";
 import sharp from "sharp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BatchCaptureBundle, CaptureBundle } from "../models/types";
-import { CaptureBatcher } from "./CaptureBatcher";
+import { CaptureBatcher, MAX_IN_MEMORY_FRAMES } from "./CaptureBatcher";
 
 const tempDirs: string[] = [];
 
@@ -98,6 +98,69 @@ describe("CaptureBatcher OCR and compression", () => {
 
     expect(batchSizes).toEqual([6, 1]);
     expect(batcher.add(makeFrame(8))).toBe(false);
+  });
+
+  it("keeps the in-memory mirror bounded while SQLite holds the durable backlog", async () => {
+    const durable: CaptureBundle[] = [];
+    const committed: string[] = [];
+    const repository = {
+      listPendingCaptures: (limit = 6) => durable.slice(0, limit),
+      countPendingCaptures: () => durable.length,
+      getPendingCaptureStats: () => ({
+        count: durable.length,
+        oldestCapturedAt: durable[0]?.capturedAt ?? null,
+      }),
+      enqueueCapture: (frame: CaptureBundle) => {
+        durable.push(frame);
+        return true;
+      },
+      createBatch: (batch: BatchCaptureBundle) => {
+        const selected = new Set(batch.frames.map((frame) => frame.captureId));
+        for (let index = durable.length - 1; index >= 0; index -= 1) {
+          if (selected.has(durable[index].captureId)) durable.splice(index, 1);
+        }
+        committed.push(...batch.frames.map((frame) => frame.captureId));
+        return true;
+      },
+    };
+    const batcher = new CaptureBatcher({
+      repository: repository as never,
+      ocrFrameProcessor: {
+        prepareBatch: async (frames) => ({
+          results: frames.map((_, index) => ({
+            frameIndex: index + 1,
+            text: "",
+            lines: [],
+            blocks: [],
+          })),
+          commit: () => undefined,
+        }),
+      },
+    });
+    const makeFrame = (index: number): CaptureBundle => ({
+      captureId: `bounded-${index}`,
+      capturedAt: new Date(index * 1000).toISOString(),
+      timezone: "UTC",
+      appName: "Recall Test",
+      windowTitle: "Bounded Queue",
+      captureReason: "manual_capture",
+      activitySignals: {
+        keyboardActive: false,
+        mouseActive: false,
+        idleSeconds: 0,
+        activeWindowStableSeconds: 60,
+      },
+      imagePaths: [],
+      retentionPolicy: "today",
+    });
+
+    for (let index = 0; index < 30; index += 1) batcher.add(makeFrame(index));
+    expect(batcher.getStatus().inMemory).toBeLessThanOrEqual(MAX_IN_MEMORY_FRAMES);
+    await batcher.drain();
+
+    expect(durable).toHaveLength(0);
+    expect(committed).toHaveLength(30);
+    expect(new Set(committed).size).toBe(30);
   });
 
   it("lets the idle timer slide with new frames instead of cutting a nearly-full batch", async () => {

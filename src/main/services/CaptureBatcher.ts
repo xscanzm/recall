@@ -26,7 +26,8 @@ import type { OcrBatchService } from "./OcrService";
 /**
  * 攒批参数
  */
-const BATCH_SIZE = 6; // 攒满 6 帧立即提交，避免 JSON 输出过长被截断
+export const BATCH_SIZE = 6; // 攒满 6 帧立即提交，避免 JSON 输出过长被截断
+export const MAX_IN_MEMORY_FRAMES = BATCH_SIZE * 2;
 /**
  * 空闲兜底：距离最后一帧超过这个时长才认为"活动停了"，把不满 6 帧的残批提交。
  *
@@ -58,6 +59,13 @@ export interface CaptureBatcherConfig {
    * 压缩图使用后由调用方（ObserverExtractorWorker）清理
    */
   compressedDir?: string;
+}
+
+export interface CaptureBatcherStatus {
+  pending: number;
+  inMemory: number;
+  memoryCapacity: number;
+  flushing: boolean;
 }
 
 /**
@@ -92,9 +100,10 @@ export class CaptureBatcher extends EventEmitter {
     this.compressedDir =
       config.compressedDir ?? path.join(os.tmpdir(), "recall-batch");
     fs.mkdirSync(this.compressedDir, { recursive: true });
-    this.queue = this.repository.listPendingCaptures();
-    if (this.queue.length > 0) {
-      this.oldestQueuedAt = Date.now();
+    this.queue = this.repository.listPendingCaptures(MAX_IN_MEMORY_FRAMES);
+    const pending = this.getPendingStats();
+    if (pending.count > 0) {
+      this.oldestQueuedAt = toTimestamp(pending.oldestCapturedAt) ?? Date.now();
       setImmediate(() => {
         this.flush().catch((err) => {
           logger.error({
@@ -112,15 +121,17 @@ export class CaptureBatcher extends EventEmitter {
    */
   add(bundle: CaptureBundle): boolean {
     if (!this.accepting) return false;
-    if (!this.repository.enqueueCapture(bundle)) return true;
-    this.queue.push(bundle);
+    if (!this.repository.enqueueCapture(bundle)) return false;
+    if (this.queue.length < MAX_IN_MEMORY_FRAMES) {
+      this.queue.push(bundle);
+    }
     logger.info({
-      message: `CaptureBatcher.add: 队列长度 ${this.queue.length}/${BATCH_SIZE} (captureId=${bundle.captureId})`,
+      message: `CaptureBatcher.add: durable queue accepted (memory=${this.queue.length}/${MAX_IN_MEMORY_FRAMES})`,
     });
 
     if (this.oldestQueuedAt === null) this.oldestQueuedAt = Date.now();
 
-    if (this.queue.length >= BATCH_SIZE) {
+    if (this.getPendingStats().count >= BATCH_SIZE) {
       // 攒满立即触发（异步，不阻塞 add 调用方）
       this.flush().catch((err) => {
         logger.error({
@@ -152,7 +163,11 @@ export class CaptureBatcher extends EventEmitter {
   }
 
   private async doFlush(): Promise<void> {
-    if (this.queue.length === 0) {
+    const durableFrames = this.repository.listPendingCaptures(BATCH_SIZE);
+    const frames = durableFrames.length > 0 || typeof this.repository.countPendingCaptures === "function"
+      ? durableFrames
+      : this.queue.slice(0, BATCH_SIZE);
+    if (frames.length === 0) {
       if (this.flushTimer) {
         clearTimeout(this.flushTimer);
         this.flushTimer = null;
@@ -169,10 +184,9 @@ export class CaptureBatcher extends EventEmitter {
       this.flushTimer = null;
     }
 
-    const frames = this.queue.splice(0, BATCH_SIZE);
     const previousAnchor = this.oldestQueuedAt;
-    // 剩下的帧从现在起重新计年龄；队列空了就清掉锚点。
-    this.oldestQueuedAt = this.queue.length > 0 ? Date.now() : null;
+    this.removeFromMemory(frames);
+    this.refreshPendingAnchor();
     const batchId = createBatchId(frames);
     logger.info({
       message: `CaptureBatcher.flush: 提交 ${frames.length} 帧`,
@@ -195,18 +209,20 @@ export class CaptureBatcher extends EventEmitter {
         // the OCR-bearing batch bundle has been committed to SQLite.
         preparedOcr.commit();
         this.emit("batch-ready");
+      } else {
+        this.restoreInMemoryFrames(frames);
       }
     } catch (err) {
       logger.error({
         message: `CaptureBatcher 压缩/构造批次失败: ${err instanceof Error ? err.message : String(err)}`,
       });
-      this.queue.unshift(...frames);
-      // 帧退回队首，年龄锚点也要退回，不能让失败重排把它们"变新"。
+      this.restoreInMemoryFrames(frames);
+      // 帧仍在 SQLite pending 中，年龄锚点不能被失败重排"变新"。
       this.oldestQueuedAt = previousAnchor ?? Date.now();
       throw err;
     } finally {
       this.isFlushing = false;
-      if (this.queue.length > 0) this.scheduleFlush();
+      if (this.getPendingStats().count > 0) this.scheduleFlush();
     }
   }
 
@@ -230,7 +246,7 @@ export class CaptureBatcher extends EventEmitter {
 
   async suspendAndFlush(): Promise<void> {
     this.stopAccepting();
-    while (this.flushPromise || this.queue.length > 0) await this.flush();
+    while (this.flushPromise || this.getPendingStats().count > 0) await this.flush();
   }
 
   resumeAccepting(): void {
@@ -239,6 +255,9 @@ export class CaptureBatcher extends EventEmitter {
 
   /** Original screenshots still needed by queued or in-flight OCR work. */
   getPendingImagePaths(): string[] {
+    if (typeof this.repository.listPendingCaptureImagePaths === "function") {
+      return this.repository.listPendingCaptureImagePaths();
+    }
     return this.repository.listPendingCaptures().flatMap((frame) => [
       frame.stitchedImagePath,
       ...frame.imagePaths,
@@ -247,7 +266,7 @@ export class CaptureBatcher extends EventEmitter {
 
   async drain(): Promise<void> {
     this.stopAccepting();
-    while (this.flushPromise || this.queue.length > 0) {
+    while (this.flushPromise || this.getPendingStats().count > 0) {
       await this.flush();
     }
     this.stop();
@@ -283,6 +302,8 @@ export class CaptureBatcher extends EventEmitter {
    * - 返回压缩后的文件路径数组（与 frames 顺序对应）
    */
   private async compressImages(frames: CaptureBundle[], batchId: string): Promise<string[]> {
+    // The temp directory can disappear while the app is still running.
+    fs.mkdirSync(this.compressedDir, { recursive: true });
     const paths: string[] = [];
 
     for (let i = 0; i < frames.length; i++) {
@@ -362,7 +383,7 @@ export class CaptureBatcher extends EventEmitter {
       clearTimeout(this.flushTimer);
       this.flushTimer = null;
     }
-    if (this.queue.length === 0) return;
+    if (this.getPendingStats().count === 0) return;
     const oldestAge = this.oldestQueuedAt === null
       ? 0
       : Math.max(0, Date.now() - this.oldestQueuedAt);
@@ -374,6 +395,43 @@ export class CaptureBatcher extends EventEmitter {
         });
       });
     }, delay);
+  }
+
+  getStatus(): CaptureBatcherStatus {
+    return {
+      pending: this.getPendingStats().count,
+      inMemory: this.queue.length,
+      memoryCapacity: MAX_IN_MEMORY_FRAMES,
+      flushing: this.isFlushing,
+    };
+  }
+
+  private getPendingStats(): { count: number; oldestCapturedAt: string | null } {
+    if (typeof this.repository.getPendingCaptureStats === "function") {
+      return this.repository.getPendingCaptureStats();
+    }
+    return {
+      count: this.queue.length,
+      oldestCapturedAt: this.queue[0]?.capturedAt ?? null,
+    };
+  }
+
+  private refreshPendingAnchor(): void {
+    const pending = this.getPendingStats();
+    this.oldestQueuedAt = pending.count > 0
+      ? toTimestamp(pending.oldestCapturedAt) ?? Date.now()
+      : null;
+  }
+
+  private removeFromMemory(frames: CaptureBundle[]): void {
+    const selected = new Set(frames.map((frame) => frame.captureId));
+    this.queue = this.queue.filter((frame) => !selected.has(frame.captureId));
+  }
+
+  private restoreInMemoryFrames(frames: CaptureBundle[]): void {
+    const existing = new Set(this.queue.map((frame) => frame.captureId));
+    const restored = frames.filter((frame) => !existing.has(frame.captureId));
+    this.queue = [...restored, ...this.queue].slice(0, MAX_IN_MEMORY_FRAMES);
   }
 
   /**
@@ -427,4 +485,10 @@ export class CaptureBatcher extends EventEmitter {
 
 function createBatchId(frames: CaptureBundle[]): string {
   return `batch_${frames.map((frame) => frame.captureId).join("_")}`;
+}
+
+function toTimestamp(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }

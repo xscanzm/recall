@@ -12,6 +12,8 @@ export interface OcrBatchService {
 
 export interface ManagedOcrBatchService extends OcrBatchService {
   stop(): Promise<void> | void;
+  getPid?(): number | null;
+  getPendingRequestCount?(): number;
 }
 
 export function unavailableOcrBatch(

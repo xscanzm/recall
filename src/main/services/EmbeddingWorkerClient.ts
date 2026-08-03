@@ -121,6 +121,26 @@ export class EmbeddingWorkerClient {
     }
   }
 
+  /** Stop the native worker without making the client unusable for later search. */
+  public closeIfIdle(): void {
+    if (this.pendingRequests.size > 0 || !this.child) return;
+    const child = this.child;
+    this.child = null;
+    try {
+      child.kill();
+    } catch {
+      // ignore
+    }
+  }
+
+  public getPid(): number | null {
+    return this.child?.pid ?? null;
+  }
+
+  public getPendingRequestCount(): number {
+    return this.pendingRequests.size;
+  }
+
   private ensureProcess(): void {
     if (this.child && !this.child.killed && this.child.exitCode === null) {
       return;

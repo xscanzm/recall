@@ -16,23 +16,20 @@ class SerializedD1 {
   readonly returned: number[] = [];
 
   prepare(sql: string) {
-    const self = this;
     return {
-      bind(...args: unknown[]) {
-        return {
-          async first<T>(): Promise<T | null> {
-            if (sql.includes("model_proxy_rate_limits")) {
-              const [day, ip] = args as [string, string];
-              const key = `${day}\u0000${ip}`;
-              const n = (self.counters.get(key) ?? 0) + 1;
-              self.counters.set(key, n);
-              self.returned.push(n);
-              return { n } as T;
-            }
-            return null;
-          },
-        };
-      },
+      bind: (...args: unknown[]) => ({
+        first: async <T>(): Promise<T | null> => {
+          if (sql.includes("model_proxy_rate_limits")) {
+            const [day, ip] = args as [string, string];
+            const key = `${day}\u0000${ip}`;
+            const n = (this.counters.get(key) ?? 0) + 1;
+            this.counters.set(key, n);
+            this.returned.push(n);
+            return { n } as T;
+          }
+          return null;
+        },
+      }),
     };
   }
 }

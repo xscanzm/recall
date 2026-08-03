@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CaptureBatcher } from "./CaptureBatcher";
-import { BatchProcessor } from "./BatchProcessor";
+import { BATCH_CONCURRENCY, BatchProcessor } from "./BatchProcessor";
 import type { BatchStage } from "../db/repositories/CaptureInboxRepository";
 
 const bundle = {
@@ -203,14 +203,14 @@ describe("BatchProcessor", () => {
     const processor = new BatchProcessor(repo as never, { processBatchCaptureBundle: process } as never);
 
     processor.start();
-    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(5));
+    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(BATCH_CONCURRENCY));
     expect(startedBatchIds).toEqual([
-      "batch-1", "batch-2", "batch-3", "batch-4", "batch-6",
+      "batch-1", "batch-6",
     ]);
 
     release?.();
     await processor.drain();
-    expect(process).toHaveBeenCalledTimes(6);
+    expect(process).toHaveBeenCalledTimes(bundles.length);
     expect([...statuses.values()].every((status) => status === "succeeded")).toBe(true);
   });
 
@@ -274,14 +274,14 @@ describe("BatchProcessor", () => {
     const processor = new BatchProcessor(repo as never, { processBatchCaptureBundle: process } as never);
 
     const draining = processor.drainThroughCapturedAt("2026-01-01T00:00:00.000Z", "2026-01-01T01:00:00.000Z");
-    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(5));
-    expect(maxInFlight).toBe(5);
+    await vi.waitFor(() => expect(process).toHaveBeenCalledTimes(BATCH_CONCURRENCY));
+    expect(maxInFlight).toBe(BATCH_CONCURRENCY);
     initialReleased = true;
     releaseInitial?.();
     await draining;
 
     expect(process).toHaveBeenCalledTimes(8);
-    expect(maxInFlight).toBeLessThanOrEqual(5);
+    expect(maxInFlight).toBeLessThanOrEqual(BATCH_CONCURRENCY);
     expect([...statuses.values()].every((status) => status === "succeeded")).toBe(true);
   });
 });

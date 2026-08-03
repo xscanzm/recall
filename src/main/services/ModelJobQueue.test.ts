@@ -4,6 +4,7 @@ import {
   parseRetryAfterMs,
   computeBackoffWithJitter,
   MAX_TOTAL_REQUEST_BUDGET,
+  MULTIMODAL_CONCURRENCY,
 } from "./ModelJobQueue";
 
 afterEach(() => {
@@ -79,24 +80,26 @@ describe("ModelJobQueue retry metadata & Rate Limit governance", () => {
 
   it("releases a concurrency slot while a retry waits", async () => {
     const queue = new ModelJobQueue();
-    const blockers = Array.from({ length: 4 }, () => deferred<{ ok: true; requestCount: number }>());
+    const blockers = Array.from({ length: MULTIMODAL_CONCURRENCY - 1 }, () => deferred<{ ok: true; requestCount: number }>());
     const blockerJobs = blockers.map((blocker) => queue.enqueueMultimodalJob({
       type: "reporter",
       executor: () => blocker.promise,
     }));
+    await vi.waitFor(() => expect(queue.getStatus().running).toBe(MULTIMODAL_CONCURRENCY - 1));
+
+    const retryingExecutor = vi.fn(async () => ({
+      ok: false,
+      errorCode: "rate_limited",
+      retryAfterMs: 60_000,
+      requestCount: 1,
+    }));
+    const unrelatedExecutor = vi.fn(async () => ({ ok: true, requestCount: 1 }));
     const retrying = queue.enqueueMultimodalJob({
       type: "timeline_builder",
       rateLimitKey: "endpoint-a",
-      executor: vi.fn(async () => ({
-        ok: false,
-        errorCode: "rate_limited",
-        retryAfterMs: 60_000,
-        requestCount: 1,
-      })),
+      executor: retryingExecutor,
     });
-    await vi.waitFor(() => expect(queue.getStatus().running).toBe(4));
-
-    const unrelatedExecutor = vi.fn(async () => ({ ok: true, requestCount: 1 }));
+    await vi.waitFor(() => expect(retryingExecutor).toHaveBeenCalledOnce());
     const unrelated = queue.enqueueMultimodalJob({
       type: "reporter",
       rateLimitKey: "endpoint-b",
@@ -130,14 +133,14 @@ describe("ModelJobQueue retry metadata & Rate Limit governance", () => {
 
   it("cancels pending work and waits for active executors during shutdown", async () => {
     const queue = new ModelJobQueue();
-    const active = Array.from({ length: 5 }, () => deferred<{ ok: true; requestCount: number }>());
+    const active = Array.from({ length: MULTIMODAL_CONCURRENCY }, () => deferred<{ ok: true; requestCount: number }>());
     const activeJobs = active.map((item) => queue.enqueueMultimodalJob({
       type: "reporter",
       executor: () => item.promise,
     }));
     const pendingExecutor = vi.fn(async () => ({ ok: true, requestCount: 1 }));
     const pending = queue.enqueueMultimodalJob({ type: "reporter", executor: pendingExecutor });
-    await vi.waitFor(() => expect(queue.getStatus()).toMatchObject({ running: 5, pending: 1 }));
+    await vi.waitFor(() => expect(queue.getStatus()).toMatchObject({ running: MULTIMODAL_CONCURRENCY, pending: 1 }));
 
     let drained = false;
     const drain = queue.stopAndDrainActive(1000).then(() => { drained = true; });

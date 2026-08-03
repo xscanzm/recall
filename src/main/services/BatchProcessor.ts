@@ -6,18 +6,31 @@ import { CaptureBatcher } from "./CaptureBatcher";
 import { logger } from "./Logger";
 
 const MAX_ATTEMPTS = BATCH_MAX_ATTEMPTS;
-const BATCH_CONCURRENCY = 5;
+export const BATCH_CONCURRENCY = 2;
 const BACKLOG_CONCURRENCY = BATCH_CONCURRENCY - 1;
+export const BATCH_PROCESS_TIMEOUT_MS = 10 * 60 * 1000;
 
 type BatchLane = "backlog" | "fresh" | "window";
 
 export type BatchSettlementStatus = "succeeded" | "retry_pending" | "retry_exhausted";
 
+export interface BatchProcessorStatus {
+  active: number;
+  capacity: number;
+  pending: number;
+  retries: number;
+  oldestActiveMs: number;
+  overdueActive: number;
+  stopping: boolean;
+}
+
 export class BatchProcessor {
   private stopping = false;
   private readonly activeBatches = new Map<string, Promise<void>>();
   private readonly activeBatchLanes = new Map<string, BatchLane>();
+  private readonly activeBatchStartedAt = new Map<string, number>();
   private processPromise: Promise<void> | null = null;
+  private retryCount = 0;
 
   constructor(
     private readonly repository: CaptureInboxRepository,
@@ -83,7 +96,8 @@ export class BatchProcessor {
       const records = this.repository.listProcessableBatchesForWindow(
         collectionStart,
         collectionEnd,
-        MAX_ATTEMPTS
+        MAX_ATTEMPTS,
+        BATCH_CONCURRENCY
       );
       let availableSlots = Math.max(0, BATCH_CONCURRENCY - this.activeBatches.size);
       for (const record of records) {
@@ -110,16 +124,36 @@ export class BatchProcessor {
     }
   }
 
+  getStatus(): BatchProcessorStatus {
+    const now = Date.now();
+    const activeDurations = [...this.activeBatchStartedAt.values()]
+      .map((startedAt) => Math.max(0, now - startedAt));
+    return {
+      active: this.activeBatches.size,
+      capacity: BATCH_CONCURRENCY,
+      pending: this.repository.countProcessableBatches?.(MAX_ATTEMPTS) ?? 0,
+      retries: this.retryCount,
+      oldestActiveMs: activeDurations.length > 0 ? Math.max(...activeDurations) : 0,
+      overdueActive: activeDurations.filter((duration) => duration >= BATCH_PROCESS_TIMEOUT_MS).length,
+      stopping: this.stopping,
+    };
+  }
+
   private async processAvailable(): Promise<void> {
     while (!this.stopping) {
-      const records = this.repository.listProcessableBatches(MAX_ATTEMPTS)
+      const records = this.repository.listProcessableBatches(MAX_ATTEMPTS, BATCH_CONCURRENCY)
         .filter((record) => !this.activeBatches.has(record.batchId));
+      const latest = this.repository.getLatestProcessableBatch?.(MAX_ATTEMPTS);
+      const candidates = latest && !this.activeBatches.has(latest.batchId)
+        && !records.some((record) => record.batchId === latest.batchId)
+        ? [...records, latest]
+        : records;
       let claimed = false;
 
-      // 四个槽按时间顺序回补积压；始终给最新数据保留一个槽，避免旧任务耗时过长时
+      // 按时间顺序回补一个积压槽；始终给最新数据保留一个槽，避免旧任务耗时过长时
       // 今日观察与时间轴被完全饿死。
       let backlogActive = this.countActiveLane("backlog");
-      for (const record of records) {
+      for (const record of candidates) {
         if (this.stopping || backlogActive >= BACKLOG_CONCURRENCY ||
             this.activeBatches.size >= BATCH_CONCURRENCY) break;
         this.startBatch(record, "backlog");
@@ -129,9 +163,9 @@ export class BatchProcessor {
 
       const freshActive = this.countActiveLane("fresh");
       if (!this.stopping && freshActive === 0 && this.activeBatches.size < BATCH_CONCURRENCY) {
-        const latest = [...records].reverse().find((record) => !this.activeBatches.has(record.batchId));
-        if (latest) {
-          this.startBatch(latest, "fresh");
+        const newest = [...candidates].reverse().find((record) => !this.activeBatches.has(record.batchId));
+        if (newest) {
+          this.startBatch(newest, "fresh");
           claimed = true;
         }
       }
@@ -155,9 +189,11 @@ export class BatchProcessor {
   private startBatch(record: CaptureBatchRecord, lane: BatchLane): void {
     this.repository.markRunning(record.batchId);
     this.activeBatchLanes.set(record.batchId, lane);
+    this.activeBatchStartedAt.set(record.batchId, Date.now());
     const promise = this.processOneBatch(record).finally(() => {
       this.activeBatches.delete(record.batchId);
       this.activeBatchLanes.delete(record.batchId);
+      this.activeBatchStartedAt.delete(record.batchId);
     });
     this.activeBatches.set(record.batchId, promise);
   }
@@ -196,6 +232,7 @@ export class BatchProcessor {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const retry = record.attempts + 1 < MAX_ATTEMPTS;
+      if (retry) this.retryCount += 1;
       this.repository.markFailed(record.batchId, message, retry);
       if (!retry) {
         CaptureBatcher.cleanupCompressedImages(record.bundle.compressedImagePaths);

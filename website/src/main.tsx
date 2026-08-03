@@ -19,6 +19,10 @@ import logoUrl from "../../src/renderer/public/logo.png";
 import "./styles.css";
 
 const DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/latest";
+const MAC_ARM64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.8-mac-arm64.dmg";
+const MAC_X64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.8-mac-x64.dmg";
+const MAC_ARM64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.8-mac-arm64.zip";
+const MAC_X64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.8-mac-x64.zip";
 const SOURCE_URL = "https://github.com/xscanzm/recall";
 const METRICS_URL = "https://recall-update.ppclaw.online/api/metrics/website-visit";
 
@@ -53,6 +57,17 @@ function DownloadLink({ secondary = false, children = "下载 Windows 公开测�
       <span>{children}</span>
       <ArrowRight size={17} strokeWidth={1.8} className="button__arrow" />
     </a>
+  );
+}
+
+function MacDownloadLinks() {
+  return (
+    <div className="mac-download-links" aria-label="macOS R2 架构下载">
+      <a href={MAC_ARM64_DOWNLOAD_URL} target="_blank" rel="noreferrer">Apple Silicon DMG</a>
+      <a href={MAC_X64_DOWNLOAD_URL} target="_blank" rel="noreferrer">Intel DMG</a>
+      <a href={MAC_ARM64_ZIP_DOWNLOAD_URL} target="_blank" rel="noreferrer">Apple Silicon ZIP</a>
+      <a href={MAC_X64_ZIP_DOWNLOAD_URL} target="_blank" rel="noreferrer">Intel ZIP</a>
+    </div>
   );
 }
 
@@ -115,16 +130,16 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows & macOS 支持 · v0.5.6</p>
+            <p className="eyebrow"><span /> Windows & macOS 支持 · v0.5.8</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
             <div className="hero-actions">
               <DownloadLink />
-              <a className="button button--secondary" href="https://github.com/xscanzm/recall/releases/latest" target="_blank" rel="noreferrer">
-                <Download size={18} strokeWidth={1.8} />
-                <span>下载 macOS 版 (DMG)</span>
-              </a>
+              <div className="mac-download-group">
+                <span className="mac-download-title">macOS 版 · R2 直连下载</span>
+                <MacDownloadLinks />
+              </div>
               <a className="text-link" href="#how">先看看它如何工作 <ArrowDown size={16} /></a>
             </div>
             <CommunityQr hero />
@@ -132,7 +147,7 @@ function App() {
               <Laptop size={15} /> Windows x64 & macOS (Apple Silicon / Intel) <span /> 默认模型服务已配置
               <br />
               <small style={{ opacity: 0.8, marginTop: "4px", display: "inline-block" }}>
-                💡 Mac 首次打开提示“应用已损坏”？在 DMG 内运行内置的【双击修复安装.command】脚本即可自动解锁。
+                当前版本没有 Windows 代码签名或 Apple 公证。macOS 首次打开请运行 DMG 内的【双击修复安装.command】。
               </small>
             </p>
           </div>
@@ -207,11 +222,11 @@ function App() {
         </section>
 
         <section className="before-section" id="before">
-          <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 公开测试版。</h2></div>
+          <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 与 macOS 内测版。</h2></div>
           <div className="before-list">
-            <p><span>01</span><b>目前支持 Windows x64</b><small>安装包约 184 MB，版本 0.5.6。</small></p>
-            <p><span>02</span><b>自带默认模型服务</b><small>开箱即用，首次启动可接受 Recall 代理的默认模型服务；也可在设置中切换为自配模型。</small></p>
-            <p><span>03</span><b>它仍在持续完善</b><small>测试版可能遇到模型兼容或体验问题，欢迎通过 GitHub Issue 告诉我们。</small></p>
+            <p><span>01</span><b>Windows x64 与 macOS 双架构</b><small>Windows 安装包约 184 MB；macOS 提供 Apple Silicon arm64 与 Intel x64 的 DMG / ZIP。</small></p>
+            <p><span>02</span><b>v0.5.8 已发布</b><small>本版同步更新 Windows x64，并新增 macOS 原生安装包；默认模型服务已配置，也可在设置中切换为自配模型。</small></p>
+            <p><span>03</span><b>这是无证书签名的内测构建</b><small>Windows 可能显示“未知发布者”；macOS 首次打开可能被拦截，请按 DMG 内说明解除隔离。</small></p>
           </div>
         </section>
 
@@ -222,7 +237,7 @@ function App() {
               <p>一天会过去。</p>
               <h2>但你走过的路，<br />可以留下回声。</h2>
               <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-              <small>Windows x64 · v0.5.6 · 默认模型服务已配置</small>
+              <small>Windows x64 & macOS · v0.5.8 · 默认模型服务已配置</small>
             </div>
             <CommunityQr />
           </div>

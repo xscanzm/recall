@@ -6,6 +6,7 @@ import type { UnfinishedThreadRepository } from "../db/repositories/UnfinishedTh
 import type { SettingsService } from "./SettingsService";
 import { formatLocalDateKey } from "../utils/dateKey";
 import { installNavigationGuards } from "./navigationGuard";
+import { addTrustedWebContents, removeTrustedWebContents } from "../ipc/trustedWebContents";
 
 interface DailyState {
   dateKey: string;
@@ -170,8 +171,11 @@ export class EndOfDayReviewService {
     }));
 
     this.popup = win;
+    const webContentsId = win.webContents.id;
+    addTrustedWebContents(webContentsId);
     win.on("closed", () => {
       if (this.popup === win) this.popup = null;
+      removeTrustedWebContents(webContentsId);
     });
     win.once("ready-to-show", () => win.showInactive());
 

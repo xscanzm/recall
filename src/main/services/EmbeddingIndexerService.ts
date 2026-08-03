@@ -63,15 +63,25 @@ export class EmbeddingIndexerService {
   private shouldStop = false;
   private loopPromise: Promise<void> | null = null;
   private wakeIdleWait: (() => void) | null = null;
-  private readonly batchSize = 10;
-  private readonly yieldDelayMs = 50;
-  private readonly idlePollMs = 1_000;
+  private readonly batchSize: number;
+  private readonly yieldDelayMs: number;
+  private readonly idlePollMs: number;
+  private readonly idleWorkerMs: number;
+  private readonly shouldRun: () => boolean;
+  private idleSince: number | null = null;
 
   constructor(
     private readonly db: DB,
     private readonly embeddingRepo: MemoryEmbeddingRepository,
-    private readonly workerClient: EmbeddingWorkerClient
-  ) {}
+    private readonly workerClient: EmbeddingWorkerClient,
+    config: EmbeddingIndexerConfig = {}
+  ) {
+    this.batchSize = Math.max(1, Math.floor(config.batchSize ?? 4));
+    this.yieldDelayMs = Math.max(0, Math.floor(config.yieldDelayMs ?? 150));
+    this.idlePollMs = Math.max(250, Math.floor(config.idlePollMs ?? 1_000));
+    this.idleWorkerMs = Math.max(1_000, Math.floor(config.idleWorkerMs ?? 60_000));
+    this.shouldRun = config.shouldRun ?? (() => true);
+  }
 
   public startBackgroundIndexing(): void {
     if (this.isRunning) return;
@@ -97,6 +107,14 @@ export class EmbeddingIndexerService {
 
   public stop(): void {
     void this.stopAndDrain();
+  }
+
+  public getStatus(): { running: boolean; queued: number; batchSize: number } {
+    return {
+      running: this.isRunning,
+      queued: this.readQueueCount(),
+      batchSize: this.batchSize,
+    };
   }
 
   public invalidateObject(objectType: string, objectId: string): void {
@@ -133,15 +151,24 @@ export class EmbeddingIndexerService {
 
   private async indexLoop(): Promise<void> {
     while (!this.shouldStop) {
+      if (!this.shouldRun()) {
+        this.maybeCloseIdleWorker();
+        await this.waitForWork();
+        continue;
+      }
+
       const pending = this.readQueuedObjects(this.batchSize);
       if (pending.length === 0) {
         this.ensureBackfillQueue();
         if (this.readQueueCount() === 0) {
+          this.maybeCloseIdleWorker();
           await this.waitForWork();
           continue;
         }
         continue;
       }
+
+      this.idleSince = null;
 
       const texts = pending.map((item) =>
         constructDocumentText(item.title, item.summary, item.keywords)
@@ -285,4 +312,19 @@ export class EmbeddingIndexerService {
       this.wakeIdleWait = finish;
     });
   }
+
+  private maybeCloseIdleWorker(): void {
+    this.idleSince ??= Date.now();
+    if (Date.now() - this.idleSince < this.idleWorkerMs) return;
+    this.workerClient.closeIfIdle();
+    this.idleSince = null;
+  }
+}
+
+export interface EmbeddingIndexerConfig {
+  batchSize?: number;
+  yieldDelayMs?: number;
+  idlePollMs?: number;
+  idleWorkerMs?: number;
+  shouldRun?: () => boolean;
 }
