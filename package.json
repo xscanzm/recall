@@ -43,7 +43,9 @@
     "test:e2e": "npm run build && playwright test",
     "backfill:memory": "python scripts/backfill_memory_objects.py",
     "smoke:memory": "npm run build:main && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/smoke-memory-pipeline.js",
-    "smoke:renderer": "electron scripts/smoke-renderer-memory-ui.js"
+    "smoke:renderer": "electron scripts/smoke-renderer-memory-ui.js",
+    "maintain:data": "npm run build:main && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/maintain-recall-data.js",
+    "test:maintenance": "npm run build:main && cross-env ELECTRON_RUN_AS_NODE=1 electron scripts/test-recall-data-maintenance.js"
   },
   "dependencies": {
     "active-win": "^8.2.1",
@@ -73,6 +75,7 @@
     "eslint": "9.39.1",
     "eslint-plugin-react-hooks": "5.2.0",
     "globals": "15.15.0",
+    "happy-dom": "^15.11.7",
     "to-ico": "^1.1.5",
     "typescript": "^5.6.2",
     "typescript-eslint": "8.46.0",
