@@ -90,6 +90,7 @@ import { startScreenshotCacheScheduler, stopScreenshotCacheScheduler } from "./s
 import { UpdateService } from "./services/UpdateService";
 import { startUpdateCheckerScheduler, stopUpdateCheckerScheduler } from "./services/UpdateCheckerScheduler";
 import { shutdownRuntime } from "./services/shutdownRuntime";
+import { ResourceMonitor } from "./services/ResourceMonitor";
 import { installNavigationGuards, type NavigationPolicy } from "./services/navigationGuard";
 import { macPermissionsService } from "./services/MacPermissionsService";
 import type { Report } from "./models/types";
@@ -145,6 +146,7 @@ let shutdownStarted = false;
 
 let embeddingIndexerService: EmbeddingIndexerService | undefined;
 let embeddingWorkerClient: EmbeddingWorkerClient | undefined;
+let resourceMonitor: ResourceMonitor | null = null;
 
 // ============================================================================
 // AppStatus 全局状态
@@ -620,9 +622,21 @@ app.whenReady().then(async () => {
   const memorySearchRepo = new MemorySearchRepository(db);
   const memoryEmbeddingRepo = new MemoryEmbeddingRepository(db);
   embeddingWorkerClient = new EmbeddingWorkerClient();
-  embeddingIndexerService = new EmbeddingIndexerService(db, memoryEmbeddingRepo, embeddingWorkerClient);
+  embeddingIndexerService = new EmbeddingIndexerService(db, memoryEmbeddingRepo, embeddingWorkerClient, {
+    batchSize: 4,
+    yieldDelayMs: 150,
+    idleWorkerMs: 60_000,
+    shouldRun: () => {
+      const modelStatus = modelJobQueueForShutdown?.getStatus();
+      const batchStatus = batchProcessor?.getStatus();
+      if (!modelStatus || !batchStatus) return false;
+      return modelStatus.pending === 0
+        && modelStatus.running === 0
+        && batchStatus.active === 0
+        && batchStatus.pending === 0;
+    },
+  });
   const hybridSearchService = new HybridSearchService(memorySearchRepo, memoryEmbeddingRepo, embeddingWorkerClient);
-  embeddingIndexerService.startBackgroundIndexing();
   const correctionLifecycleRepo = new CorrectionLifecycleRepository(db);
   const settingsRepo = new SettingsRepository(db);
   // 注意：modelJobRepo 提升为模块级变量（用于启动时清理卡死任务）
@@ -927,6 +941,16 @@ app.whenReady().then(async () => {
     timelineBlockRepo,
   });
   timelineWindowCoordinator.start();
+  embeddingIndexerService?.startBackgroundIndexing();
+  resourceMonitor = new ResourceMonitor({
+    captureBatcher,
+    batchProcessor,
+    modelJobQueue,
+    embeddingIndexerService,
+    ocrService,
+    embeddingWorkerClient,
+  });
+  resourceMonitor.start();
   reportScheduler.start();
   void projectionInvalidationProcessor.processPending();
 
@@ -1225,6 +1249,7 @@ app.on("before-quit", (event) => {
     ocrService,
     embeddingIndexerService,
     embeddingWorkerClient,
+    resourceMonitor,
     batchProcessor,
     modelJobQueue: modelJobQueueForShutdown,
     trayService,

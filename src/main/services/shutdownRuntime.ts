@@ -18,6 +18,7 @@ export interface ShutdownDependencies {
   ocrService?: { stop: () => Promise<void> | void } | null;
   embeddingIndexerService?: { stopAndDrain: () => Promise<void> } | null;
   embeddingWorkerClient?: { close: () => void } | null;
+  resourceMonitor?: { stop: () => void } | null;
   batchProcessor?: { stopAndDrainActive: () => Promise<void> } | null;
   modelJobQueue?: { stopAndDrainActive: (timeoutMs?: number) => Promise<void> } | null;
   trayService?: { destroy: () => void } | null;
@@ -44,6 +45,7 @@ async function performShutdown(
 ): Promise<void> {
   logger.info({ message: "Starting graceful shutdown of Recall runtime" });
 
+  await runBestEffort("stopResourceMonitor", () => deps.resourceMonitor?.stop());
   await runBestEffort("stopReportScheduler", () => deps.reportScheduler?.stop());
   await runBestEffort("stopTimelineWindowCoordinator", () => deps.timelineWindowCoordinator?.stop());
   await runBestEffort("stopScreenshotCacheScheduler", () => deps.stopScreenshotCacheScheduler?.());
