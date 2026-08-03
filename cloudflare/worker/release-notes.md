@@ -1,3 +1,61 @@
+## v0.5.9 — 安全加固 + Electron 43 升级 + 渲染层健壮性
+
+本次版本以安全加固为主线：收紧更新安装、IPC 与更新下载链路的安全边界，为 Worker 默认模型代理加入按 IP 限流；同时升级 Electron 至 43.2.0 并启用 ASAR 完整性校验，补齐隐私数据一致性、数据库查询护栏与渲染层健壮性，并恢复测试覆盖率真实口径。
+
+### 修复
+
+#### 1. 更新与 IPC 安全加固
+
+- **安装包路径可信化**：`update:installAndQuit` 移除渲染层可控的安装包路径参数，改为主进程内部已验证路径，配合 updates 目录守卫与契约严格校验，杜绝渲染层注入任意可执行路径
+- **IPC 全链路来源校验**：所有 handler 增加 senderFrame 校验（fail-closed：null frame / 子 frame / 未注册窗口一律拒绝）
+- **更新下载 URL 主机白名单**：仅允许 `recall-update.ppclaw.online`，其余主机一律拒绝
+
+#### 2. Worker 默认模型代理按 IP 限流
+
+- 基于 D1 原子计数实现按客户端 IP 每日限流，状态轮询请求豁免，超限返回 `429` + `Retry-After`
+
+### 改进
+
+#### 1. 隐私与数据一致性
+
+- **调试载荷自动清理**：`model_jobs` 调试载荷默认保留 30 天自动删除，保留时长可用环境变量调整
+- **级联删除事务化**：`memory:deleteObject` 级联删除纳入事务，任一环节失败整体回滚
+- **文档与代码事实对齐**：README / doc 07 / worker README 的隐私声明与代码事实对齐（默认模型服务、遥测边界、R2 临时保留）
+
+#### 2. 数据库
+
+- **分页护栏**：observations / facts 时间范围查询增加 LIMIT 分页（默认 200）
+- **动态 SQL 标识符校验**：运行时动态 SQL 标识符增加允许集合校验（fail-closed）
+- **复合索引**：新增 `timeline_blocks` 复合索引 `(date_key, start_at)`（迁移 030）
+
+#### 3. 渲染层健壮性
+
+- **乱序响应守卫**：搜索 / 项目详情页快速连续操作不再被旧响应覆盖
+- IPC 调用错误处理补全 + 定时器清理
+- 对话框焦点陷阱 / Tab 循环 / Escape 关闭、tab 键盘导航、原生 alert/confirm 替换
+- 列表组件 React.memo 化、删除死组件 ReportEditor、内联样式迁移
+
+#### 4. 工程与升级
+
+- **Electron 32 → 43.2.0**（含 better-sqlite3 11→13、electron-builder 26），启用 ASAR 完整性 fuses（`EnableEmbeddedAsarIntegrityValidation` + `OnlyLoadAppFromAsar`）
+- **测试覆盖率真实口径**：vitest 恢复 `all: true` 全量口径，基线 31.9 / 68.66 / 55.36 / 31.9，只升不降 ratchet 门禁
+- **UpdateService 核心路径单测**：函数覆盖 92.3%
+- **CI 门禁增强**：macOS 覆盖率、发布依赖测试 CI（`workflow_call` 跨文件 gate）、e2e 产物上传、`test:maintenance` 接入
+- `maintain-recall-data` 跨平台默认路径
+- `LinkerSceneJudgeWorker` 按职责拆分，ID 生成 / 日期 / 时区工具统一，`handlers.ts` 通道模块化迁移（234 行）
+
+### 已知限制
+
+- 窗口拖拽在缩放显示器上存在约 4.5× 灵敏度偏差（Chromium 144 screenX 反馈所致，无崩溃影响，CI 正常屏幕不受影响）
+
+### 验证
+
+- TypeScript 主进程与渲染进程类型检查通过
+- UpdateService 核心路径单测通过（函数覆盖 92.3%）
+- 本地构建与 NSIS 安装包打包通过
+
+---
+
 ## v0.5.7 — macOS 客户端完整支持 + 免证书解隔离助手 + GitHub Actions 云端打包
 
 本次版本正式发布 macOS 客户端支持，提供全平台原生 Worker 编译支持、macOS 屏幕录制/辅助功能权限引导、DMG 免证书解隔离安装助手及 GitHub Actions 自动云端打包流程。
