@@ -66,6 +66,3 @@ DEFAULT_LANGUAGE_MODEL = "deepseek-v4-flash"
 DEFAULT_MULTIMODAL_API_URL = "https://api.ppclaw.online"
 DEFAULT_MULTIMODAL_MODEL = "sensenova-6.7-flash-lite"
 MODEL_PROXY_ENABLED = "true"
-# 默认模型代理按 IP 的每日限额（语言完成 + 多模态任务提交共享一个计数器；
-# 状态轮询不计数）。未配置时代码内默认 200。
-MODEL_PROXY_DAILY_LIMIT_PER_IP = "200"

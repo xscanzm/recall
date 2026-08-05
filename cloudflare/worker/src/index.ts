@@ -21,12 +21,6 @@ import {
   submitDefaultMultimodalJob,
   type ModelClientMetadata,
 } from "./modelAsyncJobs";
-import {
-  MODEL_PROXY_RETRY_AFTER_SECONDS,
-  normalizeIpForRateLimit,
-  resolveModelProxyDailyLimit,
-  takeModelProxyRateLimit,
-} from "./rateLimit";
 
 /** CORS 允许的方法 */
 const CORS_ALLOWED_METHODS = "GET, POST, OPTIONS";
@@ -575,24 +569,6 @@ function readModelClientMetadata(request: Request): ModelClientMetadata | null {
   return { installationId, taskType, clientVersion };
 }
 
-/**
- * 模型代理按 IP 的每日限流（D1 原子计数器）。
- * 只作用于计费/写入型调用（语言完成、多模态任务提交），状态轮询端点不计数。
- */
-async function takeModelProxyRateLimitForRequest(request: Request, env: Env): Promise<boolean> {
-  return takeModelProxyRateLimit(
-    env.MODEL_STATS,
-    normalizeIpForRateLimit(request.headers.get("CF-Connecting-IP") ?? "unknown"),
-    resolveModelProxyDailyLimit(env.MODEL_PROXY_DAILY_LIMIT_PER_IP)
-  );
-}
-
-function rateLimitedResponse(): Response {
-  const response = jsonResponse({ error: "rate-limited" }, 429);
-  response.headers.set("Retry-After", String(MODEL_PROXY_RETRY_AFTER_SECONDS));
-  return response;
-}
-
 async function handleDefaultModelProxy(
   request: Request,
   env: Env,
@@ -601,9 +577,6 @@ async function handleDefaultModelProxy(
 ): Promise<Response> {
   if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
     return jsonResponse({ error: "capability-disabled" }, 503);
-  }
-  if (!(await takeModelProxyRateLimitForRequest(request, env))) {
-    return rateLimitedResponse();
   }
   const metadata = readModelClientMetadata(request);
   if (!metadata) {
@@ -665,9 +638,6 @@ async function handleDefaultMultimodalJobSubmit(request: Request, env: Env): Pro
   if (env.MODEL_PROXY_ENABLED?.trim().toLowerCase() === "false") {
     return jsonResponse({ error: "capability-disabled" }, 503);
   }
-  if (!(await takeModelProxyRateLimitForRequest(request, env))) {
-    return rateLimitedResponse();
-  }
   const metadata = readModelClientMetadata(request);
   if (!metadata) return jsonResponse({ error: "invalid-client-metadata" }, 400);
   const idempotencyKey = request.headers.get("X-Recall-Idempotency-Key")?.trim() ?? "";
@@ -705,7 +675,6 @@ const DEFAULT_INFOGRAPHIC_API_URL = "https://api.ppclaw.online/v1/images/generat
 const DEFAULT_INFOGRAPHIC_MODEL = "sensenova-u1-fast";
 const DEFAULT_INFOGRAPHIC_SIZE = "2752x1536";
 const INFOGRAPHIC_MAX_PROMPT_LENGTH = 30_000;
-const INFOGRAPHIC_DAILY_REQUEST_LIMIT = 100;
 const INFOGRAPHIC_TYPES = new Set(["personal", "work", "daily", "weekly", "monthly"]);
 
 function isImageUrl(value: unknown): value is string {
@@ -734,9 +703,6 @@ function extractImageUrl(value: unknown): string | null {
 async function handleInfographicGeneration(request: Request, env: Env): Promise<Response> {
   if (!env.INFOGRAPHIC_API_KEY?.trim()) {
     return jsonResponse({ error: "capability-unavailable" }, 503);
-  }
-  if (!(await takeInfographicRateLimit(request, env))) {
-    return jsonResponse({ error: "rate-limited" }, 429);
   }
   const declaredLength = Number.parseInt(request.headers.get("content-length") ?? "", 10);
   if (Number.isFinite(declaredLength) && declaredLength > INFOGRAPHIC_MAX_PROMPT_LENGTH * 2) {
@@ -803,17 +769,6 @@ async function handleInfographicGeneration(request: Request, env: Env): Promise<
     return jsonResponse({ error: "upstream-missing-image" }, 502);
   }
   return jsonResponse({ url: imageUrl });
-}
-
-async function takeInfographicRateLimit(request: Request, env: Env): Promise<boolean> {
-  const ip = (request.headers.get("CF-Connecting-IP") ?? "unknown").slice(0, 80);
-  const day = new Date().toISOString().slice(0, 10);
-  const key = `infographic:${day}:${ip}`;
-  const current = Number.parseInt((await env.STATS.get(key)) ?? "0", 10) || 0;
-  if (current >= INFOGRAPHIC_DAILY_REQUEST_LIMIT) return false;
-  // KV 是最终一致的，极端并发时可能略超出上限，但可阻断普通滥用。
-  await env.STATS.put(key, String(current + 1), { expirationTtl: 172_800 });
-  return true;
 }
 
 export default {

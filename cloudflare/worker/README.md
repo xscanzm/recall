@@ -133,7 +133,7 @@ npx wrangler secret put STATS_READ_TOKEN
 
 ### `POST /api/infographic/generate`
 
-桌面端在正式报告落库后异步调用。Worker 固定代理 `sensenova-u1-fast`，默认尺寸为 `2752x1536`（16:9 横版），每次只生成一张图片；同一客户端 IP 每日最多 100 次。
+桌面端在正式报告落库后异步调用。Worker 固定代理 `sensenova-u1-fast`，默认尺寸为 `2752x1536`（16:9 横版），每次只生成一张图片。
 
 请求体：
 ```json
