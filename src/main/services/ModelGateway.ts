@@ -731,7 +731,7 @@ export class ModelGateway {
           useAsyncDefaultMultimodal
             ? {
                 url: asyncUrl,
-                idempotencyKey: `${input.background!.idempotencyKey}:repair`,
+                idempotencyKey: await shortHashIdempotency(`${input.background!.idempotencyKey}:repair`),
               }
             : undefined
         );
@@ -1802,4 +1802,14 @@ ${fieldDescriptions}
 - 数值字段 confidence/importance/priority 必须在 [0, 1] 范围内
 - 枚举字段必须使用预定义值之一
 - 不要添加 schema 之外的字段`;
+}
+
+/**
+ * 幂等键哈希：保持确定性、长度恒定（32 hex），避免拼接 ":repair" 后超过 Worker 上限。
+ */
+async function shortHashIdempotency(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest.slice(0, 16))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }

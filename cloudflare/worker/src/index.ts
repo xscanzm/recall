@@ -32,7 +32,9 @@ const CHINA_TIME_OFFSET_MS = 8 * 60 * 60 * 1000;
 const MODEL_PROXY_MAX_BODY_BYTES = 32 * 1024 * 1024;
 const MODEL_TASK_TYPE_PATTERN = /^[a-z0-9][a-z0-9:_-]{0,79}$/i;
 const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const MODEL_IDEMPOTENCY_KEY_PATTERN = /^[a-z0-9][a-z0-9:._-]{0,159}$/i;
+// 幂等键上限 255：客户端 repair 请求的 key = 原始 key + ":repair" 后缀，
+// 而原始 key（如 observer_batch:{batchId}）中的 batchId 可能较长，必须留足余量。
+const MODEL_IDEMPOTENCY_KEY_PATTERN = /^[a-z0-9][a-z0-9:._-]{0,255}$/i;
 const ASYNC_MODEL_JOB_ID_PATTERN = /^mmj_[0-9a-f-]{36}$/i;
 
 /**
