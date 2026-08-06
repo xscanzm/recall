@@ -97,6 +97,8 @@ export interface JobResult<T = unknown> {
  * - rate_limited：限流，重试可能成功
  * - invalid_json：偶发性 JSON 错误，重试可能成功
  * - schema_invalid：偶发性 schema 错误，重试可能成功
+ * - async_poll_timeout：本地轮询超时，可重试——幂等键已持有远端 jobId，
+ *   重提不会重复生成；区别于 upstream_timeout（520/524）的未知状态风险
  *
  * 不重试的错误码：
  * - upstream_timeout：520/524 或远端状态未知，重试可能重复生成
@@ -110,6 +112,7 @@ const RETRYABLE_ERROR_CODES = new Set([
   "rate_limited",
   "invalid_json",
   "schema_invalid",
+  "async_poll_timeout",
 ]);
 
 /**

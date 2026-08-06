@@ -997,8 +997,8 @@ export class ModelGateway {
 
     return {
       ok: false,
-      errorCode: "upstream_timeout",
-      errorMessage: "默认多模态任务仍在远端执行，已停止本地轮询；为避免重复生成未自动重提",
+      errorCode: "async_poll_timeout",
+      errorMessage: "默认多模态任务仍在远端执行，本地轮询超时；幂等键已持有，重提不会重复生成",
       requestCount: 1,
     };
   }
@@ -1332,6 +1332,7 @@ const MODEL_JOB_ERROR_CODES = new Set<ModelJobErrorCode>([
   "timeout",
   "network_error",
   "upstream_timeout",
+  "async_poll_timeout",
   "auth_error",
   "rate_limited",
   "invalid_json",

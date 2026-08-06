@@ -196,6 +196,30 @@ describe("ModelJobQueue retry metadata & Rate Limit governance", () => {
     });
   });
 
+  it("retries async_poll_timeout because the idempotency key prevents duplicate generation", async () => {
+    vi.useFakeTimers();
+    const queue = new ModelJobQueue();
+    const executor = vi.fn(async () => ({
+      ok: false,
+      errorCode: "async_poll_timeout",
+      errorMessage: "本地轮询超时，幂等键已持有",
+      requestCount: 1,
+    }));
+
+    const pending = queue.enqueueMultimodalJob({ type: "observer_batch", executor });
+    await vi.advanceTimersByTimeAsync(60_000);
+    const result = await pending;
+
+    expect(executor).toHaveBeenCalledTimes(3);
+    expect(result).toMatchObject({
+      ok: false,
+      errorCode: "async_poll_timeout",
+      attempts: 3,
+      requestCount: 3,
+    });
+    vi.useRealTimers();
+  });
+
   it("retries network failures using fake timers", async () => {
     vi.useFakeTimers();
     const queue = new ModelJobQueue();

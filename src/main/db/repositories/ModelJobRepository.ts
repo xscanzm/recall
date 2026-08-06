@@ -31,6 +31,7 @@ export type ModelJobErrorCode =
   | "timeout"
   | "network_error"
   | "upstream_timeout"
+  | "async_poll_timeout"
   | "auth_error"
   | "rate_limited"
   | "invalid_json"

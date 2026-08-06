@@ -496,6 +496,48 @@ describe("ModelGateway selected targets", () => {
       .toBe("observer_batch:batch-1");
   });
 
+  it("returns async_poll_timeout (not upstream_timeout) when local polling reaches the deadline", async () => {
+    vi.useFakeTimers();
+    const remoteJobId = "mmj_deadline-00000000-0000-0000-0000-000000000000";
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/jobs")) {
+        return Response.json({ jobId: remoteJobId, status: "pending", retryAfterMs: 500 }, { status: 202 });
+      }
+      return Response.json({ jobId: remoteJobId, status: "running" });
+    });
+    const gateway = new ModelGateway({
+      settingsService: { isVerboseModelIO: vi.fn(() => false) } as never,
+      secretService: { getApiKey: vi.fn() } as never,
+      modelJobRepo: {
+        create: vi.fn(() => ({ id: "job-default-vision" })),
+        markRunning: vi.fn(),
+        markSucceeded: vi.fn(),
+        markFailed: vi.fn(),
+      } as never,
+      defaultModelConsentService: { ensureAccepted: vi.fn(async () => true) } as never,
+      installationIdentityService: { getId: vi.fn(() => "123e4567-e89b-42d3-a456-426614174000") } as never,
+      clientVersion: "0.4.5",
+      fetchImpl,
+    });
+
+    const pending = gateway.callByConfigId({
+      kind: "multimodal",
+      configId: RECALL_DEFAULT_MULTIMODAL_CONFIG_ID,
+      systemPrompt: "",
+      userPrompt: "batch",
+      jobType: "observer_batch",
+      streaming: true,
+      background: { idempotencyKey: "observer_batch:batch-1" },
+    }, schema);
+    await vi.advanceTimersByTimeAsync(11 * 60_000);
+    const result = await pending;
+
+    expect(result).toMatchObject({ ok: false, errorCode: "async_poll_timeout" });
+    expect(result.errorMessage).toContain("幂等键已持有");
+    vi.useRealTimers();
+  });
+
   it("keeps a user-configured multimodal batch on the direct streaming endpoint", async () => {
     const setup = makeGateway(sseResponse([
       { choices: [{ delta: { content: "{\"ok\":true}" }, finish_reason: "stop" }] },
