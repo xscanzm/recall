@@ -13,7 +13,7 @@ Recall 真正长期沉淀的是你今天做了什么事、决定过什么、下�
 
 - **官网**：<https://recall.ppclaw.online/>（含产品介绍与 macOS / Windows 客户端下载）
 - **Windows 下载**：<https://recall-update.ppclaw.online/download/latest>（Windows x64 NSIS 安装包）
-- **macOS 下载（R2 直连）**：Apple Silicon `arm64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-arm64.zip) · Intel `x64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.9-mac-x64.zip)
+- **macOS 下载（R2 直连）**：Apple Silicon `arm64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-arm64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-arm64.zip) · Intel `x64`：[DMG](https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-x64.dmg) / [ZIP](https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-x64.zip)
 - **GitHub Release（备份/历史版本）**：<https://github.com/xscanzm/recall/releases>（含历史版本与 SHA-256）
 
 > 💡 **macOS 首次安装提示“无法打开，因为它来自身份不明的开发者”解决指南**：
@@ -57,7 +57,9 @@ RapidOCR（PP-OCRv6 Small ONNX）+ 多模态大模型双管线理解：L0 Observ
 
 ## 版本演进
 
-- **v0.5.9**（最新）：安全加固与健壮性版本（移除 update:installAndQuit 渲染层可控安装包路径，改为主进程已验证路径 + updates 目录守卫 + 契约严格校验；IPC 全链路 senderFrame 来源校验 fail-closed；更新下载 URL 主机白名单仅允许 recall-update.ppclaw.online；Worker 默认模型代理按 IP 每日限流（D1 原子计数，状态轮询豁免，429 + Retry-After，**该限流随后已移除**——默认 200 次/天/IP 过严导致桌面端批量任务大量 429，服务端不再做任何限流）；model_jobs 调试载荷默认 30 天自动清理（环境变量可调）；memory:deleteObject 级联删除事务化；observations/facts 时间范围查询 LIMIT 分页（默认 200）+ 动态 SQL 标识符允许集合校验（fail-closed）；timeline_blocks 复合索引 (date_key, start_at)（迁移 030）；渲染层乱序响应守卫 / 对话框焦点陷阱与 Escape 关闭 / 列表组件 React.memo 化；Electron 32 → 43.2.0（better-sqlite3 11→13、electron-builder 26）+ ASAR 完整性 fuses；vitest 覆盖率恢复真实口径（all:true 基线 31.9/68.66/55.36/31.9，只升不降 ratchet）；UpdateService 核心路径单测函数覆盖 92.3%；CI 门禁与 maintain-recall-data 跨平台默认路径）
+- **v0.5.11**（最新）：模型管线健壮性修复（记忆批量任务失败修复：模型输出缺 `facts`/`observations` 字段时归一化层自动补 `[]` 兜底，不再 schema 校验失败；repair 机制增强——repair 调用双倍输出预算 `max_tokens` 2× + prompt 强化字符串内引号转义要求，修复"输出被截断"与"引号未转义"两类 JSON 解析失败；默认模型服务上游超时可控化：非流式请求 60s 显式超时，超时返回明确错误（`504` / `upstream_timeout`），不再无限挂起，流式请求不受影响；本地轮询超时可安全重试：拆分新错误码 `async_poll_timeout`（幂等键已持有，重提不会重复生成），不再误判为不可重试的上游超时，避免任务结果永久丢失）
+- **v0.5.10**：Worker 默认模型代理按 IP 限流移除（0.5.9 引入的 429 过严导致桌面端批量任务大量失败）+ 幂等键上限 160→255 并客户端 repair key 哈希化（修复批量任务 repair 全失败）
+- **v0.5.9**：安全加固与健壮性版本（移除 update:installAndQuit 渲染层可控安装包路径，改为主进程已验证路径 + updates 目录守卫 + 契约严格校验；IPC 全链路 senderFrame 来源校验 fail-closed；更新下载 URL 主机白名单仅允许 recall-update.ppclaw.online；Worker 默认模型代理按 IP 每日限流（D1 原子计数，状态轮询豁免，429 + Retry-After，**该限流随后已移除**——默认 200 次/天/IP 过严导致桌面端批量任务大量 429，服务端不再做任何限流）；model_jobs 调试载荷默认 30 天自动清理（环境变量可调）；memory:deleteObject 级联删除事务化；observations/facts 时间范围查询 LIMIT 分页（默认 200）+ 动态 SQL 标识符允许集合校验（fail-closed）；timeline_blocks 复合索引 (date_key, start_at)（迁移 030）；渲染层乱序响应守卫 / 对话框焦点陷阱与 Escape 关闭 / 列表组件 React.memo 化；Electron 32 → 43.2.0（better-sqlite3 11→13、electron-builder 26）+ ASAR 完整性 fuses；vitest 覆盖率恢复真实口径（all:true 基线 31.9/68.66/55.36/31.9，只升不降 ratchet）；UpdateService 核心路径单测函数覆盖 92.3%；CI 门禁与 maintain-recall-data 跨平台默认路径）
 - **v0.5.6**：更新下载分片 + 断点续传（解决国内访问 Cloudflare R2 下载 180MB+ 安装包不稳定问题，UpdateService 重写 downloadUpdate 方法：HEAD 探测 Accept-Ranges → 4MB 分片 Range 请求 → 单片 30s 超时 + 5 次重试退避 → .part + .meta.json 断点续传元数据，中断后从断点继续 → 6 轮整体重试 → 整体 SHA256 校验；不支持 Range 时回退原流式下载）
 - **v0.5.5**：截图采集架构重构（WindowFrameGrabber 单窗口 getDisplayMedia + WGC 捕获，替代 desktopCapturer 全窗口抓图，零 WM_PRINT 副作用，不再导致钉钉等 GPU 合成应用白屏）+ captureOcclusion 遮挡门禁（扫描线并集算法 + 35% 良性遮挡阈值 + 敏感遮挡一律跳过，防止裁到隐私）+ CaptureService 三后端降级链（window_display_media → screen_crop_fallback → 旧 window 禁用，三路不通则跳过不硬采）+ ActivityService 增强（getFreshActiveWindowInfo 双重校验 + getOpenWindowsSnapshot Z 序窗口列表）+ 退化帧检测（analyzeCaptureVisualQuality 全黑帧自动降级）
 - **v0.5.4**：混合搜索（FTS5 trigram 词法召回 + BGE bge-small-zh-v1.5 本地 embedding 语义召回 + RRF 融合 + 静默降级，支持中文子串精确匹配与语义召回）+ 身份归一化与重复对象审计（normalizeIdentity + comparePersonIdentity + IdentityAuditService 只读审计 + 精确身份匹配 + 合并建议事务完整性）+ BatchProcessor lane 化并发（backlog/fresh/window 三 lane，始终保留 1 槽给最新数据）+ DataLifecycleService 事务安全（exclusive 清理隔离 + embedding 索引器暂停）+ TimelineHeader 新增"忘掉最近"按钮 + migration 028/029（安装包体积因内置 BGE embedding 模型增大至约 184 MB）
@@ -80,7 +82,7 @@ RapidOCR（PP-OCRv6 Small ONNX）+ 多模态大模型双管线理解：L0 Observ
 ## 快速开始（用户视角）
 
 1. 前往 <https://recall.ppclaw.online/> 了解产品，或直接下载最新版：<https://recall-update.ppclaw.online/download/latest>。
-2. 双击安装 `Recall-0.5.6-setup.exe`，桌面会出现 **Recall** 图标。
+2. 双击安装 `Recall-0.5.11-setup.exe`，桌面会出现 **Recall** 图标。
 3. 首次启动进入「模型配置」：填入你自带的视觉模型与语言模型 endpoint / model / API key。
 4. 前往「设置 → 隐私」确认默认黑名单应用和截图保留策略。
 5. 点击「**开始观察**」。
@@ -103,7 +105,7 @@ npm run package         # 先构建独立 OCR worker，再输出 NSIS 到 releas
 
 OCR 去重按信息层级处理：整图与分块检测结果先按位置和文字保守合并；仅解码像素完全一致的帧复用 OCR 和视觉观察；近似帧仍执行 OCR 与多模态观察，但 OCR block 变化会压缩为 delta 证据，减少提示词体积而不丢失每帧 L0 `fullText`。
 
-> 构建产物 `release/Recall-0.5.6-setup.exe` 即对应发布通道的分发物。
+> 构建产物 `release/Recall-0.5.11-setup.exe` 即对应发布通道的分发物。
 
 类型检查：
 
