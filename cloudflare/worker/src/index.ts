@@ -36,6 +36,8 @@ const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab
 // 而原始 key（如 observer_batch:{batchId}）中的 batchId 可能较长，必须留足余量。
 const MODEL_IDEMPOTENCY_KEY_PATTERN = /^[a-z0-9][a-z0-9:._-]{0,255}$/i;
 const ASYNC_MODEL_JOB_ID_PATTERN = /^mmj_[0-9a-f-]{36}$/i;
+// 仅对非流式请求生效：AbortSignal.timeout 会同时切断流式 SSE 长连的响应体消费。
+export const UPSTREAM_FETCH_TIMEOUT_MS = 60_000;
 
 /**
  * 给响应附加 CORS 头
@@ -627,11 +629,16 @@ async function handleDefaultModelProxy(
         Accept: body.stream === true ? "text/event-stream" : "application/json",
       },
       body: JSON.stringify(body),
+      ...(body.stream === true ? {} : { signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS) }),
     });
     record(upstream.ok ? "success" : "failure");
     return proxyResponse(upstream);
-  } catch {
+  } catch (error) {
     record("failure");
+    const name = error instanceof Error ? error.name : "";
+    if (name === "TimeoutError" || name === "AbortError") {
+      return jsonResponse({ error: "upstream-timeout" }, 504);
+    }
     return jsonResponse({ error: "upstream-unreachable" }, 502);
   }
 }

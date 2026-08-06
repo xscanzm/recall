@@ -168,6 +168,36 @@ describe("default model proxy", () => {
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: "fixed-language-model", stream: true });
   });
 
+  it("returns 504 upstream-timeout when the non-streaming upstream fetch times out", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException("timeout", "TimeoutError");
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    const response = await worker.fetch(modelRequest(
+      "/api/model/language/v1/chat/completions",
+      { messages: [{ role: "user", content: "hello" }] }
+    ), env(), { waitUntil: vi.fn() } as never);
+
+    expect(response.status).toBe(504);
+    await expect(response.json()).resolves.toEqual({ error: "upstream-timeout" });
+  });
+
+  it("does not pass a timeout signal to the streaming (SSE) upstream fetch", async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response("data: [DONE]\n\n", {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const response = await worker.fetch(modelRequest(
+      "/api/model/language/v1/chat/completions",
+      { messages: [{ role: "user", content: "hello" }], stream: true }
+    ), env(), { waitUntil: vi.fn() } as never);
+
+    expect(response.status).toBe(200);
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeUndefined();
+  });
+
   it("fails clearly when the corresponding Worker Secret is absent", async () => {
     const response = await worker.fetch(modelRequest(
       "/api/model/language/v1/chat/completions",

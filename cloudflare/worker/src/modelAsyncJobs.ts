@@ -2,6 +2,7 @@ import {
   buildDefaultModelCallStatements,
   hmacInstallationId,
 } from "./stats";
+import { UPSTREAM_FETCH_TIMEOUT_MS } from "./index";
 
 export interface ModelClientMetadata {
   installationId: string;
@@ -291,16 +292,27 @@ async function consumeOne(
         Accept: requestBody.stream === true ? "text/event-stream" : "application/json",
       },
       body: JSON.stringify(requestBody),
+      ...(requestBody.stream === true ? {} : { signal: AbortSignal.timeout(UPSTREAM_FETCH_TIMEOUT_MS) }),
     });
     result = await readUpstreamCompletion(upstream);
   } catch (error) {
-    result = {
-      ok: false,
-      errorCode: "network_error",
-      errorMessage: `上游网络错误: ${safeErrorMessage(error)}`,
-      retryable: true,
-      retryDelaySeconds: 30,
-    };
+    const name = error instanceof Error ? error.name : "";
+    if (name === "TimeoutError" || name === "AbortError") {
+      result = {
+        ok: false,
+        errorCode: "upstream_timeout",
+        errorMessage: "上游代理超时（显式超时）",
+        retryable: false,
+      };
+    } else {
+      result = {
+        ok: false,
+        errorCode: "network_error",
+        errorMessage: `上游网络错误: ${safeErrorMessage(error)}`,
+        retryable: true,
+        retryDelaySeconds: 30,
+      };
+    }
   }
 
   if (result.ok && result.completion) {
