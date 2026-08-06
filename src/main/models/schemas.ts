@@ -959,6 +959,8 @@ function normalizeExtractorOutput(data: unknown): unknown {
 
   if (obj.facts !== undefined) {
     result.facts = normalizeFacts(obj.facts);
+  } else {
+    result.facts = [];
   }
   if (obj.discardedNoise !== undefined) {
     result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
@@ -2140,6 +2142,7 @@ function normalizeObserverOutputV2(data: unknown): unknown {
   if (typeof result.userFacingSummary !== "string") result.userFacingSummary = result.sceneSummary;
   if (typeof result.likelyWorkPurpose !== "string") result.likelyWorkPurpose = "当前工作目的不明确";
   if (typeof result.possibleUserIntent !== "string") result.possibleUserIntent = result.likelyWorkPurpose;
+  if (typeof result.confidence !== "number") result.confidence = 0.5;
 
   return result;
 }
@@ -2388,6 +2391,8 @@ function normalizeExtractorOutputV2(data: unknown): unknown {
 
   if (obj.facts !== undefined) {
     result.facts = normalizeFactsV2(obj.facts);
+  } else {
+    result.facts = [];
   }
   if (obj.discardedNoise !== undefined) {
     result.discardedNoise = normalizeDiscardedNoise(obj.discardedNoise);
@@ -3137,6 +3142,9 @@ function normalizeBatchObserverExtractorOutput(input: unknown): unknown {
   }
 
   // 对每个 observation 调用归一化
+  if (!Array.isArray(result.observations)) {
+    result.observations = obj.observations ? [obj.observations] : [];
+  }
   if (Array.isArray(result.observations)) {
     result.observations = result.observations.map(
       (o) => normalizeObserverOutputV2(o) ?? o
@@ -3191,6 +3199,9 @@ function normalizeBatchObserverOutput(input: unknown): unknown {
     delete result.observation;
   }
 
+  if (!Array.isArray(result.observations)) {
+    result.observations = obj.observations ? [obj.observations] : [];
+  }
   if (Array.isArray(result.observations)) {
     result.observations = result.observations.map(
       (o) => normalizeObserverOutputV2(o) ?? o
