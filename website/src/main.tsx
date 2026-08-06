@@ -19,10 +19,10 @@ import logoUrl from "../../src/renderer/public/logo.png";
 import "./styles.css";
 
 const DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/latest";
-const MAC_ARM64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.10-mac-arm64.dmg";
-const MAC_X64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.10-mac-x64.dmg";
-const MAC_ARM64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.10-mac-arm64.zip";
-const MAC_X64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.10-mac-x64.zip";
+const MAC_ARM64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-arm64.dmg";
+const MAC_X64_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-x64.dmg";
+const MAC_ARM64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-arm64.zip";
+const MAC_X64_ZIP_DOWNLOAD_URL = "https://recall-update.ppclaw.online/download/Recall-0.5.11-mac-x64.zip";
 const SOURCE_URL = "https://github.com/xscanzm/recall";
 const METRICS_URL = "https://recall-update.ppclaw.online/api/metrics/website-visit";
 
@@ -130,7 +130,7 @@ function App() {
       <main id="top">
         <section className="hero">
           <div className="hero-copy">
-            <p className="eyebrow"><span /> Windows & macOS 支持 · v0.5.10</p>
+            <p className="eyebrow"><span /> Windows & macOS 支持 · v0.5.11</p>
             <h1>让认真度过的一天，<br /><em>被好好记住。</em></h1>
             <p className="hero-lede">你翻过的资料、写下又删掉的句子、做到一半的事，<br className="desktop-only" />不必在关掉电脑后，一起消失。</p>
             <p className="hero-description">回声 Recall 安静地理解你在电脑前做过什么，替你接住散落的思路、进展和未完成。等你回头时，一天已经有了清晰的来路。</p>
@@ -225,7 +225,7 @@ function App() {
           <div><p className="kicker">下载以前，先把这些告诉你</p><h2>这是一个正在长大的<br />Windows 与 macOS 内测版。</h2></div>
           <div className="before-list">
             <p><span>01</span><b>Windows x64 与 macOS 双架构</b><small>Windows 安装包约 184 MB；macOS 提供 Apple Silicon arm64 与 Intel x64 的 DMG / ZIP。</small></p>
-            <p><span>02</span><b>v0.5.10 已发布</b><small>本版修复 Worker 默认模型服务限流过严导致的批量任务失败（429）；Windows x64 与 macOS 双架构同步更新，默认模型服务已配置。</small></p>
+            <p><span>02</span><b>v0.5.11 已发布</b><small>本版修复记忆批量任务失败（模型输出缺字段不再校验失败、repair 修复机制增强）；默认模型服务上游超时可控（60s 显式超时、明确报错）；本地轮询超时可安全重试，任务结果不再丢失。</small></p>
             <p><span>03</span><b>这是无证书签名的内测构建</b><small>Windows 可能显示“未知发布者”；macOS 首次打开可能被拦截，请按 DMG 内说明解除隔离。</small></p>
           </div>
         </section>
@@ -237,7 +237,7 @@ function App() {
               <p>一天会过去。</p>
               <h2>但你走过的路，<br />可以留下回声。</h2>
               <DownloadLink>下载 Windows 公开测试版</DownloadLink>
-              <small>Windows x64 & macOS · v0.5.10 · 默认模型服务已配置</small>
+              <small>Windows x64 & macOS · v0.5.11 · 默认模型服务已配置</small>
             </div>
             <CommunityQr />
           </div>
