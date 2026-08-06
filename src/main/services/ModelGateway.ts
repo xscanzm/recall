@@ -733,7 +733,8 @@ export class ModelGateway {
                 url: asyncUrl,
                 idempotencyKey: await shortHashIdempotency(`${input.background!.idempotencyKey}:repair`),
               }
-            : undefined
+            : undefined,
+          maxTokens * 2
         );
         requestCount += repairResult.requestCount;
         retryAfterMs = repairResult.retryAfterMs ?? retryAfterMs;
@@ -827,8 +828,11 @@ export class ModelGateway {
     extraOptions: Record<string, unknown>,
     timeoutMs?: number,
     streaming = false,
-    asyncRequest?: { url: string; idempotencyKey: string }
+    asyncRequest?: { url: string; idempotencyKey: string },
+    repairMaxTokens?: number
   ): Promise<ModelHttpResult> {
+    // repair 请求给更大的输出预算（默认 2× 首调），截断型错误多在中部被 max_tokens 截断
+    const effectiveRepairMaxTokens = repairMaxTokens ?? maxTokens * 2;
     const schemaDescription = buildSchemaDescription(_schema);
     const repairPrompt = JSON_REPAIR_PROMPT_TEMPLATE.replace(
       "{{schema_description}}",
@@ -846,7 +850,7 @@ export class ModelGateway {
       model: config.model,
       messages,
       temperature: 0,
-      max_tokens: maxTokens,
+      max_tokens: effectiveRepairMaxTokens,
       response_format: { type: "json_object" },
     };
 
@@ -868,13 +872,13 @@ export class ModelGateway {
         : await this.sendRequest(url, requestHeaders, requestBody, timeoutMs);
     if (
       result.ok
-      && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= maxTokens)
+      && (result.finishReason === "length" || (result.usage?.completionTokens ?? 0) >= effectiveRepairMaxTokens)
     ) {
       return {
         ...result,
         ok: false,
         errorCode: "output_truncated",
-        errorMessage: `repair 输出达到 max_tokens=${maxTokens}，JSON 仍被截断`,
+        errorMessage: `repair 输出达到 max_tokens=${effectiveRepairMaxTokens}，JSON 仍被截断`,
       };
     }
     return result;

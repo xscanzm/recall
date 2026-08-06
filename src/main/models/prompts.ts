@@ -868,6 +868,7 @@ export const JSON_REPAIR_PROMPT_TEMPLATE = `下面的模型输出不是合法 JS
 - 不要输出任何推理过程、解释、markdown 代码块包裹
 - 不要输出 <think>、<reasoning>、<reflection> 等任何标签
 - 不要在 JSON 前后添加任何文字
+- 字符串值内的双引号必须转义为 \\"，不要输出未转义的引号
 
 只输出修复后的 JSON。`;
 

@@ -187,6 +187,64 @@ describe("ModelGateway response diagnostics", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("doubles max_tokens for the JSON repair request", async () => {
+    const setup = makeGateway([
+      Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }),
+      Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }),
+    ]);
+
+    const result = await setup.gateway.callMultimodal({ ...input(), maxTokens: undefined }, schema);
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const firstRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    const repairRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
+    expect(firstRequest.max_tokens).toBe(16_384);
+    expect(repairRequest.max_tokens).toBe(32_768);
+  });
+
+  it("reports output_truncated when the repair output hits the doubled limit", async () => {
+    const setup = makeGateway([
+      Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }),
+      Response.json({
+        choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1000, completion_tokens: 32768 },
+      }),
+    ]);
+
+    const result = await setup.gateway.callMultimodal({ ...input(), maxTokens: undefined }, schema);
+
+    expect(result).toMatchObject({ ok: false, errorCode: "output_truncated", attempts: 2 });
+    expect(result.errorMessage).toContain("max_tokens=32768");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the request body unchanged when the first call succeeds", async () => {
+    const setup = makeGateway(Response.json({
+      choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
+    }));
+
+    const result = await setup.gateway.callMultimodal({ ...input(), maxTokens: undefined }, schema);
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+    expect(request.max_tokens).toBe(16_384);
+  });
+
+  it("still recovers from invalid_json via repair with the doubled budget", async () => {
+    const setup = makeGateway([
+      Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }),
+      Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }),
+    ]);
+
+    const result = await setup.gateway.callMultimodal(input(), schema);
+
+    expect(result).toMatchObject({ ok: true, data: { ok: true }, attempts: 2, requestCount: 2 });
+    const repairRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
+    expect(repairRequest.max_tokens).toBe(16_384);
+  });
+
   it("returns output_truncated without attempting JSON repair when finish_reason is length", async () => {
     const setup = makeGateway(Response.json({
       choices: [{ message: { content: "{\"blocks\":[" }, finish_reason: "length" }],
