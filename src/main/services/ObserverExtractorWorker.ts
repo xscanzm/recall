@@ -30,6 +30,7 @@ import type { ObservationRepository } from "../db/repositories/ObservationReposi
 import type { MemoryObjectRepository } from "../db/repositories/MemoryObjectRepository";
 import type { SettingsService } from "./SettingsService";
 import { buildBatchOcrEvidenceJson } from "./BatchOcrEvidence";
+import { isRecallDefaultConfigId } from "./ModelTargets";
 import {
   buildObserverBatchFramePlan,
   expandObserverObservations,
@@ -576,6 +577,8 @@ export class ObserverExtractorWorker {
       primaryWindowTitle: batchBundle.windowTitle,
       recentObservationCount: recentObservations.length,
       mode: "l0_only",
+      // 服务归属（供重启水合只统计 Recall 默认服务的失败，见 VisionHealthTracker.hydrate）
+      serviceKind: isRecallDefaultConfigId(multimodalModelConfigId) ? "recall_default" : "user",
     });
 
     const result = await this.modelJobQueue.enqueueMultimodalJob<BatchObserverOutput>(

@@ -107,6 +107,8 @@ export class ObservationNormalizer {
     debugEvents?: DebugEvent[];
     frameIndex?: number;
     ocrResult?: BatchFrameOcrResult;
+    /** L0 溯源（031）：观察生成路径（vision_model:v1 / ocr_fallback:v1），缺省落库为 NULL */
+    generationPath?: string | null;
   }): NormalizeResult {
     const warnings: string[] = [];
     const { visionOutput, captureBundle } = input;
@@ -188,6 +190,8 @@ export class ObservationNormalizer {
       likelyWorkPurpose: cleanedVisionOutput.likelyWorkPurpose,
       privacyRisk: cleanedVisionOutput.privacyRisk,
       reportableSignal: cleanedVisionOutput.reportableSignal,
+      // 031 L0 溯源：生成路径
+      generationPath: input.generationPath ?? null,
     });
 
     return {
@@ -213,6 +217,8 @@ export class ObservationNormalizer {
     observations: ObserverOutputV2[];
     batchBundle: BatchCaptureBundle;
     debugEvents?: DebugEvent[];
+    /** L0 溯源（031）：本批次观察的生成路径，透传给每帧 normalize() */
+    generationPath?: string | null;
   }): BatchNormalizeResult {
     const { observations, batchBundle } = input;
     const results: NormalizeResult[] = [];
@@ -257,6 +263,7 @@ export class ObservationNormalizer {
           debugEvents: input.debugEvents,
           frameIndex: originalFrameIndex,
           ocrResult: batchBundle.ocrResults?.[originalFrameIndex],
+          generationPath: input.generationPath,
         });
         results.push(result);
         observationIds.push(result.observation?.id ?? null);

@@ -35,6 +35,14 @@ import type { SettingsService } from "./SettingsService";
 import type { AppStatus } from "../../shared/types";
 import { EpisodeBuilder } from "./EpisodeBuilder";
 import { SceneRelationProjector } from "./SceneRelationProjector";
+import { logger } from "./Logger";
+import { isRecallDefaultConfigId } from "./ModelTargets";
+import type { VisionHealthTracker } from "./VisionHealthTracker";
+import {
+  buildOcrFallbackObservations,
+  OCR_FALLBACK_GENERATION_PATH,
+  VISION_MODEL_GENERATION_PATH,
+} from "./OcrObservationBuilder";
 
 /**
  * Pipeline 处理结果
@@ -65,6 +73,8 @@ export interface PipelineResult {
 export interface BatchPipelineResult {
   /** 批次 id */
   batchId: string;
+  /** 本批次观察是否由本地 OCR 降级生成（视觉链路熔断/降级时为 true） */
+  degradedToOcr: boolean;
   /** 各步骤状态 */
   steps: {
     observerExtractor: boolean;
@@ -138,6 +148,7 @@ export class MemoryPipeline {
   private readonly edgeRepo: MemoryEdgeRepository | null;
   private readonly settingsService: SettingsService | null;
   private readonly modelJobRepo: ModelJobRepository | null;
+  private readonly visionHealth: VisionHealthTracker | null;
   private readonly episodeBuilder: EpisodeBuilder;
   private readonly sceneRelationProjector: SceneRelationProjector;
   private config: MemoryPipelineConfig;
@@ -156,6 +167,8 @@ export class MemoryPipeline {
     edgeRepo?: MemoryEdgeRepository;
     settingsService?: SettingsService;
     modelJobRepo?: ModelJobRepository;
+    /** 视觉链路健康熔断器（可选；只对 Recall 默认服务生效，用户自配服务完全不参与） */
+    visionHealth?: VisionHealthTracker | null;
     config?: Partial<MemoryPipelineConfig>;
   }) {
     this.observerExtractorWorker = deps.observerExtractorWorker;
@@ -170,6 +183,7 @@ export class MemoryPipeline {
     this.edgeRepo = deps.edgeRepo ?? null;
     this.settingsService = deps.settingsService ?? null;
     this.modelJobRepo = deps.modelJobRepo ?? null;
+    this.visionHealth = deps.visionHealth ?? null;
     this.episodeBuilder = new EpisodeBuilder({
       sceneRepo: this.sceneRepo,
       edgeRepo: this.edgeRepo ?? undefined,
@@ -376,6 +390,7 @@ export class MemoryPipeline {
   ): Promise<BatchPipelineResult> {
     const result: BatchPipelineResult = {
       batchId: batchBundle.batchId,
+      degradedToOcr: false,
       steps: {
         observerExtractor: false,
         normalizer: { ok: 0, discarded: 0, failed: 0 },
@@ -407,12 +422,15 @@ export class MemoryPipeline {
       return result;
     }
 
-    // ---------------- 步骤 1：Observer（批次 L0-only 调用） ----------------
+    // ---------------- 步骤 1：Observer（批次 L0-only；视觉或 OCR 降级） ----------------
     this.updatePipelineState("observing");
     if (progress?.stages.observer !== "succeeded") progress?.markRunning("observer");
-    const observerResult = progress?.stages.observer === "succeeded"
-      ? null
-      : await this.runBatchObserver(batchBundle, visualConfigId);
+    const observerAction = this.visionHealth?.nextAction() ?? "vision";
+    const observerStep = progress?.stages.observer === "succeeded"
+      ? { result: null, degraded: false }
+      : await this.runObserverStep(batchBundle, visualConfigId, observerAction);
+    const observerResult = observerStep.result;
+    result.degradedToOcr = observerStep.degraded;
     result.steps.observerExtractor = progress?.stages.observer === "succeeded" || observerResult?.ok === true;
     if (!result.steps.observerExtractor || (observerResult && !observerResult.data)) {
       result.errors.push({
@@ -424,6 +442,14 @@ export class MemoryPipeline {
       this.updatePipelineState("idle");
       return result;
     }
+    // 降级成功也记录触发降级的视觉原始错误（供调试页追溯；不阻断本批次继续）
+    if (observerStep.degraded && observerStep.visionError) {
+      result.errors.push({
+        step: "observerExtractor",
+        code: observerStep.visionError.code,
+        message: observerStep.visionError.message,
+      });
+    }
 
     const observations = observerResult?.data?.observations ?? [];
 
@@ -431,10 +457,13 @@ export class MemoryPipeline {
     const normalizeResult = progress?.stages.observer === "succeeded"
       ? null
       : this.normalizer.normalizeBatch({
-      observations,
-      batchBundle,
-      debugEvents,
-    });
+          observations,
+          batchBundle,
+          debugEvents,
+          generationPath: observerStep.degraded
+            ? OCR_FALLBACK_GENERATION_PATH
+            : VISION_MODEL_GENERATION_PATH,
+        });
     const observationIds = normalizeResult?.observationIds ?? progress?.checkpoint.observationIds ?? [];
     result.steps.normalizer = normalizeResult ? {
       ok: normalizeResult.observationIds.filter((id) => id !== null).length,
@@ -593,6 +622,8 @@ export class MemoryPipeline {
       visionOutput,
       captureBundle: bundle,
       debugEvents,
+      // 单帧路径永远走视觉模型（无降级分支），溯源固定为 vision_model:v1
+      generationPath: VISION_MODEL_GENERATION_PATH,
     });
   }
 
@@ -800,6 +831,68 @@ export class MemoryPipeline {
   }
 
   /**
+   * 步骤 1 的执行策略（批次 L0-only）：
+   * - 用户自配服务：永远原视觉链路（不降级、熔断器不参与）
+   * - 默认服务 + 熔断器 open → 直接 OCR 降级（不空烧队列重试）
+   * - 默认服务 + closed/probe → 视觉调用；成功闭合熔断器
+   * - 默认服务 + 视觉失败且属容量类故障且本批 OCR 可用 → 本批立即降级 + 熔断器计数
+   * - 其他失败（模型质量类）→ 保持原失败路径
+   */
+  private async runObserverStep(
+    batchBundle: BatchCaptureBundle,
+    visualConfigId: string,
+    action: "vision" | "probe_vision" | "ocr"
+  ): Promise<{
+    result: StepResult<BatchObserverWorkerResult> | null;
+    degraded: boolean;
+    /** 触发降级的视觉原始错误（仅降级成功时携带，供 result.errors 追溯） */
+    visionError?: { code?: string; message?: string };
+  }> {
+    if (!isRecallDefaultConfigId(visualConfigId)) {
+      const visionResult = await this.runBatchObserver(batchBundle, visualConfigId);
+      return { result: visionResult, degraded: false };
+    }
+    if (action === "ocr") {
+      return { result: this.runOcrFallback(batchBundle, "vision_health_open"), degraded: true };
+    }
+    const visionResult = await this.runBatchObserver(batchBundle, visualConfigId);
+    if (visionResult.ok) {
+      this.visionHealth?.recordSuccess();
+      return { result: visionResult, degraded: false };
+    }
+    const errorCode = visionResult.errorCode ?? "";
+    if (VISION_CAPACITY_ERROR_CODES.has(errorCode)) {
+      this.visionHealth?.recordFailure();
+      if (hasUsableOcrText(batchBundle)) {
+        return {
+          result: this.runOcrFallback(batchBundle, `vision_${errorCode}`),
+          degraded: true,
+          visionError: { code: visionResult.errorCode, message: visionResult.errorMessage },
+        };
+      }
+    }
+    return { result: visionResult, degraded: false };
+  }
+
+  private runOcrFallback(
+    batchBundle: BatchCaptureBundle,
+    reason: string
+  ): StepResult<BatchObserverWorkerResult> {
+    const built = buildOcrFallbackObservations(batchBundle);
+    logger.warn({
+      jobType: "observer_batch",
+      errorCode: "vision_degraded_to_ocr",
+      message:
+        `[MemoryPipeline] 视觉降级（${reason}）：批次 ${batchBundle.batchId} 由本地 OCR 生成 ` +
+        `${built.observations.length} 条观察（空 OCR 帧 ${built.emptyOcrFrames}）`,
+    });
+    return {
+      ok: true,
+      data: { observations: built.observations, modelJobId: "", attempts: 0 },
+    };
+  }
+
+  /**
    * 把模型输出的帧序号（1-indexed 字符串）映射为已落库的真实 observationId
    *
    * 处理边界：
@@ -866,6 +959,19 @@ export class MemoryPipeline {
     }
     return Array.isArray(bundle.imagePaths) && bundle.imagePaths.some((p) => !!p && p.length > 0);
   }
+}
+
+/** 上游容量类故障：触发熔断与降级（区别于 schema_invalid 等模型质量类故障） */
+const VISION_CAPACITY_ERROR_CODES = new Set([
+  "rate_limited",
+  "timeout",
+  "network_error",
+  "upstream_timeout",
+  "async_poll_timeout",
+]);
+
+function hasUsableOcrText(batchBundle: BatchCaptureBundle): boolean {
+  return (batchBundle.ocrResults ?? []).some((r) => (r.text ?? "").trim().length > 0);
 }
 
 /**
