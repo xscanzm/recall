@@ -490,6 +490,8 @@ export interface Observation {
   privacyRisk?: "low" | "medium" | "high" | null;
   /** V2：是否适合进入工作日报 */
   reportableSignal?: "yes" | "maybe" | "no" | null;
+  /** 031：L0 溯源——观察生成路径（vision_model:v1 / ocr_fallback:v1 / vision_backfill:v1），历史行为 null */
+  generationPath?: string | null;
 }
 
 /**

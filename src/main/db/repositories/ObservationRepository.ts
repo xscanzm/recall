@@ -50,6 +50,8 @@ interface ObservationRow {
   likely_work_purpose: string | null;
   privacy_risk: string | null;
   reportable_signal: string | null;
+  // 031 L0 溯源：生成路径（vision_model:v1 / ocr_fallback:v1 / vision_backfill:v1），历史行为 NULL
+  generation_path: string | null;
 }
 
 export class ObservationRepository {
@@ -60,6 +62,7 @@ export class ObservationRepository {
    *
    * V2 字段（userFacingSummary / likelyWorkPurpose / privacyRisk / reportableSignal）
    * 来自 008 迁移，均可空。V1 写入路径不传这些字段时落库为 NULL。
+   * generationPath 来自 031 迁移（L0 溯源，可空），不传时落库为 NULL。
    */
   create(input: CreateObservationInput): Observation {
     const existing = this.getByCaptureId(input.captureId);
@@ -76,8 +79,9 @@ export class ObservationRepository {
           possible_intent, possible_tasks_json, possible_decisions_json,
           sensitivity, confidence, uncertainties_json,
           screenshot_retention, screenshot_paths_json, created_at,
-          user_facing_summary, likely_work_purpose, privacy_risk, reportable_signal
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          user_facing_summary, likely_work_purpose, privacy_risk, reportable_signal,
+          generation_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -102,7 +106,8 @@ export class ObservationRepository {
         input.userFacingSummary ?? null,
         input.likelyWorkPurpose ?? null,
         input.privacyRisk ?? null,
-        input.reportableSignal ?? null
+        input.reportableSignal ?? null,
+        input.generationPath ?? null
       );
 
     return this.getById(id)!;
@@ -342,6 +347,8 @@ function mapRow(row: ObservationRow): Observation {
     likelyWorkPurpose: row.likely_work_purpose ?? null,
     privacyRisk: (row.privacy_risk as Observation["privacyRisk"]) ?? null,
     reportableSignal: (row.reportable_signal as Observation["reportableSignal"]) ?? null,
+    // 031 L0 溯源（null-safe）
+    generationPath: row.generation_path ?? null,
   };
 }
 
