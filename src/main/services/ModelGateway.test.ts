@@ -123,7 +123,7 @@ describe("ModelGateway response diagnostics", () => {
     expect(request.reasoning_effort).toBeUndefined();
   });
 
-  it("defaults SenseNova flash-lite requests to reasoning_effort none", async () => {
+  it("omits reasoning_effort for flash-lite models (no longer auto-added)", async () => {
     const setup = makeGateway(Response.json({
       choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }],
     }), { model: "SenseTime/sensenova-6.7-flash-lite" });
@@ -132,7 +132,7 @@ describe("ModelGateway response diagnostics", () => {
 
     expect(result.ok).toBe(true);
     const request = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
-    expect(request.reasoning_effort).toBe("none");
+    expect(request.reasoning_effort).toBeUndefined();
   });
 
   it("preserves an explicit reasoning_effort option for SenseNova", async () => {
@@ -150,7 +150,7 @@ describe("ModelGateway response diagnostics", () => {
     expect(request.reasoning_effort).toBe("low");
   });
 
-  it("applies SenseNova reasoning compatibility to JSON repair requests", async () => {
+  it("omits reasoning_effort for JSON repair requests (no longer auto-added)", async () => {
     const setup = makeGateway([
       Response.json({ choices: [{ message: { content: "not json" }, finish_reason: "stop" }] }),
       Response.json({ choices: [{ message: { content: "{\"ok\":true}" }, finish_reason: "stop" }] }),
@@ -161,7 +161,7 @@ describe("ModelGateway response diagnostics", () => {
     expect(result.ok).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(2);
     const repairRequest = JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[1][1].body);
-    expect(repairRequest.reasoning_effort).toBe("none");
+    expect(repairRequest.reasoning_effort).toBeUndefined();
   });
 
   it("omits response_format for text fallback requests", async () => {
