@@ -58,6 +58,7 @@ import { ObservationNormalizer } from "./services/ObservationNormalizer";
 import { LinkerSceneJudgeWorker } from "./services/LinkerSceneJudgeWorker";
 import { MemoryObjectAdmissionService } from "./services/MemoryObjectAdmissionService";
 import { EpisodeFactExtractorWorker } from "./services/EpisodeFactExtractorWorker";
+import { VisionHealthTracker } from "./services/VisionHealthTracker";
 import { ReporterWorker } from "./services/ReporterWorker";
 import { ReportScheduler } from "./services/ReportScheduler";
 import { TimelineBuilderWorker } from "./services/TimelineBuilderWorker";
@@ -779,6 +780,32 @@ app.whenReady().then(async () => {
   });
 
   // 4. 创建 MemoryPipeline 协调器
+  // 视觉链路健康熔断器：用最近 30 分钟"默认服务"observer_batch 的结果水合，
+  // 应用重启后不重复烧已知的饱和上游。只统计 recall_default —— 用户自配服务的
+  // 失败与默认服务健康无关，宁可不水合也不误伤用户自配链路。
+  const visionHealth = new VisionHealthTracker();
+  try {
+    const windowStart = new Date(Date.now() - 30 * 60_000).toISOString();
+    const recentJobs = modelJobRepo
+      .listByTimeRange(windowStart, new Date().toISOString(), 200)
+      .filter((job) => job.type === "observer_batch")
+      .filter((job) => {
+        try {
+          return JSON.parse(job.inputJson ?? "{}").serviceKind === "recall_default";
+        } catch {
+          return false; // 旧版本 jobInputJson 无 serviceKind：不水合该行
+        }
+      });
+    // listByTimeRange 按 created_at DESC 返回（最新在前），满足 hydrate 的倒序要求
+    visionHealth.hydrate(
+      recentJobs.map((job) => ({
+        status: job.status,
+        errorCode: job.errorCode,
+      }))
+    );
+  } catch {
+    // 水合失败不阻断启动，熔断器从 closed 开始
+  }
   memoryPipeline = new MemoryPipeline({
     observerExtractorWorker,
     normalizer,
@@ -792,6 +819,7 @@ app.whenReady().then(async () => {
     edgeRepo: memoryEdgeRepo,
     settingsService,
     modelJobRepo,
+    visionHealth,
   });
   // 注册为单例（IPC handlers 和其他服务可通过 getMemoryPipeline() 访问）
   setMemoryPipeline(memoryPipeline);
