@@ -8,6 +8,7 @@ interface Env {
   MODEL_STATS_HASH_SECRET?: string;
   MODEL_STATS: D1Database;
   MODEL_JOB_PAYLOADS: R2Bucket;
+  TMP_IMAGES: R2Bucket;
   DEFAULT_MULTIMODAL_JOBS: Queue<DefaultMultimodalQueueMessage>;
 }
 

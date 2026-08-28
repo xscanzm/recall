@@ -37,7 +37,7 @@ const INSTALLATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab
 const MODEL_IDEMPOTENCY_KEY_PATTERN = /^[a-z0-9][a-z0-9:._-]{0,255}$/i;
 const ASYNC_MODEL_JOB_ID_PATTERN = /^mmj_[0-9a-f-]{36}$/i;
 // 仅对非流式请求生效：AbortSignal.timeout 会同时切断流式 SSE 长连的响应体消费。
-export const UPSTREAM_FETCH_TIMEOUT_MS = 60_000;
+export const UPSTREAM_FETCH_TIMEOUT_MS = 300_000;
 
 /**
  * 给响应附加 CORS 头
@@ -603,6 +603,9 @@ async function handleDefaultModelProxy(
   }
   const body = sanitizeModelProxyBody(parsed, model);
   if (!body) return jsonResponse({ error: "invalid-request" }, 400);
+  // 中转 data URL 图片为 https URL（解决 SenseNova data URL 处理慢的问题）
+  const baseUrl = new URL(request.url).origin;
+  await convertDataUrlsToHttps(body.messages as Array<Record<string, unknown>>, env, baseUrl);
 
   const endpoint = `${apiUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1/chat/completions`;
   const record = (status: "success" | "failure") => {
@@ -662,6 +665,9 @@ async function handleDefaultMultimodalJobSubmit(request: Request, env: Env): Pro
   }
   const body = sanitizeModelProxyBody(parsed, model);
   if (!body) return jsonResponse({ error: "invalid-request" }, 400);
+  // 中转 data URL 图片为 https URL（异步任务存储的 body 已含 https URL）
+  const baseUrl = new URL(request.url).origin;
+  await convertDataUrlsToHttps(body.messages as Array<Record<string, unknown>>, env, baseUrl);
   const result = await submitDefaultMultimodalJob(env, metadata, idempotencyKey, body);
   return jsonResponse(result.body, result.status);
 }
@@ -778,6 +784,90 @@ async function handleInfographicGeneration(request: Request, env: Env): Promise<
     return jsonResponse({ error: "upstream-missing-image" }, 502);
   }
   return jsonResponse({ url: imageUrl });
+}
+
+// ============================================================================
+// 临时图片中转：data URL → https URL（解决 SenseNova data URL 处理慢的问题）
+// ============================================================================
+/** 临时图片有效期（30 分钟） */
+const TMP_IMAGE_TTL_MS = 30 * 60_000;
+/** R2 对象前缀 */
+const TMP_IMAGE_PREFIX = "tmp-img/";
+
+/**
+ * 解析 data URL，返回 MIME 类型和二进制数据
+ */
+function parseDataUrl(dataUrl: string): { mime: string; bytes: Uint8Array } | null {
+  const match = /^data:([^;,]+);base64,(.+)$/s.exec(dataUrl);
+  if (!match) return null;
+  try {
+    const binary = atob(match[2]);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return { mime: match[1], bytes };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 扫描 messages 中的 data URL 图片，上传到 R2 TMP_IMAGES 并替换为 https URL。
+ * 上传失败时保持原始 data URL（不阻塞请求）。
+ */
+async function convertDataUrlsToHttps(
+  messages: Array<Record<string, unknown>>,
+  env: Env,
+  baseUrl: string
+): Promise<void> {
+  for (const message of messages) {
+    const content = message.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      if (!part || typeof part !== "object") continue;
+      const item = part as Record<string, unknown>;
+      if (item.type !== "image_url" || !item.image_url || typeof item.image_url !== "object") continue;
+      const img = item.image_url as Record<string, unknown>;
+      const url = img.url;
+      if (typeof url !== "string" || !url.startsWith("data:image/")) continue;
+      const parsed = parseDataUrl(url);
+      if (!parsed) continue;
+      const key = `${TMP_IMAGE_PREFIX}${crypto.randomUUID()}`;
+      try {
+        await env.TMP_IMAGES.put(key, parsed.bytes, {
+          httpMetadata: { contentType: parsed.mime },
+          customMetadata: {
+            expiresAt: new Date(Date.now() + TMP_IMAGE_TTL_MS).toISOString(),
+          },
+        });
+        img.url = `${baseUrl}/api/model/tmp-img/${key}`;
+      } catch (error) {
+        console.error("tmp image upload failed", error instanceof Error ? error.message : String(error));
+        // 上传失败不阻塞，保留原始 data URL
+      }
+    }
+  }
+}
+
+/**
+ * 清理过期临时图片（cron 调度）
+ */
+export async function cleanupExpiredTmpImages(env: Env): Promise<void> {
+  const now = new Date();
+  let cursor: string | undefined;
+  let deleted = 0;
+  do {
+    const listed = await env.TMP_IMAGES.list({ prefix: TMP_IMAGE_PREFIX, cursor, limit: 500 });
+    const toDelete = listed.objects.filter((obj) => {
+      const expiresAt = obj.customMetadata?.expiresAt;
+      return expiresAt && new Date(expiresAt) <= now;
+    }).map((obj) => obj.key);
+    if (toDelete.length > 0) {
+      await env.TMP_IMAGES.delete(toDelete);
+      deleted += toDelete.length;
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+  if (deleted > 0) console.log("tmp images cleanup: deleted", deleted, "expired objects");
 }
 
 export default {
@@ -1043,6 +1133,29 @@ export default {
         return withCors(new Response(obj.body, { status: 200, headers }));
       }
 
+      // ─── GET /api/model/tmp-img/{key} ───────────────────
+      // 返回临时中转的图片，供 SenseNova 下载。
+      // 图片由 convertDataUrlsToHttps 上传，30 分钟 TTL 自动过期。
+      const TMP_IMAGE_ROUTE = "/api/model/tmp-img/";
+      if (path.startsWith(TMP_IMAGE_ROUTE) && method === "GET") {
+        const key = path.slice(TMP_IMAGE_ROUTE.length);
+        if (!key) return jsonResponse({ error: "missing-key" }, 400);
+        const obj = await env.TMP_IMAGES.get(key);
+        if (!obj) return jsonResponse({ error: "not-found" }, 404);
+        // 检查过期
+        const expiresAt = obj.customMetadata?.expiresAt;
+        if (expiresAt && new Date(expiresAt) <= new Date()) {
+          return jsonResponse({ error: "expired" }, 410);
+        }
+        return withCors(new Response(obj.body, {
+          status: 200,
+          headers: {
+            "Content-Type": obj.httpMetadata?.contentType ?? "image/png",
+            "Cache-Control": "public, max-age=300",
+          },
+        }));
+      }
+
       // ─── 其他路径：404 ───────────────────────────────
       return jsonResponse({ error: "not found" }, 404);
     } catch (err) {
@@ -1069,5 +1182,6 @@ export default {
     ctx: ExecutionContext
   ): Promise<void> {
     ctx.waitUntil(cleanupExpiredDefaultMultimodalJobs(env));
+    ctx.waitUntil(cleanupExpiredTmpImages(env));
   },
 } satisfies ExportedHandler<Env, DefaultMultimodalQueueMessage>;
