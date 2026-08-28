@@ -1406,16 +1406,11 @@ function safeParseOptionsJson(optionsJson: string | null | undefined): Record<st
 
 function applyModelCompatibilityOptions(
   requestBody: Record<string, unknown>,
-  model: string,
+  _model: string,
   extraOptions: Record<string, unknown>
 ): void {
   if (Object.prototype.hasOwnProperty.call(extraOptions, "reasoning_effort")) {
     requestBody.reasoning_effort = extraOptions.reasoning_effort;
-    return;
-  }
-  const modelName = model.trim().toLowerCase().split("/").at(-1);
-  if (modelName === "sensenova-6.7-flash-lite") {
-    requestBody.reasoning_effort = "none";
   }
 }
 
@@ -1657,7 +1652,9 @@ function mapHttpErrorToCode(
     return { errorCode: "auth_error", errorMessage: `鉴权失败 (HTTP ${status})` };
   }
   if (status === 429) {
-    return { errorCode: "rate_limited", errorMessage: "请求被限流 (HTTP 429)" };
+    // safeMsg 是上游响应体里的 error.message（HTML 响应体解析失败时为 "HTTP 429"，跳过拼接）
+    const detail = safeMsg && safeMsg !== `HTTP ${status}` ? `: ${safeMsg}` : "";
+    return { errorCode: "rate_limited", errorMessage: `请求被限流 (HTTP 429)${detail}` };
   }
   if (status === 520 || status === 524) {
     return {

@@ -394,9 +394,15 @@ export async function readUpstreamCompletion(response: Response): Promise<Upstre
       return {
         ok: false,
         errorCode: "rate_limited",
-        errorMessage: "上游请求被限流 (HTTP 429)",
+        // 保留上游响应体（截断、已脱敏）：429 的真实原因可能来自中转渠道、
+        // 上游模型限流或 Cloudflare 边缘规则，丢弃响应体会导致无法定位。
+        errorMessage: message
+          ? `上游请求被限流 (HTTP 429): ${message.slice(0, 300)}`
+          : "上游请求被限流 (HTTP 429)",
         retryable: true,
-        retryDelaySeconds: retryDelaySeconds(response.headers.get("retry-after")),
+        // 上游无 Retry-After 头时默认等 90s：饱和队列需要更长冷却，
+        // 30s 的密集重试会加剧 "Server is busy" 风暴。
+        retryDelaySeconds: retryDelaySeconds(response.headers.get("retry-after"), 90),
       };
     }
     if (status >= 500) {
@@ -595,11 +601,11 @@ function queuedResponse(job: AsyncJobRow): AsyncHandlerResult {
   return { status: 202, body: { jobId: job.id, status: job.status, retryAfterMs: 2_000 } };
 }
 
-function retryDelaySeconds(value: string | null): number {
+function retryDelaySeconds(value: string | null, fallback = 30): number {
   const seconds = Number(value);
   return Number.isFinite(seconds) && seconds > 0
     ? Math.min(300, Math.max(1, Math.round(seconds)))
-    : 30;
+    : fallback;
 }
 
 async function readBoundedError(response: Response): Promise<string> {

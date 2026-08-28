@@ -41,6 +41,11 @@ migrations_dir = "migrations"
 binding = "MODEL_JOB_PAYLOADS"
 bucket_name = "recall-model-job-payloads"
 
+# 临时图片存储：data URL 转为 https URL 时暂存，定期自动清理。
+[[r2_buckets]]
+binding = "TMP_IMAGES"
+bucket_name = "recall-tmp-images"
+
 [[queues.producers]]
 binding = "DEFAULT_MULTIMODAL_JOBS"
 queue = "recall-default-multimodal-jobs"
@@ -51,7 +56,9 @@ max_batch_size = 1
 max_batch_timeout = 1
 max_retries = 3
 retry_delay = 30
-max_concurrency = 3
+# 上游免费渠道（SenseNova flash-lite）实测等效并发 ≈ 1 且对突发极敏感，
+# 消费并发必须保持 1，否则会触发上游 "Server is busy" 429 风暴。
+max_concurrency = 1
 
 [triggers]
 crons = ["*/15 * * * *"]
@@ -64,5 +71,5 @@ INFOGRAPHIC_SIZE = "2752x1536"
 DEFAULT_LANGUAGE_API_URL = "https://api.ppclaw.online"
 DEFAULT_LANGUAGE_MODEL = "deepseek-v4-flash"
 DEFAULT_MULTIMODAL_API_URL = "https://api.ppclaw.online"
-DEFAULT_MULTIMODAL_MODEL = "sensenova-6.7-flash-lite"
+DEFAULT_MULTIMODAL_MODEL = "sensenova-6.8-flash-lite"
 MODEL_PROXY_ENABLED = "true"
